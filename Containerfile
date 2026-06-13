@@ -23,7 +23,7 @@ LABEL org.opencontainers.image.source="https://github.com/yarilc/pi-container"
 # When building manually, override with: --build-arg PI_VERSION=<version>
 ARG PI_VERSION=0.79.3
 
-# ---- System dependencies ----
+# ---- System dependencies and Pi installation ----
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         bash \
@@ -32,12 +32,8 @@ RUN apt-get update \
         podman \
         ripgrep \
     && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean
-
-# ---- Install pi globally (pinned version for reproducibility) ----
-RUN npm install -g "@earendil-works/pi-coding-agent@${PI_VERSION}"
-
-# Verify the binary is installed and executable.
-RUN pi --version >/dev/null 2>&1
+    && apt-get clean \
+    && npm install -g "@earendil-works/pi-coding-agent@${PI_VERSION}" \
+    && pi --version >/dev/null 2>&1
 
 ENTRYPOINT ["pi"]
