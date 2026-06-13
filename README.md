@@ -36,7 +36,7 @@ The main challenge with running CLI tools inside a container is **file ownership
 files created inside the container (sessions, config, git repos) must be owned by
 your host user, not by a container-internal user like `root` or `node`.
 
-```
+```text
 ┌─────────────────────────────────────┐
 │  Host (you, UID 1000)               │
 │                                     │
@@ -190,7 +190,7 @@ podman ps       # Lists host containers
 podman images   # Lists host images
 ```
 
-### How it works
+### Podman socket architecture
 
 When `PI_ENABLE_PODMAN=1` is set, the wrapper script checks for the
 host's Podman socket at `/run/user/<uid>/podman/podman.sock`.
@@ -198,7 +198,7 @@ If the socket exists (Podman service must be running), it is mounted
 into the container and `CONTAINER_HOST` is set so Podman commands
 inside the container talk directly to the host's Podman daemon.
 
-```
+```text
 ┌───────────────────────────────────────────┐
 │  Host                                      │
 │  ┌───────────────────────────────────────┐ │
@@ -240,7 +240,7 @@ accidentally run with an outdated image after modifying the Containerfile.
 
 ## File layout
 
-```
+```text
 pi-container/
 ├── Containerfile              # Image definition
 ├── pi-container.sh            # Entry point script (builds & runs)
@@ -322,7 +322,7 @@ fixed until you change it again.
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `EACCES: permission denied` on `~/.pi/...` | SELinux context missing | Add `:Z` to volume mounts (already included in the script) |
-| `podman: command not found` | Podman not installed | Install Podman: https://podman.io/docs/installation |
+| `podman: command not found` | Podman not installed | [Install Podman](https://podman.io/docs/installation) |
 | Pi hangs on non-interactive use | `-t` flag allocated without TTY | Script now auto-detects TTY and omits `-t` when not available |
 | `pi: command not found` | npm install failed | Rebuild: `podman rmi pi-container && ./pi-container.sh --version` |
 | Slow first start | apt + npm install during build | One-time cost; subsequent runs use cached image |
