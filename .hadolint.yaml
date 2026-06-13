@@ -1,0 +1,4 @@
+ignored:
+  - DL3008  # Pin versions in apt-get install (impractical for most packages)
+  - DL3016  # Pin versions in npm (already pinning pi-coding-agent)
+  - DL3018  # Pin versions in apk add (not applicable to Debian)
