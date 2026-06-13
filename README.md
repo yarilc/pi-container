@@ -141,6 +141,61 @@ pi-container/
 └── README.md            # This file
 ```
 
+## Updating
+
+Pi and the container image are separate artifacts that can be updated independently.
+
+### Update Pi to the latest version
+
+Pi is installed inside the image via `npm install -g @earendil-works/pi-coding-agent`
+during the build. To get a newer version:
+
+```bash
+podman rmi pi-container
+./pi-container.sh --version
+```
+
+The script rebuilds the image, pulling the latest Pi from npm. Your session history,
+auth tokens, and settings in `~/.pi/agent/` are preserved because they live on the
+host filesystem and are mounted into the container.
+
+### Update the wrapper script and Containerfile
+
+```bash
+cd /path/to/pi-container
+git pull
+```
+
+After pulling changes to `Containerfile` or `pi-container.sh`, rebuild the image:
+
+```bash
+podman rmi pi-container
+./pi-container.sh --version
+```
+
+### Pin a specific Pi version
+
+If you need a stable, pinned version for your team, add a version tag to the
+`npm install` line in `Containerfile`:
+
+```dockerfile
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.79.1
+```
+
+Then rebuild. The version will stay fixed until you change the tag and rebuild again.
+
+### What survives a rebuild
+
+| Data | Location | Survives `podman rmi`? |
+|---|---|---|
+| Session history | `~/.pi/agent/sessions/` (host) | ✅ Yes |
+| Auth tokens | `~/.pi/agent/auth.json` (host) | ✅ Yes |
+| Settings | `~/.pi/agent/settings.json` (host) | ✅ Yes |
+| Extensions | `~/.pi/agent/extensions/` (host) | ✅ Yes |
+| Skills | `~/.agents/skills/` (host) | ✅ Yes |
+| Global npm packages | inside image | ❌ Reinstalled on rebuild |
+| System packages (git, rg) | inside image | ❌ Reinstalled on rebuild |
+
 ## Tips
 
 - **Alias in `~/.bashrc`**: `alias pic='/path/to/pi-container/pi-container.sh'`
