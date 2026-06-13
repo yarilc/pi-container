@@ -16,7 +16,8 @@
 set -euo pipefail
 
 # ---- Configuration ----
-readonly VERSION_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.version"
+VERSION_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.version"
+readonly VERSION_FILE
 IMAGE_NAME="${PI_IMAGE_NAME:-pi-container}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -187,7 +188,7 @@ RUNTIME_ARGS+=(
     --cpus=2
     --pids-limit=512
     --read-only
-    --tmpfs /tmp:noexec,nosuid,size=256M
+    "--tmpfs" "/tmp:noexec,nosuid,size=256M"
 )
 
 # SELinux context (relabel for single container use)
