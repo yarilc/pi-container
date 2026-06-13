@@ -1,6 +1,8 @@
 # pi-container
 
-Run [Pi Coding Agent](https://pi.dev) transparently inside a **Podman container**, with full access to your local configuration, skills, and project files — no permission headaches.
+Run [Pi Coding Agent](https://pi.dev) transparently inside a **Podman container**,
+with full access to your local configuration, skills, and project files — no
+permission headaches.
 
 ## Requirements
 
@@ -13,9 +15,6 @@ Run [Pi Coding Agent](https://pi.dev) transparently inside a **Podman container*
 git clone <this-repo>
 cd pi-container
 
-# Make the script executable (first time only)
-chmod +x pi-container.sh
-
 # Use it anywhere, exactly like the `pi` command
 cd /path/to/your/project
 /path/to/pi-container/pi-container.sh "List the files in this directory"
@@ -26,7 +25,8 @@ pic --version
 ```
 
 On first run the script builds the container image automatically (~2 minutes).
-Subsequent runs start instantly.
+Subsequent runs start instantly. The image is rebuilt automatically whenever
+`Containerfile` changes (detected via content hash).
 
 ## How it works
 
@@ -57,7 +57,10 @@ your host user, not by a container-internal user like `root` or `node`.
 **Key insight:** Pi runs as `root` inside the container. Rootless Podman
 transparently maps the container's root (UID 0) to your host UID, so every
 file written to any mounted volume ends up with your ownership on the host.
-No `--userns=keep-id`, no `--user`, no permission workarounds needed.
+
+To reduce risk, capabilities are dropped to a minimum set
+(`DAC_OVERRIDE`, `CHOWN`, `SETGID`, `SETUID`) and the container's root
+filesystem is mounted read-only with a small tmpfs for `/tmp`.
 
 ### Volume mounts
 
@@ -68,8 +71,8 @@ No `--userns=keep-id`, no `--user`, no permission workarounds needed.
 | `${PWD}` | Current working directory (same path inside and out) |
 
 All three mounts use **bind mounts** at **identical paths** inside the container,
-so tools like `git`, `rg`, and `pi` itself see a filesystem that looks exactly
-like the host.
+with **SELinux labels** (`:Z`) for compatibility with enforcing SELinux systems.
+On non-SELinux systems the `:Z` flag is harmless.
 
 ## Usage
 
@@ -112,33 +115,143 @@ pic --tools read,grep,find,ls -p "Audit the codebase for security issues"
 pic --name "my-task" -p "Finish what I started"
 ```
 
+### Non-interactive use (piped input, CI/CD)
+
+```bash
+echo "List files" | pic -p
+```
+
+When stdin is not a terminal (e.g. pipes, CI pipelines), the `-t` flag is
+automatically omitted, allowing clean non-interactive usage.
+
 ## Environment variables
 
-The script forwards these environment variables to the container (if set):
+### API keys
+
+The script forwards these environment variables to the container **only if
+they are set and non-empty**:
 
 | Variable | Purpose |
 |---|---|
 | `ANTHROPIC_API_KEY` | Anthropic / Claude API key |
 | `OPENAI_API_KEY` | OpenAI API key |
 | `GOOGLE_API_KEY` | Google / Gemini API key |
-| `HOME` | Your home directory (for mounts) |
-| `TERM` | Terminal type (TUI rendering) |
 
-To add more (e.g. `DEEPSEEK_API_KEY`, `MISTRAL_API_KEY`), edit the
-`podman run` command in `pi-container.sh` and add:
+> ⚠️ **Security note:** API keys are passed as environment variables. They are
+> visible in `podman inspect` output and inside the container's `/proc`.
+> For production or shared systems, consider using `podman secret` instead.
+
+### Proxy support
+
+If `HTTP_PROXY`, `HTTPS_PROXY`, or `NO_PROXY` are set on the host, they are
+forwarded to the container automatically.
+
+### Other variables
+
+| Variable | Purpose |
+|---|---|
+| `PI_IMAGE_NAME` | Override the container image name (default: `pi-container`) |
+| `PI_DEBUG` | Set to any value to enable verbose debug output |
+| `PI_ENABLE_PODMAN` | Set to `1` to mount the host Podman socket (opt-in, dangerous) |
+| `TERM` | Terminal type (forwarded for TUI rendering) |
+| `EDITOR`, `VISUAL` | Host editor preference (forwarded with fallback to `vi`) |
+
+## Container hardening
+
+| Control | Implementation |
+|---|---|
+| Capabilities | `--cap-drop=ALL`, only `DAC_OVERRIDE`, `CHOWN`, `SETGID`, `SETUID` added back |
+| Root filesystem | `--read-only` with `--tmpfs /tmp:noexec,nosuid,size=256M` |
+| Privilege escalation | `--security-opt=no-new-privileges` |
+| Resource limits | `--memory=4g`, `--cpus=2`, `--pids-limit=512` |
+| SELinux | `:Z` label on all volume mounts |
+| Stale image detection | Content-hash comparison against Containerfile |
+| Conditional TTY | `-t` only when stdin is a terminal |
+
+## Podman host integration (opt-in)
+
+**⚠️ WARNING:** Mounting the host Podman socket gives the container full
+control over the host's container runtime. The AI agent can use this to
+create privileged containers, mount host filesystems, and effectively
+escape container isolation. **This feature is OFF by default**.
+
+To enable, set `PI_ENABLE_PODMAN=1`:
 
 ```bash
--e "DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}"
+PI_ENABLE_PODMAN=1 pic "Debug the failing container"
 ```
+
+The container includes the `podman` CLI so you can interact
+with the **host's Podman service** from inside the container.
+
+```bash
+# Inside pi, or via `pic -p`:
+podman ps       # Lists host containers
+podman images   # Lists host images
+```
+
+### How it works
+
+When `PI_ENABLE_PODMAN=1` is set, the wrapper script checks for the
+host's Podman socket at `/run/user/<uid>/podman/podman.sock`.
+If the socket exists (Podman service must be running), it is mounted
+into the container and `CONTAINER_HOST` is set so Podman commands
+inside the container talk directly to the host's Podman daemon.
+
+```
+┌───────────────────────────────────────────┐
+│  Host                                      │
+│  ┌───────────────────────────────────────┐ │
+│  │ Podman socket:                        │ │
+│  │   /run/user/1000/podman/podman.sock  │ │
+│  └──────────────┬────────────────────────┘ │
+│                 │ bind mount (opt-in)       │
+│  ┌──────────────▼────────────────────────┐ │
+│  │ Container (Pi)                        │ │
+│  │   CONTAINER_HOST=unix://.../socket    │ │
+│  │   podman ps   → talks to host socket  │ │
+│  └───────────────────────────────────────┘ │
+└───────────────────────────────────────────┘
+```
+
+### Prerequisites
+
+Ensure the Podman socket is active on the host:
+
+```bash
+systemctl --user enable --now podman.socket
+```
+
+### Limitations
+
+- **Version compatibility:** The `podman` client in the container (Debian
+  Bookworm package) must be compatible with the host's podman server.
+  Version differences may cause API incompatibilities.
+- **Service must be running:** The script does not start the Podman service
+  automatically. Use `systemctl --user start podman.socket` to ensure it is
+  active.
+
+## Stale image detection
+
+The script computes a SHA-256 hash of the `Containerfile` and stores it as a
+label on the built image. On each run it recomputes the hash and rebuilds the
+image automatically if the file has changed. This ensures you never
+accidentally run with an outdated image after modifying the Containerfile.
 
 ## File layout
 
 ```
 pi-container/
-├── Containerfile        # Image definition (builds the pi environment)
-├── pi-container.sh      # Entry point script (builds & runs)
-├── .containerignore     # Build context exclusions
-└── README.md            # This file
+├── Containerfile              # Image definition
+├── pi-container.sh            # Entry point script (builds & runs)
+├── .containerignore            # Build context exclusions
+├── .version                    # Single source of truth for Pi version
+├── test.sh                     # Smoke tests
+├── .github/workflows/ci.yml   # CI pipeline
+├── SECURITY.md                 # Vulnerability disclosure policy
+├── LICENSE                     # MIT license
+├── .gitignore
+└── README.md                   # This file
 ```
 
 ## Updating
@@ -147,17 +260,16 @@ Pi and the container image are separate artifacts that can be updated independen
 
 ### Update Pi to the latest version
 
-Pi is installed inside the image via `npm install -g @earendil-works/pi-coding-agent`
-during the build. To get a newer version:
-
 ```bash
+# Edit Containerfile and change the PI_VERSION build arg:
+#   ARG PI_VERSION=<new-version>
+# Then rebuild:
 podman rmi pi-container
 ./pi-container.sh --version
 ```
 
-The script rebuilds the image, pulling the latest Pi from npm. Your session history,
-auth tokens, and settings in `~/.pi/agent/` are preserved because they live on the
-host filesystem and are mounted into the container.
+Your session history, auth tokens, and settings in `~/.pi/agent/` are preserved
+because they live on the host filesystem and are mounted into the container.
 
 ### Update the wrapper script and Containerfile
 
@@ -166,7 +278,8 @@ cd /path/to/pi-container
 git pull
 ```
 
-After pulling changes to `Containerfile` or `pi-container.sh`, rebuild the image:
+After pulling changes, the stale-image detection will rebuild automatically
+on the next run. If you prefer a manual rebuild:
 
 ```bash
 podman rmi pi-container
@@ -175,14 +288,14 @@ podman rmi pi-container
 
 ### Pin a specific Pi version
 
-If you need a stable, pinned version for your team, add a version tag to the
-`npm install` line in `Containerfile`:
+Pi version is controlled by the `.version` file (single source of truth):
 
-```dockerfile
-RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.79.1
+```bash
+echo "0.80.0" > .version
 ```
 
-Then rebuild. The version will stay fixed until you change the tag and rebuild again.
+The script and Containerfile both read from this file. The version will stay
+fixed until you change it again.
 
 ### What survives a rebuild
 
@@ -199,15 +312,29 @@ Then rebuild. The version will stay fixed until you change the tag and rebuild a
 ## Tips
 
 - **Alias in `~/.bashrc`**: `alias pic='/path/to/pi-container/pi-container.sh'`
-- **Rebuild the image**: `podman rmi pi-container` — the script will rebuild on next run
-- **Keep the image up to date**: remove and re-run to get the latest Pi version
+- **Debug mode**: `PI_DEBUG=1 pic ...` to see verbose output
+- **Custom image name**: `PI_IMAGE_NAME=my-pi pic ...`
+- **Rebuild the image**: `podman rmi pi-container` (or change `Containerfile` to trigger auto-rebuild)
 - **Interactive CLI args**: all arguments pass straight through — use `--help` to see Pi's full CLI
 
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `EACCES: permission denied` on `~/.pi/...` | Process runs as wrong UID | Rebuild image without `USER` directive (default uses root) |
-| Podman hangs with `--userns=keep-id` | Bug in Podman 4.9 on WSL | Script does not use `--userns=keep-id` — relies on default rootless mapping |
+| `EACCES: permission denied` on `~/.pi/...` | SELinux context missing | Add `:Z` to volume mounts (already included in the script) |
+| `podman: command not found` | Podman not installed | Install Podman: https://podman.io/docs/installation |
+| Pi hangs on non-interactive use | `-t` flag allocated without TTY | Script now auto-detects TTY and omits `-t` when not available |
 | `pi: command not found` | npm install failed | Rebuild: `podman rmi pi-container && ./pi-container.sh --version` |
 | Slow first start | apt + npm install during build | One-time cost; subsequent runs use cached image |
+| API key not recognized | Empty key forwarded | Script now only forwards keys that are set and non-empty |
+| Image is stale | Containerfile changed | Automatic detection triggers rebuild |
+| Permission denied on volume | Rootful Podman (sudo) | Run without `sudo` (rootless mode) |
+
+## Security
+
+See [SECURITY.md](./SECURITY.md) for the vulnerability disclosure policy and
+known security considerations.
+
+## License
+
+MIT — see [LICENSE](./LICENSE).

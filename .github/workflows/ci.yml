@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ShellCheck (pi-container.sh)
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: .
+          severity: style
+
+      - name: Hadolint (Containerfile)
+        uses: hadolint/hadolint-action@v3
+        with:
+          dockerfile: Containerfile
+
+      - name: Markdownlint (README.md)
+        uses: DavidAnson/markdownlint-cli2-action@v19
+        with:
+          globs: README.md
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+
+      - name: Build image
+        run: podman build -t pi-container-ci -f Containerfile .
+
+      - name: Smoke test — version
+        run: podman run --rm pi-container-ci --version
+
+      - name: Cleanup
+        run: podman rmi pi-container-ci

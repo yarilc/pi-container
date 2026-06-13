@@ -1,3 +1,5 @@
 *
 !Containerfile
 !.containerignore
+!.gitignore
+!.version

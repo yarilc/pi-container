@@ -1,0 +1,15 @@
+# OS metadata
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Build artifacts
+*.log
+.containerfile-hash
+
+# Editor configs
+.idea/
+.vscode/
+*.sublime-*
