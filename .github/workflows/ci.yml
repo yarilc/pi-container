@@ -47,7 +47,9 @@ jobs:
           sudo apt-get install -y podman
 
       - name: Wrapper logic tests (no build)
-        run: ./test-wrapper.sh
+        run: |
+          chmod +x ./test-wrapper.sh ./test.sh
+          ./test-wrapper.sh
 
       - name: Image smoke tests
         run: ./test.sh
@@ -66,7 +68,7 @@ jobs:
         run: podman build -t pi-container-scan -f Containerfile .
 
       - name: Vulnerability scan (Trivy)
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@master
         with:
           image-ref: localhost/pi-container-scan:latest
           format: table
