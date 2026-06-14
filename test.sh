@@ -29,7 +29,7 @@ echo "PASS"
 
 echo ""
 echo "=== Test 3: Volume mounts ==="
-TEST_DIR="$(mktemp -d)"
+TEST_DIR="$(mktemp -d "$(dirname "$0")/.container-test-XXXXXX")"
 trap 'rm -rf "${TEST_DIR}"' EXIT
 
 podman run --rm \
@@ -39,6 +39,8 @@ podman run --rm \
     "${IMAGE_NAME}" \
     -c 'echo "mount-ok" > /workspace/test.txt && cat /workspace/test.txt'
 
+# Sleep briefly to ensure the write is flushed before reading back
+sleep 1
 RESULT="$(cat "${TEST_DIR}/test.txt" 2>/dev/null || true)"
 if [[ "${RESULT}" != "mount-ok" ]]; then
     echo "FAIL: Volume mount not working"
