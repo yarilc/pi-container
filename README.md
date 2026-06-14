@@ -1,8 +1,12 @@
 # pi-container
 
 Run [Pi Coding Agent](https://pi.dev) transparently inside a **Podman container**,
-with full access to your local configuration, skills, and project files — no
-permission headaches.
+with access to your Pi configuration (`~/.pi`), skills (`~/.agents`), and the
+current project directory — no permission headaches.
+
+> Note: only `~/.pi`, `~/.agents`, the current working directory, and (if
+> present) `~/.gitconfig` are mounted. Other host config such as `~/.ssh` or
+> `~/.config` is intentionally **not** exposed to the container.
 
 ## Requirements
 
@@ -26,7 +30,7 @@ pic --version
 
 On first run the script builds the container image automatically (~2 minutes).
 Subsequent runs start instantly. The image is rebuilt automatically whenever
-`Containerfile` changes (detected via content hash).
+`Containerfile` **or** `.version` changes (detected via content hash).
 
 ## How it works
 
@@ -153,8 +157,14 @@ forwarded to the container automatically.
 | `PI_IMAGE_NAME` | Override the container image name (default: `pi-container`) |
 | `PI_DEBUG` | Set to any value to enable verbose debug output |
 | `PI_ENABLE_PODMAN` | Set to `1` to mount the host Podman socket (opt-in, dangerous) |
+| `PI_MEMORY_LIMIT` | Container memory limit (default: `4g`) |
+| `PI_CPU_LIMIT` | Container CPU limit (default: `2`) |
+| `PI_PIDS_LIMIT` | Container PID limit (default: `512`) |
+| `PI_NETWORK` | Container network mode, e.g. `none` to block all egress (default: full access) |
+| `PI_ALLOW_ROOTFUL` | Set to `1` to allow running under rootful Podman (not recommended) |
+| `PI_ALLOW_UNSAFE_PWD` | Set to `1` to allow running from sensitive directories (not recommended) |
 | `TERM` | Terminal type (forwarded for TUI rendering) |
-| `EDITOR`, `VISUAL` | Host editor preference (forwarded with fallback to `vi`) |
+| `EDITOR`, `VISUAL` | Host editor preference (forwarded with fallback to `nano`) |
 
 ## Container hardening
 
@@ -163,10 +173,19 @@ forwarded to the container automatically.
 | Capabilities | `--cap-drop=ALL`, only `DAC_OVERRIDE`, `CHOWN`, `SETGID`, `SETUID` added back |
 | Root filesystem | `--read-only` with `--tmpfs /tmp:noexec,nosuid,size=256M` |
 | Privilege escalation | `--security-opt=no-new-privileges` |
-| Resource limits | `--memory=4g`, `--cpus=2`, `--pids-limit=512` |
-| SELinux | `:Z` label on all volume mounts |
-| Stale image detection | Content-hash comparison against Containerfile |
+| Resource limits | `--memory=4g`, `--cpus=2`, `--pids-limit=512` (configurable) |
+| SELinux | `:Z` label on `~/.pi`, `~/.agents`, and `$PWD` mounts |
+| Sensitive PWD guard | Refuses to run from `/`, `$HOME`, `/etc`, etc. (override: `PI_ALLOW_UNSAFE_PWD`) |
+| Rootless enforcement | Refuses rootful Podman (override: `PI_ALLOW_ROOTFUL`) |
+| Signal handling | `--init` for signal forwarding and zombie reaping |
+| Stale image detection | Content-hash comparison against Containerfile and `.version` |
 | Conditional TTY | `-t` only when stdin is a terminal |
+
+> **Network egress is unrestricted by default.** An autonomous agent with
+> network access and read access to mounted volumes (including
+> `~/.pi/agent/auth.json`) could exfiltrate data if subverted by prompt
+> injection. Use `PI_NETWORK=none` (or a restricted network) to limit egress.
+> See [SECURITY.md](./SECURITY.md).
 
 ## Podman host integration (opt-in)
 
@@ -233,10 +252,11 @@ systemctl --user enable --now podman.socket
 
 ## Stale image detection
 
-The script computes a SHA-256 hash of the `Containerfile` and stores it as a
-label on the built image. On each run it recomputes the hash and rebuilds the
-image automatically if the file has changed. This ensures you never
-accidentally run with an outdated image after modifying the Containerfile.
+The script computes a SHA-256 hash of the `Containerfile` **and** `.version`
+and stores it as a label (`build-inputs-hash`) on the built image. On each run
+it recomputes the hash and rebuilds the image automatically if either file has
+changed. This ensures you never accidentally run with an outdated image after
+modifying the Containerfile or bumping the Pi version in `.version`.
 
 ## File layout
 
@@ -246,7 +266,8 @@ pi-container/
 ├── pi-container.sh            # Entry point script (builds & runs)
 ├── .containerignore            # Build context exclusions
 ├── .version                    # Single source of truth for Pi version
-├── test.sh                     # Smoke tests
+├── test.sh                     # Image smoke tests
+├── test-wrapper.sh             # Wrapper-logic tests (fake podman, no build)
 ├── .github/workflows/ci.yml   # CI pipeline
 ├── SECURITY.md                 # Vulnerability disclosure policy
 ├── LICENSE                     # MIT license
@@ -260,10 +281,18 @@ Pi and the container image are separate artifacts that can be updated independen
 
 ### Update Pi to the latest version
 
+Pi version is controlled by the `.version` file (single source of truth):
+
 ```bash
-# Edit Containerfile and change the PI_VERSION build arg:
-#   ARG PI_VERSION=<new-version>
-# Then rebuild:
+echo "0.80.0" > .version
+```
+
+The stale-image detection monitors both `Containerfile` and `.version`.
+Changing `.version` automatically triggers a rebuild on the next run.
+
+If you prefer a manual rebuild:
+
+```bash
 podman rmi pi-container
 ./pi-container.sh --version
 ```
@@ -279,23 +308,7 @@ git pull
 ```
 
 After pulling changes, the stale-image detection will rebuild automatically
-on the next run. If you prefer a manual rebuild:
-
-```bash
-podman rmi pi-container
-./pi-container.sh --version
-```
-
-### Pin a specific Pi version
-
-Pi version is controlled by the `.version` file (single source of truth):
-
-```bash
-echo "0.80.0" > .version
-```
-
-The script and Containerfile both read from this file. The version will stay
-fixed until you change it again.
+on the next run.
 
 ### What survives a rebuild
 
@@ -315,7 +328,7 @@ fixed until you change it again.
 - **Debug mode**: `PI_DEBUG=1 pic ...` to see verbose output
 - **Custom image name**: `PI_IMAGE_NAME=my-pi pic ...`
 - **Rebuild the image**: `podman rmi pi-container` (or change `Containerfile` to trigger auto-rebuild)
-- **Interactive CLI args**: all arguments pass straight through — use `--help` to see Pi's full CLI
+- **Interactive CLI args**: all arguments pass straight through to Pi — use `--help` to see Pi's full CLI, or `--wrapper-help` for wrapper-specific options
 
 ## Troubleshooting
 

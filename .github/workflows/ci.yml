@@ -6,6 +6,13 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -39,11 +46,30 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y podman
 
-      - name: Build image
-        run: podman build -t pi-container-ci -f Containerfile .
+      - name: Wrapper logic tests (no build)
+        run: ./test-wrapper.sh
 
-      - name: Smoke test — version
-        run: podman run --rm pi-container-ci --version
+      - name: Image smoke tests
+        run: ./test.sh
 
-      - name: Cleanup
-        run: podman rmi pi-container-ci
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+
+      - name: Build image for scanning
+        run: podman build -t pi-container-scan -f Containerfile .
+
+      - name: Vulnerability scan (Trivy)
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: localhost/pi-container-scan:latest
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: '0'        # report only; do not fail the build yet
+          ignore-unfixed: true

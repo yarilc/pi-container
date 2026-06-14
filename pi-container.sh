@@ -6,12 +6,18 @@
 # All arguments are forwarded to the `pi` CLI inside the container.
 #
 # Environment variables:
-#   PI_ENABLE_PODMAN    Set to 1 to mount the host Podman socket (opt-in)
-#   PI_IMAGE_NAME       Override the container image name (default: pi-container)
-#   PI_DEBUG            Set to any value to enable verbose debug output
-#   ANTHROPIC_API_KEY   Anthropic/Claude API key (forwarded to container)
-#   OPENAI_API_KEY      OpenAI API key (forwarded to container)
-#   GOOGLE_API_KEY      Google/Gemini API key (forwarded to container)
+#   PI_ENABLE_PODMAN      Set to 1 to mount the host Podman socket (opt-in, dangerous)
+#   PI_IMAGE_NAME         Override the container image name (default: pi-container)
+#   PI_DEBUG              Set to any value to enable verbose debug output
+#   PI_MEMORY_LIMIT       Container memory limit (default: 4g)
+#   PI_CPU_LIMIT          Container CPU limit (default: 2)
+#   PI_PIDS_LIMIT         Container PID limit (default: 512)
+#   PI_NETWORK            Container network mode (e.g. none, host); default: full access
+#   PI_ALLOW_ROOTFUL      Set to 1 to allow running under rootful Podman (not recommended)
+#   PI_ALLOW_UNSAFE_PWD   Set to 1 to allow running from sensitive directories (not recommended)
+#   ANTHROPIC_API_KEY     Anthropic/Claude API key (forwarded to container)
+#   OPENAI_API_KEY        OpenAI API key (forwarded to container)
+#   GOOGLE_API_KEY        Google/Gemini API key (forwarded to container)
 
 set -euo pipefail
 
@@ -32,7 +38,8 @@ fi
 readonly PI_VERSION
 
 # ---- Help ----
-if [[ "${1:-}" == "--help" ]]; then
+# Use --wrapper-help for wrapper-specific help; --help is forwarded to Pi.
+if [[ "${1:-}" == "--wrapper-help" ]]; then
     cat <<EOF
 Usage: $(basename "$0") [PI_OPTIONS...]
 Runs Pi Coding Agent in a Podman container.
@@ -51,6 +58,11 @@ Environment variables forwarded to the container:
 Override image name: PI_IMAGE_NAME=my-pi $(basename "$0") ...
 Enable debug output: PI_DEBUG=1 $(basename "$0") ...
 Mount host Podman socket (dangerous): PI_ENABLE_PODMAN=1 $(basename "$0") ...
+Override resource limits: PI_MEMORY_LIMIT=8g PI_CPU_LIMIT=4 $(basename "$0") ...
+Restrict network egress: PI_NETWORK=none $(basename "$0") ...
+Allow rootful Podman (dangerous): PI_ALLOW_ROOTFUL=1 $(basename "$0") ...
+
+Use --help to see Pi's own CLI help.
 EOF
     exit 0
 fi
@@ -77,6 +89,20 @@ if [[ -z "${PODMAN_VERSION}" || "${PODMAN_VERSION}" -lt 4 ]]; then
         "$(podman --version 2>/dev/null | sed -n 's/.* \([0-9]*\.[0-9]*\).*/\1/p' || echo '?')" >&2
 fi
 
+# Verify rootless Podman (the entire security model depends on it)
+ROOTLESS="$(podman info --format '{{.Host.Security.Rootless}}' 2>/dev/null || echo "unknown")"
+if [[ "${ROOTLESS}" != "true" ]]; then
+    if [[ -n "${PI_ALLOW_ROOTFUL:-}" ]]; then
+        printf 'WARNING: Not running rootless Podman (detected: %s). Continuing due to PI_ALLOW_ROOTFUL.\n' "${ROOTLESS}" >&2
+    else
+        printf 'ERROR: Rootless Podman required (detected: %s).\n' "${ROOTLESS}" >&2
+        printf '  The container runs as root inside, relying on rootless UID mapping.\n' >&2
+        printf '  Under rootful Podman, UID 0 inside = UID 0 on host, which breaks the security model.\n' >&2
+        printf '  Run without sudo, or set PI_ALLOW_ROOTFUL=1 to override (not recommended).\n' >&2
+        exit 1
+    fi
+fi
+
 # Validate HOME
 if [[ -z "${HOME:-}" ]]; then
     printf 'ERROR: HOME is not set. Cannot determine mount paths.\n' >&2
@@ -93,6 +119,23 @@ fi
 if [[ "${PWD}" =~ [[:space:]] ]]; then
     printf 'WARNING: PWD contains spaces — volume mounts may behave unexpectedly.\n' >&2
 fi
+
+# Refuse to run from sensitive directories: mounting them with :Z would
+# recursively relabel SELinux contexts and expose their entire contents.
+PWD_REAL="$(realpath "${PWD}" 2>/dev/null || echo "${PWD}")"
+case "${PWD_REAL}" in
+    / | "${HOME}" | /etc | /usr | /var | /bin | /sbin | /lib | /lib64 | /boot | /root)
+        if [[ -n "${PI_ALLOW_UNSAFE_PWD:-}" ]]; then
+            printf 'WARNING: Running from sensitive directory %s (PI_ALLOW_UNSAFE_PWD set).\n' "${PWD_REAL}" >&2
+        else
+            printf 'ERROR: Refusing to run from sensitive directory: %s\n' "${PWD_REAL}" >&2
+            printf '  Mounting this directory with :Z recursively relabels SELinux contexts\n' >&2
+            printf '  and exposes its entire contents (SSH keys, credentials) to the container.\n' >&2
+            printf '  cd into a project subdirectory, or set PI_ALLOW_UNSAFE_PWD=1 to override.\n' >&2
+            exit 1
+        fi
+        ;;
+esac
 
 # Check that at least one API key is set
 if [[ -z "${ANTHROPIC_API_KEY:-}" && -z "${OPENAI_API_KEY:-}" && -z "${GOOGLE_API_KEY:-}" ]]; then
@@ -119,9 +162,11 @@ if [[ -n "${PI_ENABLE_PODMAN:-}" ]]; then
 fi
 
 # ---- Stale image detection ----
-CONTAINERFILE_HASH=""
+# Hash both Containerfile and .version so that changing either triggers a rebuild.
+# .version is the documented "single source of truth" for the Pi version.
+BUILD_INPUTS_HASH=""
 if [[ -f "${SCRIPT_DIR}/Containerfile" ]]; then
-    CONTAINERFILE_HASH="$(sha256sum "${SCRIPT_DIR}/Containerfile" | cut -d' ' -f1)"
+    BUILD_INPUTS_HASH="$( (cat "${SCRIPT_DIR}/Containerfile"; cat "${VERSION_FILE}" 2>/dev/null || true) | sha256sum | cut -d' ' -f1)"
 fi
 
 NEEDS_REBUILD=false
@@ -129,10 +174,10 @@ if ! podman image exists "${IMAGE_NAME}" 2>/dev/null; then
     debug "Image ${IMAGE_NAME} not found."
     NEEDS_REBUILD=true
 else
-    # Check image label for containerfile hash (no external dependencies)
-    LABEL_HASH="$(podman image inspect "${IMAGE_NAME}" --format '{{index .Labels "containerfile-hash"}}' 2>/dev/null || true)"
-    if [[ -n "${CONTAINERFILE_HASH}" && "${CONTAINERFILE_HASH}" != "${LABEL_HASH}" ]]; then
-        debug "Containerfile changed (hash mismatch). Rebuilding."
+    # Check image label for build-inputs hash
+    LABEL_HASH="$(podman image inspect "${IMAGE_NAME}" --format '{{index .Labels "build-inputs-hash"}}' 2>/dev/null || true)"
+    if [[ -n "${BUILD_INPUTS_HASH}" && "${BUILD_INPUTS_HASH}" != "${LABEL_HASH}" ]]; then
+        debug "Containerfile or .version changed (hash mismatch). Rebuilding."
         NEEDS_REBUILD=true
     fi
 fi
@@ -147,9 +192,9 @@ if [[ "${NEEDS_REBUILD}" == true ]]; then
         --build-arg "PI_VERSION=${PI_VERSION}"
     )
 
-    # Add containerfile hash as a label for staleness detection
-    if [[ -n "${CONTAINERFILE_HASH}" ]]; then
-        BUILD_ARGS+=(--label "containerfile-hash=${CONTAINERFILE_HASH}")
+    # Add build-inputs hash as a label for staleness detection
+    if [[ -n "${BUILD_INPUTS_HASH}" ]]; then
+        BUILD_ARGS+=(--label "build-inputs-hash=${BUILD_INPUTS_HASH}")
     fi
 
     if ! podman build "${BUILD_ARGS[@]}" "${SCRIPT_DIR}"; then
@@ -177,16 +222,19 @@ fi
 RUNTIME_ARGS+=(-i)
 
 # Container hardening
+# Note: --init runs a tiny init as PID 1 that forwards signals to Pi and
+# reaps zombies (Pi runs as a child of the init shim).
 RUNTIME_ARGS+=(
+    --init
     --cap-drop=ALL
     --cap-add=DAC_OVERRIDE
     --cap-add=CHOWN
     --cap-add=SETGID
     --cap-add=SETUID
     --security-opt=no-new-privileges
-    --memory=4g
-    --cpus=2
-    --pids-limit=512
+    --memory="${PI_MEMORY_LIMIT:-4g}"
+    --cpus="${PI_CPU_LIMIT:-2}"
+    --pids-limit="${PI_PIDS_LIMIT:-512}"
     --read-only
     "--tmpfs" "/tmp:noexec,nosuid,size=256M"
 )
@@ -197,6 +245,16 @@ RUNTIME_ARGS+=(
     -v "${HOME}/.agents:${HOME}/.agents:Z"
     -v "${PWD}:${PWD}:Z"
 )
+
+# Mount host git config read-only if present, so git commits have an identity.
+if [[ -f "${HOME}/.gitconfig" ]]; then
+    RUNTIME_ARGS+=(-v "${HOME}/.gitconfig:${HOME}/.gitconfig:ro")
+fi
+
+# Optional network restriction (e.g. PI_NETWORK=none to block all egress).
+if [[ -n "${PI_NETWORK:-}" ]]; then
+    RUNTIME_ARGS+=(--network "${PI_NETWORK}")
+fi
 
 # Podman socket: only mounted when explicitly enabled via PI_ENABLE_PODMAN.
 # No :Z to avoid relabeling the host's socket.
@@ -214,39 +272,45 @@ fi
 # Working directory
 RUNTIME_ARGS+=(-w "${PWD}")
 
-# Forward host editor preferences with fallback
+# Forward host editor preferences. Default to nano, which is installed in the
+# image (the slim base image does not ship vi).
 RUNTIME_ARGS+=(
-    -e "EDITOR=${EDITOR:-vi}"
-    -e "VISUAL=${VISUAL:-vi}"
+    -e "EDITOR=${EDITOR:-nano}"
+    -e "VISUAL=${VISUAL:-nano}"
 )
 
-# Forward API keys only if set and non-empty
+# Forward API keys only if set and non-empty.
+# Keys are passed by name only (-e KEY, not -e KEY=value) to avoid
+# exposing secret values on the process command line (visible via ps aux).
 if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-    RUNTIME_ARGS+=(-e "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}")
+    RUNTIME_ARGS+=(-e "ANTHROPIC_API_KEY")
 fi
 if [[ -n "${OPENAI_API_KEY:-}" ]]; then
-    RUNTIME_ARGS+=(-e "OPENAI_API_KEY=${OPENAI_API_KEY}")
+    RUNTIME_ARGS+=(-e "OPENAI_API_KEY")
 fi
 if [[ -n "${GOOGLE_API_KEY:-}" ]]; then
-    RUNTIME_ARGS+=(-e "GOOGLE_API_KEY=${GOOGLE_API_KEY}")
+    RUNTIME_ARGS+=(-e "GOOGLE_API_KEY")
 fi
 
-# Forward proxy environment variables if set
+# Forward proxy environment variables if set (by name only)
 if [[ -n "${HTTP_PROXY:-}" ]]; then
-    RUNTIME_ARGS+=(-e "HTTP_PROXY=${HTTP_PROXY}")
+    RUNTIME_ARGS+=(-e "HTTP_PROXY")
 fi
 if [[ -n "${HTTPS_PROXY:-}" ]]; then
-    RUNTIME_ARGS+=(-e "HTTPS_PROXY=${HTTPS_PROXY}")
+    RUNTIME_ARGS+=(-e "HTTPS_PROXY")
 fi
 if [[ -n "${NO_PROXY:-}" ]]; then
-    RUNTIME_ARGS+=(-e "NO_PROXY=${NO_PROXY}")
+    RUNTIME_ARGS+=(-e "NO_PROXY")
 fi
 
 # Image name
 RUNTIME_ARGS+=("${IMAGE_NAME}")
 
+# Runtime args are safe to log: API keys are forwarded by name only (-e KEY),
+# so no secret values appear in RUNTIME_ARGS.
 debug "Runtime args: ${RUNTIME_ARGS[*]}"
-debug "Pi arguments: $*"
+# Do not log Pi arguments verbatim: a user may pass a secret as an argument.
+debug "Pi argument count: $#"
 
 # ---- Run pi ----
 exec podman run "${RUNTIME_ARGS[@]}" "$@"

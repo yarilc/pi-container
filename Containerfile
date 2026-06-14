@@ -29,11 +29,13 @@ RUN apt-get update \
         bash \
         ca-certificates \
         git \
+        nano \
         podman \
         ripgrep \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean \
     && npm install -g "@earendil-works/pi-coding-agent@${PI_VERSION}" \
-    && pi --version >/dev/null 2>&1
+    && npm list -g "@earendil-works/pi-coding-agent" >/dev/null 2>&1 \
+    && test -x /usr/local/bin/pi
 
 ENTRYPOINT ["pi"]

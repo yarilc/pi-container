@@ -9,6 +9,10 @@ Thumbs.db
 *.log
 .containerfile-hash
 
+# Test scratch dirs
+.container-test-*
+.wrapper-test-*
+
 # Editor configs
 .idea/
 .vscode/
