@@ -67,10 +67,13 @@ jobs:
       - name: Build image for scanning
         run: podman build -t pi-container-scan -f Containerfile .
 
+      - name: Save image as tarball
+        run: podman save pi-container-scan -o /tmp/pi-container-scan.tar
+
       - name: Vulnerability scan (Trivy)
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: localhost/pi-container-scan:latest
+          input: /tmp/pi-container-scan.tar
           format: table
           severity: CRITICAL,HIGH
           exit-code: '0'        # report only; do not fail the build yet
