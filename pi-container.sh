@@ -200,10 +200,13 @@ RUNTIME_ARGS+=(
 
 # Podman socket: only mounted when explicitly enabled via PI_ENABLE_PODMAN.
 # No :Z to avoid relabeling the host's socket.
+# Podman client needs writable directories even when just querying the host socket.
 if [[ "${PODMAN_SOCKET_ACTIVE}" == true ]]; then
     RUNTIME_ARGS+=(
         -e "CONTAINER_HOST=unix://${PODMAN_SOCKET}"
         -v "${PODMAN_SOCKET}:${PODMAN_SOCKET}"
+        "--tmpfs" "/var/lib/containers:rw,noexec,nosuid,size=256M"
+        "--tmpfs" "/run/containers:rw,noexec,nosuid,size=64M"
     )
     debug "Podman socket mounted at ${PODMAN_SOCKET}"
 fi
