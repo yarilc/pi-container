@@ -15,6 +15,10 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
 - test.sh Test 4: use absolute paths for Podman volume mounts.
 - Trivy scan CI: set exit-code back to '0' until .trivyignore is
   populated with triaged CVE entries.
+- Test 6: removed CapAdd check (varies across Podman versions);
+  keep CapDrop (non-empty), ReadonlyRootfs, SecurityOpt, tmpfs.
+- Scan job: migrate codeql-action from v3 to v4.31.11.
+- Scan job: add actions: read permission for codeql-action v4.
 
 ### Added
 - `PI_READONLY_CONFIG=1` mode: mounts `~/.pi` and `~/.agents` read-only to
