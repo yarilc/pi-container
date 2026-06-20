@@ -98,7 +98,9 @@ echo "PASS"
 # ---- Test 3: Volume mounts ----
 echo ""
 echo "=== Test 3: Volume mounts ==="
-TEST_DIR="$(mktemp -d "$(dirname "$0")/.container-test-XXXXXX")"
+# Use absolute path: Podman volume mounts require absolute paths
+SCRIPT_ABS_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+TEST_DIR="$(mktemp -d "${SCRIPT_ABS_DIR}/.container-test-XXXXXX")"
 
 # The container write is synchronous for bind mounts; verify it round-trips.
 podman run --rm \
