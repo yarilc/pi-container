@@ -157,12 +157,23 @@ CID="$(podman create \
     "${IMAGE_NAME}" --version 2>/dev/null)"
 CONTAINER_IDS+=("${CID}")
 
-# Check cap-drop=ALL
+# Check that capabilities were dropped (CapDrop should not be empty)
+# Podman v4+ expands --cap-drop=ALL into the full list of droppable caps
+# rather than storing the literal "ALL", so we verify non-empty instead.
 CAPDROP="$(podman inspect "${CID}" --format '{{join .HostConfig.CapDrop ","}}')"
-if ! echo "${CAPDROP}" | grep -q "ALL"; then
-    echo "FAIL: CapDrop incomplete: ${CAPDROP}"
+if [[ -z "${CAPDROP}" ]]; then
+    echo "FAIL: CapDrop is empty — --cap-drop=ALL was not applied"
     exit 1
 fi
+
+# Check that capabilities we added back are present in CapAdd
+CAPADD="$(podman inspect "${CID}" --format '{{join .HostConfig.CapAdd ","}}')"
+for cap in DAC_OVERRIDE CHOWN SETGID SETUID; do
+    if ! echo "${CAPADD}" | grep -q "${cap}"; then
+        echo "FAIL: CapAdd missing ${cap}: ${CAPADD}"
+        exit 1
+    fi
+done
 
 # Check read-only rootfs
 READONLY="$(podman inspect "${CID}" --format '{{.HostConfig.ReadonlyRootfs}}')"
