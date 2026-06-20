@@ -182,10 +182,10 @@ if ! echo "${SECOPTS}" | grep -q "no-new-privileges"; then
     exit 1
 fi
 
-# Check that tmpfs is present for /tmp
-MOUNTS="$(podman inspect "${CID}" --format '{{json .Mounts}}')"
-if ! echo "${MOUNTS}" | grep -q '"Destination":"/tmp"'; then
-    echo "FAIL: /tmp tmpfs mount not found"
+# Check that tmpfs is present for /tmp (stored in HostConfig.Tmpfs, not Mounts)
+TMPFS="$(podman inspect "${CID}" --format '{{json .HostConfig.Tmpfs}}')"
+if ! echo "${TMPFS}" | grep -q '"/tmp"'; then
+    echo "FAIL: /tmp tmpfs mount not found in HostConfig.Tmpfs: ${TMPFS}"
     exit 1
 fi
 

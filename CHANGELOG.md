@@ -17,8 +17,9 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
   populated with triaged CVE entries.
 - Test 6: removed CapAdd check (varies across Podman versions);
   keep CapDrop (non-empty), ReadonlyRootfs, SecurityOpt, tmpfs.
-- Scan job: migrate codeql-action from v3 to v4.31.11.
-- Scan job: add actions: read permission for codeql-action v4.
+- Scan job: remove codeql-action upload-sarif (repo does not have
+  code scanning enabled); use table format for Trivy output instead.
+- Test 6: check HostConfig.Tmpfs instead of Mounts for /tmp tmpfs.
 
 ### Added
 - `PI_READONLY_CONFIG=1` mode: mounts `~/.pi` and `~/.agents` read-only to

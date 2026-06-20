@@ -69,8 +69,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      actions: read  # needed by codeql-action v4 for upload-sarif
-      security-events: write  # for SARIF upload
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.2.2
@@ -91,19 +89,19 @@ jobs:
       - name: Vulnerability scan (Trivy)
         # Note: using trivy-action v0.36.0; previous v0.29.0 referenced
         # aquasecurity/setup-trivy@v0.2.2 which no longer exists.
+        #
+        # Output in table format (visible in CI logs). SARIF upload is not
+        # used because the repository does not have GitHub Code Scanning
+        # enabled. If code scanning is enabled later, add:
+        #   format: sarif
+        #   output: trivy-results.sarif
+        # followed by github/codeql-action/upload-sarif.
         uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
         with:
           input: /tmp/pi-container-scan.tar
-          format: sarif
-          output: trivy-results.sarif
-          severity: CRITICAL
+          format: table
+          severity: CRITICAL,HIGH
           # TODO: change to exit-code: '1' once CVEs are triaged in .trivyignore
           # Currently set to '0' because .trivyignore is empty.
           exit-code: '0'
           ignore-unfixed: true
-
-      - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@04800457060cff48cb952d0b0355a5ab4b264a36 # v4.31.11
-        with:
-          sarif_file: trivy-results.sarif
-          category: trivy
