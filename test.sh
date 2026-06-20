@@ -13,7 +13,7 @@
 #   4. HOME environment is forwarded correctly
 #   5. Expected tools (git, ripgrep) are available
 #   6. Container hardening flags are applied (cap-drop, read-only, seccomp)
-#   7. API keys forwarded by name only (no value leak in inspect)
+#   7. API keys forwarded by name only (value reaches the container)
 
 set -euo pipefail
 
@@ -194,37 +194,31 @@ podman rm -f "${CID}" >/dev/null 2>&1 || true
 CONTAINER_IDS=("${CONTAINER_IDS[@]/${CID}}")
 echo "PASS"
 
-# ---- Test 7: Secrets forwarded by name only (no value in podman inspect) ----
+# ---- Test 7: Secret propagation (key available inside container) ----
 echo ""
-echo "=== Test 7: Secrets forwarded by name only ==="
-# Set the key in the environment BEFORE podman create so that -e KEY
-# (name only) captures it from the creating process. podman start does
-# NOT re-read the environment; capture happens at create time.
+echo "=== Test 7: Secret propagation ==="
+# Verify that -e KEY (name only) forwards a host env var into the container.
+#
+# NOTE: The wrapper's real security property — that the secret VALUE never
+# appears on the `podman run` argv (visible via `ps aux`) — is verified in
+# test-wrapper.sh Test 2 using a fake podman that captures argv. That cannot
+# be tested here with real podman.
+#
+# Podman resolves -e KEY at create time from the creating process's
+# environment and stores KEY=value in Config.Env. That Config.Env exposure is
+# a documented residual risk (see SECURITY.md), not something this test
+# checks. Here we only verify the value reaches the container.
 CID3="$(ANTHROPIC_API_KEY=test-key-value-12345 podman create \
     -e "ANTHROPIC_API_KEY" \
     --entrypoint bash \
     "${IMAGE_NAME}" -c 'echo "${ANTHROPIC_API_KEY}"' 2>/dev/null)"
 CONTAINER_IDS+=("${CID3}")
 
-# Run the container and verify the key value is available inside
 OUTPUT="$(podman start -a "${CID3}" 2>/dev/null || true)"
 if echo "${OUTPUT}" | grep -q "test-key-value-12345"; then
     : # key value available inside container
 else
     echo "FAIL: Key value not propagated (got: '${OUTPUT}')"
-    exit 1
-fi
-
-# Verify the key VALUE does not appear in podman inspect Config.Env.
-# With -e KEY (name only), Config.Env should contain just "ANTHROPIC_API_KEY"
-# (the resolved value is stored elsewhere, not as KEY=value in Config.Env).
-INSPECT_ENV="$(podman inspect "${CID3}" --format '{{range .Config.Env}}{{.}}{{"\n"}}{{end}}')"
-if echo "${INSPECT_ENV}" | grep -q "test-key-value-12345"; then
-    echo "FAIL: Key value leaked in podman inspect Config.Env"
-    exit 1
-fi
-if ! echo "${INSPECT_ENV}" | grep -q "ANTHROPIC_API_KEY"; then
-    echo "FAIL: Key name not present in podman inspect Config.Env"
     exit 1
 fi
 

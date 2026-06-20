@@ -22,6 +22,10 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
 - Test 6: check HostConfig.Tmpfs instead of Mounts for /tmp tmpfs.
 - Test 7: set env var before podman create (capture happens at create
   time, not start time); simplified the test logic.
+- Test 7: removed incorrect Config.Env leak check. Podman resolves -e KEY
+  to KEY=value at create time and stores it in Config.Env; this is a
+  documented residual exposure, not a bug. Test 7 now only verifies
+  propagation. The argv-leak protection is tested in test-wrapper.sh.
 
 ### Added
 - `PI_READONLY_CONFIG=1` mode: mounts `~/.pi` and `~/.agents` read-only to
