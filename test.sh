@@ -197,49 +197,34 @@ echo "PASS"
 # ---- Test 7: Secrets forwarded by name only (no value in podman inspect) ----
 echo ""
 echo "=== Test 7: Secrets forwarded by name only ==="
-CID2="$(podman create \
-    -e "ANTHROPIC_API_KEY" \
-    -e "OPENAI_API_KEY" \
-    -e "GOOGLE_API_KEY" \
-    --entrypoint bash \
-    "${IMAGE_NAME}" -c 'env' 2>/dev/null)"
-CONTAINER_IDS+=("${CID2}")
-
-# Verify that ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY appear in env
-# as NAME=value (the host process sets them from env, so the container will
-# see them as NAME=VALUE). But if we don't set them on the host, they won't
-# appear at all. This test just checks the mechanism works:
-# start with empty env, verify the keys are NOT set.
-podman start -a "${CID2}" 2>/dev/null || true
-
-# Actually, let's test the real scenario: set a key on host, forward by name
-# to the container, and verify it appears but not via --rm arg (already tested
-# in wrapper tests).
-podman rm -f "${CID2}" >/dev/null 2>&1 || true
-CONTAINER_IDS=("${CONTAINER_IDS[@]/${CID2}}")
-
-# Test with an actual key value on the host
-CID3="$(podman create \
+# Set the key in the environment BEFORE podman create so that -e KEY
+# (name only) captures it from the creating process. podman start does
+# NOT re-read the environment; capture happens at create time.
+CID3="$(ANTHROPIC_API_KEY=test-key-value-12345 podman create \
     -e "ANTHROPIC_API_KEY" \
     --entrypoint bash \
     "${IMAGE_NAME}" -c 'echo "${ANTHROPIC_API_KEY}"' 2>/dev/null)"
 CONTAINER_IDS+=("${CID3}")
-# Run with the key set
-OUTPUT="$(ANTHROPIC_API_KEY=test-key-value-12345 podman start -a "${CID3}" 2>/dev/null || true)"
+
+# Run the container and verify the key value is available inside
+OUTPUT="$(podman start -a "${CID3}" 2>/dev/null || true)"
 if echo "${OUTPUT}" | grep -q "test-key-value-12345"; then
-    echo "PASS: Key value available inside container"
+    : # key value available inside container
 else
     echo "FAIL: Key value not propagated (got: '${OUTPUT}')"
     exit 1
 fi
-# Now verify the key name does NOT appear in podman inspect (F-07)
+
+# Verify the key VALUE does not appear in podman inspect Config.Env.
+# With -e KEY (name only), Config.Env should contain just "ANTHROPIC_API_KEY"
+# (the resolved value is stored elsewhere, not as KEY=value in Config.Env).
 INSPECT_ENV="$(podman inspect "${CID3}" --format '{{range .Config.Env}}{{.}}{{"\n"}}{{end}}')"
-if echo "${INSPECT_ENV}" | grep -q "ANTHROPIC_API_KEY=test-key-value-12345"; then
-    echo "FAIL: Key value leaked in podman inspect env"
+if echo "${INSPECT_ENV}" | grep -q "test-key-value-12345"; then
+    echo "FAIL: Key value leaked in podman inspect Config.Env"
     exit 1
 fi
 if ! echo "${INSPECT_ENV}" | grep -q "ANTHROPIC_API_KEY"; then
-    echo "FAIL: Key name not present in podman inspect env"
+    echo "FAIL: Key name not present in podman inspect Config.Env"
     exit 1
 fi
 

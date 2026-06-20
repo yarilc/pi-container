@@ -20,6 +20,8 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
 - Scan job: remove codeql-action upload-sarif (repo does not have
   code scanning enabled); use table format for Trivy output instead.
 - Test 6: check HostConfig.Tmpfs instead of Mounts for /tmp tmpfs.
+- Test 7: set env var before podman create (capture happens at create
+  time, not start time); simplified the test logic.
 
 ### Added
 - `PI_READONLY_CONFIG=1` mode: mounts `~/.pi` and `~/.agents` read-only to
