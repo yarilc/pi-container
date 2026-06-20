@@ -80,13 +80,17 @@ jobs:
           sudo apt-get install -y podman
 
       - name: Build image for scanning
-        run: podman build -t pi-container-scan -f Containerfile .
+        run: |
+          PI_VERSION="$(head -1 .version | tr -d '[:space:]')"
+          podman build -t pi-container-scan -f Containerfile --build-arg "PI_VERSION=${PI_VERSION}" .
 
       - name: Save image as tarball
         run: podman save pi-container-scan -o /tmp/pi-container-scan.tar
 
       - name: Vulnerability scan (Trivy)
-        uses: aquasecurity/trivy-action@18f2510ee396bbf400402947b394f2dd8c87dbb0 # v0.29.0
+        # Note: using trivy-action v0.36.0; previous v0.29.0 referenced
+        # aquasecurity/setup-trivy@v0.2.2 which no longer exists.
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
         with:
           input: /tmp/pi-container-scan.tar
           format: sarif

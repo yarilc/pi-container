@@ -146,9 +146,9 @@ echo ""
 echo "=== Test 8: PI_READONLY_CONFIG=1 mounts config read-only ==="
 : > "${CAPTURE}"
 run_wrapper PI_READONLY_CONFIG=1 >/dev/null 2>&1
-# The ~/.pi mount should have ,ro in its options
-grep -qF "${FAKE_HOME}/.pi:${FAKE_HOME}/.pi:Z,ro" "${CAPTURE}" || fail "~/.pi not mounted read-only"
-grep -qF "${FAKE_HOME}/.agents:${FAKE_HOME}/.agents:Z,ro" "${CAPTURE}" || fail "~/.agents not mounted read-only"
+# The config mounts should have ,ro in their options
+grep -qF "${FAKE_HOME}/.pi:${FAKE_HOME}/.pi:Z,ro" "${CAPTURE}" || fail "HOME/.pi not mounted read-only"
+grep -qF "${FAKE_HOME}/.agents:${FAKE_HOME}/.agents:Z,ro" "${CAPTURE}" || fail "HOME/.agents not mounted read-only"
 pass
 
 # ---- Test 9: PI_MOUNT_GITCONFIG=0 suppresses gitconfig mount ----

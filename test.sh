@@ -43,6 +43,14 @@ done
 
 readonly IMAGE_NAME
 
+# Read Pi version from .version file for build arg
+PI_VERSION="$(head -1 "$(dirname "$0")/.version" | tr -d '[:space:]')"
+if [[ -z "${PI_VERSION}" ]]; then
+    echo "ERROR: .version is missing or empty" >&2
+    exit 1
+fi
+readonly PI_VERSION
+
 # Guard: never overwrite or delete a pre-existing image (e.g. the user's
 # real 'pi-container'). The test removes whatever image it builds, so it
 # must only ever build a fresh, non-existent tag.
@@ -72,7 +80,7 @@ trap cleanup EXIT
 
 # ---- Test 1: Image builds ----
 echo "=== Test 1: Image builds ==="
-podman build -t "${IMAGE_NAME}" -f Containerfile .
+podman build -t "${IMAGE_NAME}" -f Containerfile --build-arg "PI_VERSION=${PI_VERSION}" .
 BUILT_IMAGE="${IMAGE_NAME}"
 echo "PASS"
 
