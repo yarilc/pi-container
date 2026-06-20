@@ -38,9 +38,9 @@ command line. However, the following exposure surfaces exist:
 - **Host process list:** While keys are not on argv, they remain in the
   podman process's environment block, accessible to the host root user
   via `/proc/<pid>/environ`.
-- **Debug output:** When `PI_DEBUG=1` is set, masked key indicators
-  (value shown as `****`) appear in stderr. The actual values are never
-  logged.
+- **Debug output:** When `PI_DEBUG=1` is set, runtime arguments are logged
+  to stderr. However, because API keys are forwarded by name only (`-e KEY`
+  not `-e KEY=value`), the actual key values never appear in the log.
 
 **Recommendations:**
 - Use API keys with usage limits and minimal permissions
@@ -57,6 +57,33 @@ correct file ownership on mounted volumes. Capabilities are restricted
 (`--cap-drop=ALL` with minimal additions) and the root filesystem is
 read-only (`--read-only`). Resource limits (`--memory=4g`, `--cpus=2`,
 `--pids-limit=512`) prevent runaway processes.
+
+### Persistent Compromise via Extensions and Skills ⚠️
+
+The directories `~/.pi` (which contains Pi extensions at
+`~/.pi/agent/extensions/`) and `~/.agents` (which contains skills at
+`~/.agents/skills/`) are **mounted read-write** by default.
+
+This creates a **persistence vector**: a prompt-injected or compromised
+agent can write a malicious Pi extension or skill into these directories.
+Because these directories survive container rebuilds and image removal,
+the malicious code will be loaded on **all future Pi invocations** — both
+inside the container and, critically, when running `pi` natively on the
+host without the container.
+
+**Impact:** A one-time container compromise becomes a durable host-side
+code execution path. The same attack surface exists for any file in
+`~/.pi/` that Pi loads at startup, including `settings.json` and
+session files.
+
+**Mitigations:**
+- Set `PI_READONLY_CONFIG=1` to mount `~/.pi` and `~/.agents` **read-only**
+  when working with untrusted prompts or projects. This prevents the agent
+  from writing any files into these directories.
+- Treat the agent as trusted with everything it can read and write. Do not
+  expose it to untrusted content without read-only config.
+- Be aware that extensions in `~/.pi/agent/extensions/` have full access to
+  Pi's internal APIs and can read/write any file the user can.
 
 ### Network Egress and Data Exfiltration (Primary Residual Risk)
 
@@ -76,14 +103,38 @@ has read access and unrestricted egress.
 - Use `PI_NETWORK=none` to block all egress for tasks that do not need network
   access, or point `PI_NETWORK` at a restricted/proxied network.
 - Be cautious with untrusted project content or untrusted prompts.
+- The wrapper prints a warning when an API key is set and network is
+  unrestricted; this warning cannot be suppressed except by setting
+  `PI_NETWORK`.
+
+### Host Git Config Exposure
+
+The file `~/.gitconfig` is mounted read-only into the container when present.
+Git configurations routinely contain:
+
+- Credential helper invocations (`credential.helper`)
+- URL-based authentication tokens (`[url "https://token@github.com/"]`)
+- `includePath` directives pointing at other host files
+- Signing keys references (`user.signingkey`)
+
+A compromised agent can read the mounted `.gitconfig` and exfiltrate any
+embedded credentials over the unrestricted default network.
+
+**Mitigations:**
+- Set `PI_MOUNT_GITCONFIG=0` to prevent `~/.gitconfig` from being mounted.
+- Consider creating a minimal gitconfig with only `user.name` and `user.email`
+  for use with the container.
+- Keep `PI_NETWORK=none` when working with untrusted content.
 
 ### Sensitive Working Directories
 
 The current working directory is bind-mounted with the `:Z` SELinux flag,
 which **recursively relabels** the directory's SELinux contexts. Running from
-`/`, `$HOME`, `/etc`, or similar would relabel and expose large/sensitive trees
-(SSH keys, credentials). The wrapper refuses to run from such directories
-unless `PI_ALLOW_UNSAFE_PWD=1` is set. Always run from a specific project
+`/`, `$HOME`, `/home`, `/etc`, `/usr`, `/var`, `/bin`, `/sbin`, `/lib`,
+`/lib64`, `/boot`, `/root`, `/opt`, `/srv`, `/mnt`, `/media`, `/proc`, `/sys`,
+`/dev`, or `/run` would relabel and expose large/sensitive trees (SSH keys,
+credentials). The wrapper refuses to run from such directories unless
+`PI_ALLOW_UNSAFE_PWD=1` is set. Always run from a specific project
 subdirectory.
 
 ### Podman Socket (Opt-In, Dangerous)
@@ -102,6 +153,10 @@ The npm package `@earendil-works/pi-coding-agent` is pinned to a specific
 version (see `.version` file) for reproducibility.
 
 The base image uses a mutable tag (`node:22-bookworm-slim`) by default.
-For pinning instructions, see the Containerfile comments.
+For pinning instructions, see the Containerfile comments. Weekly CI scans
+(Trivy) monitor the built image for known vulnerabilities.
+
+Third-party GitHub Actions are pinned by commit SHA. Dependabot is
+configured to propose updates automatically.
 
 See the "Updating" section in README.md for upgrade procedures.

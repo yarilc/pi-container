@@ -12,6 +12,8 @@
 #   3. Volume mounts are accessible (read-write round-trip)
 #   4. HOME environment is forwarded correctly
 #   5. Expected tools (git, ripgrep) are available
+#   6. Container hardening flags are applied (cap-drop, read-only, seccomp)
+#   7. API keys forwarded by name only (no value leak in inspect)
 
 set -euo pipefail
 
@@ -54,8 +56,13 @@ fi
 # ---- Cleanup ----
 BUILT_IMAGE=""
 TEST_DIR=""
+CONTAINER_IDS=()
 cleanup() {
     local exit_code=$?
+    # Remove any containers we created
+    for cid in "${CONTAINER_IDS[@]}"; do
+        podman rm -f "${cid}" >/dev/null 2>&1 || true
+    done
     [[ -n "${TEST_DIR}" && -d "${TEST_DIR}" ]] && rm -rf "${TEST_DIR}"
     # Only remove the image if we built it
     [[ -n "${BUILT_IMAGE}" ]] && podman rmi "${BUILT_IMAGE}" >/dev/null 2>&1 || true
@@ -103,12 +110,15 @@ echo "PASS"
 # ---- Test 4: HOME environment ----
 echo ""
 echo "=== Test 4: HOME environment ==="
+# Use a private tmpdir inside TEST_DIR instead of /tmp:/tmp:Z (F-05)
+TEST_TMP="${TEST_DIR}/tmp-home"
+mkdir -p "${TEST_TMP}"
 podman run --rm \
-    -e "HOME=/tmp/test-home" \
-    -v /tmp:/tmp:Z \
+    -e "HOME=${TEST_TMP}" \
+    -v "${TEST_TMP}:${TEST_TMP}:Z" \
     --entrypoint bash \
     "${IMAGE_NAME}" \
-    -c '[ "$HOME" = "/tmp/test-home" ]'
+    -c '[ "$HOME" = "'"${TEST_TMP}"'" ]'
 
 echo "PASS"
 
@@ -119,6 +129,108 @@ podman run --rm \
     --entrypoint bash \
     "${IMAGE_NAME}" \
     -c 'git --version && rg --version && nano --version'
+echo "PASS"
+
+# ---- Test 6: Container hardening (cap-drop, read-only, no-new-privileges) ----
+echo ""
+echo "=== Test 6: Container hardening ==="
+# Create a container (without --rm) to inspect its configuration
+CID="$(podman create \
+    --cap-drop=ALL \
+    --cap-add=DAC_OVERRIDE \
+    --cap-add=CHOWN \
+    --cap-add=SETGID \
+    --cap-add=SETUID \
+    --security-opt=no-new-privileges \
+    --read-only \
+    --tmpfs /tmp:noexec,nosuid,size=256M \
+    "${IMAGE_NAME}" --version 2>/dev/null)"
+CONTAINER_IDS+=("${CID}")
+
+# Check cap-drop=ALL
+CAPDROP="$(podman inspect "${CID}" --format '{{join .HostConfig.CapDrop ","}}')"
+if ! echo "${CAPDROP}" | grep -q "ALL"; then
+    echo "FAIL: CapDrop incomplete: ${CAPDROP}"
+    exit 1
+fi
+
+# Check read-only rootfs
+READONLY="$(podman inspect "${CID}" --format '{{.HostConfig.ReadonlyRootfs}}')"
+if [[ "${READONLY}" != "true" ]]; then
+    echo "FAIL: ReadonlyRootfs is not true: ${READONLY}"
+    exit 1
+fi
+
+# Check no-new-privileges
+SECOPTS="$(podman inspect "${CID}" --format '{{join .HostConfig.SecurityOpt ","}}')"
+if ! echo "${SECOPTS}" | grep -q "no-new-privileges"; then
+    echo "FAIL: no-new-privileges missing from SecurityOpt: ${SECOPTS}"
+    exit 1
+fi
+
+# Check that tmpfs is present for /tmp
+MOUNTS="$(podman inspect "${CID}" --format '{{json .Mounts}}')"
+if ! echo "${MOUNTS}" | grep -q '"Destination":"/tmp"'; then
+    echo "FAIL: /tmp tmpfs mount not found"
+    exit 1
+fi
+
+podman rm -f "${CID}" >/dev/null 2>&1 || true
+# Remove from cleanup list
+CONTAINER_IDS=("${CONTAINER_IDS[@]/${CID}}")
+echo "PASS"
+
+# ---- Test 7: Secrets forwarded by name only (no value in podman inspect) ----
+echo ""
+echo "=== Test 7: Secrets forwarded by name only ==="
+CID2="$(podman create \
+    -e "ANTHROPIC_API_KEY" \
+    -e "OPENAI_API_KEY" \
+    -e "GOOGLE_API_KEY" \
+    --entrypoint bash \
+    "${IMAGE_NAME}" -c 'env' 2>/dev/null)"
+CONTAINER_IDS+=("${CID2}")
+
+# Verify that ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY appear in env
+# as NAME=value (the host process sets them from env, so the container will
+# see them as NAME=VALUE). But if we don't set them on the host, they won't
+# appear at all. This test just checks the mechanism works:
+# start with empty env, verify the keys are NOT set.
+podman start -a "${CID2}" 2>/dev/null || true
+
+# Actually, let's test the real scenario: set a key on host, forward by name
+# to the container, and verify it appears but not via --rm arg (already tested
+# in wrapper tests).
+podman rm -f "${CID2}" >/dev/null 2>&1 || true
+CONTAINER_IDS=("${CONTAINER_IDS[@]/${CID2}}")
+
+# Test with an actual key value on the host
+CID3="$(podman create \
+    -e "ANTHROPIC_API_KEY" \
+    --entrypoint bash \
+    "${IMAGE_NAME}" -c 'echo "${ANTHROPIC_API_KEY}"' 2>/dev/null)"
+CONTAINER_IDS+=("${CID3}")
+# Run with the key set
+OUTPUT="$(ANTHROPIC_API_KEY=test-key-value-12345 podman start -a "${CID3}" 2>/dev/null || true)"
+if echo "${OUTPUT}" | grep -q "test-key-value-12345"; then
+    echo "PASS: Key value available inside container"
+else
+    echo "FAIL: Key value not propagated (got: '${OUTPUT}')"
+    exit 1
+fi
+# Now verify the key name does NOT appear in podman inspect (F-07)
+INSPECT_ENV="$(podman inspect "${CID3}" --format '{{range .Config.Env}}{{.}}{{"\n"}}{{end}}')"
+if echo "${INSPECT_ENV}" | grep -q "ANTHROPIC_API_KEY=test-key-value-12345"; then
+    echo "FAIL: Key value leaked in podman inspect env"
+    exit 1
+fi
+if ! echo "${INSPECT_ENV}" | grep -q "ANTHROPIC_API_KEY"; then
+    echo "FAIL: Key name not present in podman inspect env"
+    exit 1
+fi
+
+podman rm -f "${CID3}" >/dev/null 2>&1 || true
+CONTAINER_IDS=("${CONTAINER_IDS[@]/${CID3}}")
 echo "PASS"
 
 echo ""

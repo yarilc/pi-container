@@ -15,6 +15,10 @@
 #   PI_NETWORK            Container network mode (e.g. none, host); default: full access
 #   PI_ALLOW_ROOTFUL      Set to 1 to allow running under rootful Podman (not recommended)
 #   PI_ALLOW_UNSAFE_PWD   Set to 1 to allow running from sensitive directories (not recommended)
+#   PI_READONLY_CONFIG    Set to 1 to mount ~/.pi and ~/.agents read-only (prevents persistence)
+#   PI_MOUNT_GITCONFIG    Set to 0 to skip mounting ~/.gitconfig (default: 1, mount if present)
+#   PI_PULL_ALWAYS        Set to 1 to force podman build --pull=always
+#   PI_RUN_TIMEOUT        Timeout in seconds for podman run (default: 0 = no timeout)
 #   ANTHROPIC_API_KEY     Anthropic/Claude API key (forwarded to container)
 #   OPENAI_API_KEY        OpenAI API key (forwarded to container)
 #   GOOGLE_API_KEY        Google/Gemini API key (forwarded to container)
@@ -33,7 +37,9 @@ if [[ -f "${VERSION_FILE}" ]]; then
     PI_VERSION="$(head -1 "${VERSION_FILE}" | tr -d '[:space:]')"
 fi
 if [[ -z "${PI_VERSION}" ]]; then
-    PI_VERSION="0.79.3"
+    printf 'ERROR: %s is missing or empty. Cannot determine Pi version.\n' "${VERSION_FILE}" >&2
+    printf '  Ensure .version exists and contains a valid version string (e.g. 0.79.8).\n' >&2
+    exit 1
 fi
 readonly PI_VERSION
 
@@ -60,6 +66,10 @@ Enable debug output: PI_DEBUG=1 $(basename "$0") ...
 Mount host Podman socket (dangerous): PI_ENABLE_PODMAN=1 $(basename "$0") ...
 Override resource limits: PI_MEMORY_LIMIT=8g PI_CPU_LIMIT=4 $(basename "$0") ...
 Restrict network egress: PI_NETWORK=none $(basename "$0") ...
+Read-only config (prevent persistence): PI_READONLY_CONFIG=1 $(basename "$0") ...
+Skip gitconfig mount: PI_MOUNT_GITCONFIG=0 $(basename "$0") ...
+Force fresh base image: PI_PULL_ALWAYS=1 $(basename "$0") ...
+Container run timeout: PI_RUN_TIMEOUT=3600 $(basename "$0") ...
 Allow rootful Podman (dangerous): PI_ALLOW_ROOTFUL=1 $(basename "$0") ...
 
 Use --help to see Pi's own CLI help.
@@ -83,14 +93,16 @@ if ! command -v podman >/dev/null 2>&1; then
     exit 1
 fi
 
-PODMAN_VERSION="$(podman --version 2>/dev/null | sed -n 's/.* \([0-9]*\)\.[0-9]*.*/\1/p')"
+PODMAN_VERSION_RAW="$(podman --version 2>/dev/null)"
+PODMAN_VERSION="$(printf '%s' "${PODMAN_VERSION_RAW}" | sed -n 's/.* \([0-9]*\)\.[0-9]*.*/\1/p')"
 if [[ -z "${PODMAN_VERSION}" || "${PODMAN_VERSION}" -lt 4 ]]; then
-    printf 'WARNING: Podman >= 4.x recommended (found version %s).\n' \
-        "$(podman --version 2>/dev/null | sed -n 's/.* \([0-9]*\.[0-9]*\).*/\1/p' || echo '?')" >&2
+    PODMAN_VERSION_DISPLAY="$(printf '%s' "${PODMAN_VERSION_RAW}" | sed -n 's/.* \([0-9]*\.[0-9]*\).*/\1/p' || echo '?')"
+    printf 'WARNING: Podman >= 4.x recommended (found version %s).\n' "${PODMAN_VERSION_DISPLAY}" >&2
 fi
 
 # Verify rootless Podman (the entire security model depends on it)
-ROOTLESS="$(podman info --format '{{.Host.Security.Rootless}}' 2>/dev/null || echo "unknown")"
+# Use a short timeout: a wedged podman daemon should not block the wrapper.
+ROOTLESS="$(timeout 10 podman info --format '{{.Host.Security.Rootless}}' 2>/dev/null || echo "unknown")"
 if [[ "${ROOTLESS}" != "true" ]]; then
     if [[ -n "${PI_ALLOW_ROOTFUL:-}" ]]; then
         printf 'WARNING: Not running rootless Podman (detected: %s). Continuing due to PI_ALLOW_ROOTFUL.\n' "${ROOTLESS}" >&2
@@ -124,7 +136,7 @@ fi
 # recursively relabel SELinux contexts and expose their entire contents.
 PWD_REAL="$(realpath "${PWD}" 2>/dev/null || echo "${PWD}")"
 case "${PWD_REAL}" in
-    / | "${HOME}" | /etc | /usr | /var | /bin | /sbin | /lib | /lib64 | /boot | /root)
+    / | "${HOME}" | /home | /etc | /usr | /var | /bin | /sbin | /lib | /lib64 | /boot | /root | /opt | /srv | /mnt | /media | /proc | /sys | /dev | /run)
         if [[ -n "${PI_ALLOW_UNSAFE_PWD:-}" ]]; then
             printf 'WARNING: Running from sensitive directory %s (PI_ALLOW_UNSAFE_PWD set).\n' "${PWD_REAL}" >&2
         else
@@ -138,9 +150,22 @@ case "${PWD_REAL}" in
 esac
 
 # Check that at least one API key is set
-if [[ -z "${ANTHROPIC_API_KEY:-}" && -z "${OPENAI_API_KEY:-}" && -z "${GOOGLE_API_KEY:-}" ]]; then
+HAS_KEY=false
+if [[ -n "${ANTHROPIC_API_KEY:-}" || -n "${OPENAI_API_KEY:-}" || -n "${GOOGLE_API_KEY:-}" ]]; then
+    HAS_KEY=true
+fi
+
+if [[ "${HAS_KEY}" == false ]]; then
     printf 'WARNING: No API key found. Pi requires at least one provider key.\n' >&2
     printf '  Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY.\n' >&2
+fi
+
+# Warn about unrestricted network egress when keys are present (F-07)
+if [[ "${HAS_KEY}" == true && -z "${PI_NETWORK:-}" ]]; then
+    printf 'SECURITY: Network egress is unrestricted and an API key is set.\n' >&2
+    printf '  A prompt-injected agent could exfiltrate credentials or data.\n' >&2
+    printf '  Set PI_NETWORK=none to block egress when networking is not needed.\n' >&2
+    printf '  See SECURITY.md for details.\n' >&2
 fi
 
 # ---- Podman socket (opt-in, off by default) ----
@@ -162,11 +187,14 @@ if [[ -n "${PI_ENABLE_PODMAN:-}" ]]; then
 fi
 
 # ---- Stale image detection ----
-# Hash both Containerfile and .version so that changing either triggers a rebuild.
-# .version is the documented "single source of truth" for the Pi version.
+# Hash Containerfile, .containerignore, and .version so that changing any of
+# them triggers a rebuild. .version is the documented "single source of truth"
+# for the Pi version. .containerignore controls build context; changes there
+# can affect what gets COPY'd (even though the current build uses context only
+# for the Containerfile itself).
 BUILD_INPUTS_HASH=""
 if [[ -f "${SCRIPT_DIR}/Containerfile" ]]; then
-    BUILD_INPUTS_HASH="$( (cat "${SCRIPT_DIR}/Containerfile"; cat "${VERSION_FILE}" 2>/dev/null || true) | sha256sum | cut -d' ' -f1)"
+    BUILD_INPUTS_HASH="$( (cat "${SCRIPT_DIR}/Containerfile"; cat "${SCRIPT_DIR}/.containerignore" 2>/dev/null || true; cat "${VERSION_FILE}" 2>/dev/null || true) | sha256sum | cut -d' ' -f1)"
 fi
 
 NEEDS_REBUILD=false
@@ -192,13 +220,19 @@ if [[ "${NEEDS_REBUILD}" == true ]]; then
         --build-arg "PI_VERSION=${PI_VERSION}"
     )
 
+    # Optional: force fresh base image pull
+    if [[ -n "${PI_PULL_ALWAYS:-}" ]]; then
+        BUILD_ARGS+=(--pull=always)
+    fi
+
     # Add build-inputs hash as a label for staleness detection
     if [[ -n "${BUILD_INPUTS_HASH}" ]]; then
         BUILD_ARGS+=(--label "build-inputs-hash=${BUILD_INPUTS_HASH}")
     fi
 
-    if ! podman build "${BUILD_ARGS[@]}" "${SCRIPT_DIR}"; then
-        printf 'ERROR: Image build failed. Check Containerfile and network connectivity.\n' >&2
+    # Use a timeout: the build should not hang forever.
+    if ! timeout 300 podman build "${BUILD_ARGS[@]}" "${SCRIPT_DIR}"; then
+        printf 'ERROR: Image build failed (or timed out after 300s). Check Containerfile and network connectivity.\n' >&2
         exit 1
     fi
 
@@ -224,6 +258,22 @@ RUNTIME_ARGS+=(-i)
 # Container hardening
 # Note: --init runs a tiny init as PID 1 that forwards signals to Pi and
 # reaps zombies (Pi runs as a child of the init shim).
+#
+# Capabilities retained (justified):
+#   DAC_OVERRIDE — allows Pi to access files owned by different UIDs inside
+#                  the container (needed for npm/node operations on mounted
+#                  volumes with mixed ownership).
+#   CHOWN        — allows Pi to change file ownership on mounted volumes to
+#                  ensure correct permissions after file operations.
+#   SETGID       — needed by npm install scripts and git operations that
+#                  temporarily change the effective group.
+#   SETUID       — needed by npm install scripts and git operations that
+#                  temporarily change the effective user.
+#
+# These four capabilities are the minimum set empirically determined to be
+# required for Pi + npm + git to function in a rootless container. Each is
+# a controlled elevation within the rootless UID namespace; under rootless
+# Podman they operate only on the mapped host UID's namespace.
 RUNTIME_ARGS+=(
     --init
     --cap-drop=ALL
@@ -240,14 +290,26 @@ RUNTIME_ARGS+=(
 )
 
 # SELinux context (relabel for single container use)
+# When PI_READONLY_CONFIG=1, mount config and skills read-only to prevent
+# a compromised agent from planting persistent extensions/skills (F-01).
+if [[ -n "${PI_READONLY_CONFIG:-}" ]]; then
+    RUNTIME_ARGS+=(
+        -v "${HOME}/.pi:${HOME}/.pi:Z,ro"
+        -v "${HOME}/.agents:${HOME}/.agents:Z,ro"
+    )
+else
+    RUNTIME_ARGS+=(
+        -v "${HOME}/.pi:${HOME}/.pi:Z"
+        -v "${HOME}/.agents:${HOME}/.agents:Z"
+    )
+fi
 RUNTIME_ARGS+=(
-    -v "${HOME}/.pi:${HOME}/.pi:Z"
-    -v "${HOME}/.agents:${HOME}/.agents:Z"
     -v "${PWD}:${PWD}:Z"
 )
 
 # Mount host git config read-only if present, so git commits have an identity.
-if [[ -f "${HOME}/.gitconfig" ]]; then
+# Skip if PI_MOUNT_GITCONFIG=0 to reduce credential exposure (F-08).
+if [[ -f "${HOME}/.gitconfig" && "${PI_MOUNT_GITCONFIG:-1}" != "0" ]]; then
     RUNTIME_ARGS+=(-v "${HOME}/.gitconfig:${HOME}/.gitconfig:ro")
 fi
 
@@ -311,6 +373,11 @@ RUNTIME_ARGS+=("${IMAGE_NAME}")
 debug "Runtime args: ${RUNTIME_ARGS[*]}"
 # Do not log Pi arguments verbatim: a user may pass a secret as an argument.
 debug "Pi argument count: $#"
+
+# Optional timeout for the container run (PI_RUN_TIMEOUT in seconds)
+if [[ -n "${PI_RUN_TIMEOUT:-}" ]]; then
+    RUNTIME_ARGS+=(--timeout "${PI_RUN_TIMEOUT}")
+fi
 
 # ---- Run pi ----
 exec podman run "${RUNTIME_ARGS[@]}" "$@"

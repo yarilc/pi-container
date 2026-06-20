@@ -16,7 +16,7 @@ current project directory — no permission headaches.
 ## Quick start
 
 ```bash
-git clone <this-repo>
+git clone https://github.com/yarilc/pi-container.git
 cd pi-container
 
 # Use it anywhere, exactly like the `pi` command
@@ -68,15 +68,21 @@ filesystem is mounted read-only with a small tmpfs for `/tmp`.
 
 ### Volume mounts
 
-| Mount point | Purpose |
-|---|---|
-| `${HOME}/.pi` | Pi configuration, auth, sessions, extensions |
-| `${HOME}/.agents` | Skills (prompt libraries) |
-| `${PWD}` | Current working directory (same path inside and out) |
+| Mount point | Purpose | Read-only mode |
+|---|---|---|
+| `${HOME}/.pi` | Pi configuration, auth, sessions, extensions | `PI_READONLY_CONFIG=1` |
+| `${HOME}/.agents` | Skills (prompt libraries) | `PI_READONLY_CONFIG=1` |
+| `${PWD}` | Current working directory (same path inside and out) | Always writable |
+| `${HOME}/.gitconfig` | Git identity (if present) | `PI_MOUNT_GITCONFIG=0` to skip |
 
-All three mounts use **bind mounts** at **identical paths** inside the container,
+All mounts (except `.gitconfig`) use **bind mounts** at **identical paths** inside the container,
 with **SELinux labels** (`:Z`) for compatibility with enforcing SELinux systems.
 On non-SELinux systems the `:Z` flag is harmless.
+
+> **Security note:** `~/.pi` and `~/.agents` are mounted **read-write by default**.
+> A compromised agent could plant malicious extensions that persist across runs.
+> Set `PI_READONLY_CONFIG=1` when working with untrusted prompts or projects.
+> See [SECURITY.md](./SECURITY.md) for details.
 
 ## Usage
 
@@ -161,6 +167,10 @@ forwarded to the container automatically.
 | `PI_CPU_LIMIT` | Container CPU limit (default: `2`) |
 | `PI_PIDS_LIMIT` | Container PID limit (default: `512`) |
 | `PI_NETWORK` | Container network mode, e.g. `none` to block all egress (default: full access) |
+| `PI_READONLY_CONFIG` | Set to `1` to mount `~/.pi` and `~/.agents` read-only (prevents persistence) |
+| `PI_MOUNT_GITCONFIG` | Set to `0` to skip mounting `~/.gitconfig` (default: `1`, mount if present) |
+| `PI_PULL_ALWAYS` | Set to `1` to force `podman build --pull=always` |
+| `PI_RUN_TIMEOUT` | Timeout in seconds for `podman run` (default: 0 = no timeout, e.g. `3600` for 1h) |
 | `PI_ALLOW_ROOTFUL` | Set to `1` to allow running under rootful Podman (not recommended) |
 | `PI_ALLOW_UNSAFE_PWD` | Set to `1` to allow running from sensitive directories (not recommended) |
 | `TERM` | Terminal type (forwarded for TUI rendering) |
@@ -186,6 +196,11 @@ forwarded to the container automatically.
 > `~/.pi/agent/auth.json`) could exfiltrate data if subverted by prompt
 > injection. Use `PI_NETWORK=none` (or a restricted network) to limit egress.
 > See [SECURITY.md](./SECURITY.md).
+>
+> **Config directories (`~/.pi`, `~/.agents`) are writable by default.**
+> A compromised agent could plant persistent extensions or skills. Use
+> `PI_READONLY_CONFIG=1` to mount them read-only for untrusted tasks.
+> See [SECURITY.md](./SECURITY.md) for details on this and other risks.
 
 ## Podman host integration (opt-in)
 
@@ -252,11 +267,17 @@ systemctl --user enable --now podman.socket
 
 ## Stale image detection
 
-The script computes a SHA-256 hash of the `Containerfile` **and** `.version`
-and stores it as a label (`build-inputs-hash`) on the built image. On each run
-it recomputes the hash and rebuilds the image automatically if either file has
-changed. This ensures you never accidentally run with an outdated image after
-modifying the Containerfile or bumping the Pi version in `.version`.
+The script computes a SHA-256 hash of the `Containerfile`, `.containerignore`,
+**and** `.version` and stores it as a label (`build-inputs-hash`) on the built
+image. On each run it recomputes the hash and rebuilds the image automatically
+if any of these files has changed. This ensures you never accidentally run with
+an outdated image after modifying the Containerfile, changing build context
+rules, or bumping the Pi version in `.version`.
+
+> **Note:** The base image (`node:22-bookworm-slim`) uses a mutable tag and is
+> not included in the hash. To force a fresh base image pull, set
+> `PI_PULL_ALWAYS=1` or manually `podman pull` the base image. Weekly CI scans
+> monitor the built image for CVEs.
 
 ## File layout
 
@@ -322,6 +343,12 @@ on the next run.
 | Global npm packages | inside image | ❌ Reinstalled on rebuild |
 | System packages (git, rg) | inside image | ❌ Reinstalled on rebuild |
 
+> **⚠️ Persistence vector:** Because extensions, skills, sessions, auth tokens,
+> and settings survive on the host filesystem, a compromised agent could write
+> malicious extensions or skills that persist across container rebuilds and even
+> execute on host-native `pi` invocations. Use `PI_READONLY_CONFIG=1` when working
+> with untrusted content. See [SECURITY.md](./SECURITY.md).
+
 ## Tips
 
 - **Alias in `~/.bashrc`**: `alias pic='/path/to/pi-container/pi-container.sh'`
@@ -338,10 +365,13 @@ on the next run.
 | `podman: command not found` | Podman not installed | [Install Podman](https://podman.io/docs/installation) |
 | Pi hangs on non-interactive use | `-t` flag allocated without TTY | Script now auto-detects TTY and omits `-t` when not available |
 | `pi: command not found` | npm install failed | Rebuild: `podman rmi pi-container && ./pi-container.sh --version` |
+| `.version` missing or empty | Version file absent | Ensure `.version` contains the Pi version (e.g., `0.79.8`); the wrapper now fails hard if absent |
 | Slow first start | apt + npm install during build | One-time cost; subsequent runs use cached image |
 | API key not recognized | Empty key forwarded | Script now only forwards keys that are set and non-empty |
 | Image is stale | Containerfile changed | Automatic detection triggers rebuild |
 | Permission denied on volume | Rootful Podman (sudo) | Run without `sudo` (rootless mode) |
+| Network egress warning on start | API key set without `PI_NETWORK` | Set `PI_NETWORK=none` to suppress (and restrict egress) |
+| Read-only config error | `PI_READONLY_CONFIG=1` and Pi needs to write | Disable `PI_READONLY_CONFIG` for tasks that install extensions |
 
 ## Security
 

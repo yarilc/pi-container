@@ -1,0 +1,12 @@
+# Trivy ignored vulnerabilities
+# =============================
+# Entries in this file are accepted risks with documented justification.
+# Each entry MUST include:
+#   - CVE-ID or ID
+#   - Expiry date (YYYY-MM-DD) after which the entry must be reviewed
+#   - Justification
+#
+# Format: <CVE-ID> [<expiry>] [<justification>]
+#
+# Example:
+# CVE-2024-99999 2025-06-01 Temporarily ignored until upstream patch lands
