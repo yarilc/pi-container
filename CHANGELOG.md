@@ -26,6 +26,11 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
   to KEY=value at create time and stores it in Config.Env; this is a
   documented residual exposure, not a bug. Test 7 now only verifies
   propagation. The argv-leak protection is tested in test-wrapper.sh.
+- PI_ENABLE_PODMAN now triggers a rebuild with the podman CLI included
+  (passes INSTALL_PODMAN=1 build arg). The INSTALL_PODMAN value is folded
+  into build-inputs-hash so toggling PI_ENABLE_PODMAN rebuilds the image.
+  Previously the image never contained the podman client because the
+  Containerfile made it conditional but the wrapper did not pass the arg.
 
 ### Added
 - `PI_READONLY_CONFIG=1` mode: mounts `~/.pi` and `~/.agents` read-only to

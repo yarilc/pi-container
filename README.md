@@ -226,11 +226,10 @@ podman images   # Lists host images
 
 ### Podman socket architecture
 
-When `PI_ENABLE_PODMAN=1` is set, the wrapper script checks for the
-host's Podman socket at `/run/user/<uid>/podman/podman.sock`.
-If the socket exists (Podman service must be running), it is mounted
-into the container and `CONTAINER_HOST` is set so Podman commands
-inside the container talk directly to the host's Podman daemon.
+When `PI_ENABLE_PODMAN=1` is set, the wrapper automatically rebuilds the image
+with the `podman` CLI included (via the `INSTALL_PODMAN` build arg) and mounts
+the host Podman socket into the container. Disabling `PI_ENABLE_PODMAN`
+rebuilds without the `podman` client (smaller image).
 
 ```text
 ┌───────────────────────────────────────────┐

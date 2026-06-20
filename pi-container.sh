@@ -186,6 +186,13 @@ if [[ -n "${PI_ENABLE_PODMAN:-}" ]]; then
     fi
 fi
 
+# Whether to include the podman CLI in the image. The image is rebuilt when
+# this value changes because it is folded into build-inputs-hash below.
+INSTALL_PODMAN="0"
+if [[ -n "${PI_ENABLE_PODMAN:-}" ]]; then
+    INSTALL_PODMAN="1"
+fi
+
 # ---- Stale image detection ----
 # Hash Containerfile, .containerignore, and .version so that changing any of
 # them triggers a rebuild. .version is the documented "single source of truth"
@@ -194,7 +201,7 @@ fi
 # for the Containerfile itself).
 BUILD_INPUTS_HASH=""
 if [[ -f "${SCRIPT_DIR}/Containerfile" ]]; then
-    BUILD_INPUTS_HASH="$( (cat "${SCRIPT_DIR}/Containerfile"; cat "${SCRIPT_DIR}/.containerignore" 2>/dev/null || true; cat "${VERSION_FILE}" 2>/dev/null || true) | sha256sum | cut -d' ' -f1)"
+    BUILD_INPUTS_HASH="$( (cat "${SCRIPT_DIR}/Containerfile"; cat "${SCRIPT_DIR}/.containerignore" 2>/dev/null || true; cat "${VERSION_FILE}" 2>/dev/null || true; printf 'INSTALL_PODMAN=%s\n' "${INSTALL_PODMAN}") | sha256sum | cut -d' ' -f1)"
 fi
 
 NEEDS_REBUILD=false
@@ -218,6 +225,7 @@ if [[ "${NEEDS_REBUILD}" == true ]]; then
         -t "${IMAGE_NAME}"
         -f "${SCRIPT_DIR}/Containerfile"
         --build-arg "PI_VERSION=${PI_VERSION}"
+        --build-arg "INSTALL_PODMAN=${INSTALL_PODMAN}"
     )
 
     # Optional: force fresh base image pull

@@ -47,7 +47,12 @@ case "${1:-}" in
                 ;;
         esac
         ;;
-    build) exit 0 ;;
+    build)
+        shift
+        : > "${PODMAN_BUILD_CAPTURE:-/dev/null}"
+        for a in "$@"; do printf '%s\n' "${a}" >> "${PODMAN_BUILD_CAPTURE:-/dev/null}"; done
+        exit 0
+        ;;
     run)
         shift
         : > "${PODMAN_CAPTURE}"
@@ -64,11 +69,14 @@ PASS_COUNT=0
 fail() { echo "FAIL: $1" >&2; exit 1; }
 pass() { PASS_COUNT=$((PASS_COUNT + 1)); echo "PASS"; }
 
+BUILD_CAPTURE="${FAKE_DIR}/build-args.txt"
+
 # Run the wrapper with the fake podman first on PATH, from a safe project dir.
 # Extra VAR=value pairs may be passed before the wrapper args via env.
 run_wrapper() {
     ( cd "${PROJECT_DIR}" && \
-      env PATH="${FAKE_DIR}:${PATH}" HOME="${FAKE_HOME}" PODMAN_CAPTURE="${CAPTURE}" "$@" \
+      env PATH="${FAKE_DIR}:${PATH}" HOME="${FAKE_HOME}" PODMAN_CAPTURE="${CAPTURE}" \
+          PODMAN_BUILD_CAPTURE="${BUILD_CAPTURE}" "$@" \
       bash "${WRAPPER}" --version </dev/null )
 }
 
@@ -211,17 +219,26 @@ assert_capture_has "--cpus=4" "PI_CPU_LIMIT not forwarded"
 assert_capture_has "--pids-limit=1024" "PI_PIDS_LIMIT not forwarded"
 pass
 
-# ---- Test 13: --label build-inputs-hash is passed to build ----
+# ---- Test 13: build args include INSTALL_PODMAN based on PI_ENABLE_PODMAN ----
 echo ""
-echo "=== Test 13: build-inputs-hash label on build ==="
-: > "${CAPTURE}"
-# Force image to not exist so build is called
+echo "=== Test 13: INSTALL_PODMAN build arg forwarded ==="
+# Force image to not exist so build is invoked; fake podman captures build args.
+: > "${BUILD_CAPTURE}"
 FAKE_IMAGE_EXISTS=1 run_wrapper >/dev/null 2>&1
-# Rebuild path: the wrapper calls podman build, but our fake podman build exits 0
-# and does NOT record to CAPTURE. The run afterwards records to CAPTURE.
-# So we can't easily check build args in the fake. Mark as SKIP.
-echo "SKIP (fake podman does not capture build args)"
-: # no-op
+grep -qF -- "--build-arg" "${BUILD_CAPTURE}" || fail "--build-arg not passed to build"
+grep -qF -- "INSTALL_PODMAN=0" "${BUILD_CAPTURE}" || fail "INSTALL_PODMAN=0 not passed when PI_ENABLE_PODMAN unset"
+pass
+
+# ---- Test 14: PI_ENABLE_PODMAN sets INSTALL_PODMAN=1 in build ----
+echo ""
+echo "=== Test 14: PI_ENABLE_PODMAN=1 sets INSTALL_PODMAN=1 ==="
+: > "${BUILD_CAPTURE}"
+FAKE_IMAGE_EXISTS=1 run_wrapper PI_ENABLE_PODMAN=1 >/dev/null 2>&1
+grep -qF -- "INSTALL_PODMAN=1" "${BUILD_CAPTURE}" || fail "INSTALL_PODMAN=1 not passed when PI_ENABLE_PODMAN set"
+# Also verify CONTAINER_HOST is forwarded to the run (socket mount path)
+# Note: socket won't exist in fake env, so socket active stays false; we only
+# check the build arg here.
+pass
 
 echo ""
 echo "=== All ${PASS_COUNT} wrapper tests passed ==="

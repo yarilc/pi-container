@@ -80,7 +80,7 @@ trap cleanup EXIT
 
 # ---- Test 1: Image builds ----
 echo "=== Test 1: Image builds ==="
-podman build -t "${IMAGE_NAME}" -f Containerfile --build-arg "PI_VERSION=${PI_VERSION}" .
+podman build -t "${IMAGE_NAME}" -f Containerfile --build-arg "PI_VERSION=${PI_VERSION}" --build-arg "INSTALL_PODMAN=0" .
 BUILT_IMAGE="${IMAGE_NAME}"
 echo "PASS"
 
