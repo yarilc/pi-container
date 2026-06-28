@@ -240,5 +240,24 @@ grep -qF -- "INSTALL_PODMAN=1" "${BUILD_CAPTURE}" || fail "INSTALL_PODMAN=1 not 
 # check the build arg here.
 pass
 
+# ---- Test 15: npm cache tmpfs is mounted and PI_NPM_CACHE_SIZE honored ----
+echo ""
+echo "=== Test 15: npm cache tmpfs + PI_NPM_CACHE_SIZE ==="
+: > "${CAPTURE}"
+run_wrapper >/dev/null 2>&1
+assert_capture_has "--tmpfs" "--tmpfs flag absent (npm cache tmpfs missing)"
+# Default size is 256M; the ~/.npm tmpfs must be present alongside /tmp.
+grep -qF "${FAKE_HOME}/.npm:rw,noexec,nosuid,size=256M" "${CAPTURE}" \
+    || fail "default npm cache tmpfs (${FAKE_HOME}/.npm:...size=256M) not present"
+# /tmp tmpfs must still be present (regression guard)
+grep -qF "/tmp:noexec,nosuid,size=256M" "${CAPTURE}" \
+    || fail "/tmp tmpfs missing after npm cache addition"
+# Override size
+: > "${CAPTURE}"
+run_wrapper PI_NPM_CACHE_SIZE=512M >/dev/null 2>&1
+grep -qF "${FAKE_HOME}/.npm:rw,noexec,nosuid,size=512M" "${CAPTURE}" \
+    || fail "PI_NPM_CACHE_SIZE=512M not honored in tmpfs size"
+pass
+
 echo ""
 echo "=== All ${PASS_COUNT} wrapper tests passed ==="

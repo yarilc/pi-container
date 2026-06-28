@@ -83,6 +83,13 @@ On non-SELinux systems the `:Z` flag is harmless.
 > A compromised agent could plant malicious extensions that persist across runs.
 > Set `PI_READONLY_CONFIG=1` when working with untrusted prompts or projects.
 > See [SECURITY.md](./SECURITY.md) for details.
+>
+> **npm cache:** An ephemeral tmpfs is mounted at `${HOME}/.npm` so that
+> `pi install npm:<package>` works under the read-only root filesystem (npm
+> defaults its cache to `~/.npm`, which would otherwise be unwritable). The
+> cache is cleared when the container exits; installed extensions themselves
+> persist in `~/.pi/agent/npm` (user scope) or `$PWD/.pi/npm` (project scope).
+> Override the cache size with `PI_NPM_CACHE_SIZE` (default: `256M`).
 
 ## Usage
 
@@ -134,6 +141,25 @@ echo "List files" | pic -p
 When stdin is not a terminal (e.g. pipes, CI pipelines), the `-t` flag is
 automatically omitted, allowing clean non-interactive usage.
 
+### Installing extensions
+
+Community extensions (npm packages, git repos, or local paths) install into
+the writable `~/.pi/agent/npm` (user scope) or `$PWD/.pi/npm` (project scope)
+and persist across container runs:
+
+```bash
+pic install npm:pi-web-access
+pic install git:github.com/user/pi-ext.git
+pic install ./local/path
+```
+
+An ephemeral tmpfs is mounted at `~/.npm` for npm's cache so installs work
+under the read-only root filesystem. Increase its size for large extensions:
+
+```bash
+PI_NPM_CACHE_SIZE=512M pic install npm:pi-web-access
+```
+
 ## Environment variables
 
 ### API keys
@@ -166,6 +192,7 @@ forwarded to the container automatically.
 | `PI_MEMORY_LIMIT` | Container memory limit (default: `4g`) |
 | `PI_CPU_LIMIT` | Container CPU limit (default: `2`) |
 | `PI_PIDS_LIMIT` | Container PID limit (default: `512`) |
+| `PI_NPM_CACHE_SIZE` | Size of the ephemeral npm cache tmpfs at `~/.npm`, used by `pi install npm:<pkg>` (default: `256M`) |
 | `PI_NETWORK` | Container network mode, e.g. `none` to block all egress (default: full access) |
 | `PI_READONLY_CONFIG` | Set to `1` to mount `~/.pi` and `~/.agents` read-only (prevents persistence) |
 | `PI_MOUNT_GITCONFIG` | Set to `0` to skip mounting `~/.gitconfig` (default: `1`, mount if present) |
@@ -181,7 +208,7 @@ forwarded to the container automatically.
 | Control | Implementation |
 |---|---|
 | Capabilities | `--cap-drop=ALL`, only `DAC_OVERRIDE`, `CHOWN`, `SETGID`, `SETUID` added back |
-| Root filesystem | `--read-only` with `--tmpfs /tmp:noexec,nosuid,size=256M` |
+| Root filesystem | `--read-only` with `--tmpfs /tmp` and `--tmpfs ~/.npm` (npm cache for `pi install`) |
 | Privilege escalation | `--security-opt=no-new-privileges` |
 | Resource limits | `--memory=4g`, `--cpus=2`, `--pids-limit=512` (configurable) |
 | SELinux | `:Z` label on `~/.pi`, `~/.agents`, and `$PWD` mounts |
@@ -371,6 +398,7 @@ on the next run.
 | Permission denied on volume | Rootful Podman (sudo) | Run without `sudo` (rootless mode) |
 | Network egress warning on start | API key set without `PI_NETWORK` | Set `PI_NETWORK=none` to suppress (and restrict egress) |
 | Read-only config error | `PI_READONLY_CONFIG=1` and Pi needs to write | Disable `PI_READONLY_CONFIG` for tasks that install extensions |
+| `npm error ENOENT ... mkdir '~/.npm'` during `pi install` | npm cache dir on the read-only rootfs | Fixed: the wrapper mounts an ephemeral tmpfs at `~/.npm`. Raise the cap with `PI_NPM_CACHE_SIZE=512M` for large extensions |
 
 ## Security
 

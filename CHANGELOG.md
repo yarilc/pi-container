@@ -9,6 +9,12 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
 ## [Unreleased]
 
 ### Fixed
+- `pi install npm:<pkg>` no longer fails with `npm error ENOENT ... mkdir
+  '~/.npm'` under the read-only root filesystem. The wrapper now mounts an
+  ephemeral tmpfs at `${HOME}/.npm` so npm's default cache directory is
+  writable. Extension code still persists in the existing writable
+  `~/.pi/agent/npm` (user scope) or `$PWD/.pi/npm` (project scope) install root;
+  only the download cache is ephemeral.
 - Test 6 (container hardening): CapDrop check no longer expects literal
   "ALL" string; Podman v4+ expands it to the full capability list.
   Now verifies CapDrop non-empty and CapAdd contains expected caps.
@@ -38,6 +44,9 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
 - `PI_MOUNT_GITCONFIG=0` opt-out: skip mounting `~/.gitconfig` to reduce
   credential exposure (F-08).
 - `PI_PULL_ALWAYS=1`: force `podman build --pull=always` for fresh base images.
+- `PI_NPM_CACHE_SIZE`: size of the ephemeral npm cache tmpfs mounted at
+  `~/.npm` so community extensions (`pi install npm:<pkg>`) install under
+  the read-only rootfs (default: `256M`).
 - `PI_RUN_TIMEOUT`: optional timeout for `podman run` (F-13).
 - Security warning on first-run when network is unrestricted and an API key
   is present (F-07).

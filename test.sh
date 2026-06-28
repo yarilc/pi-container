@@ -154,6 +154,7 @@ CID="$(podman create \
     --security-opt=no-new-privileges \
     --read-only \
     --tmpfs /tmp:noexec,nosuid,size=256M \
+    --tmpfs "${HOME}/.npm:rw,noexec,nosuid,size=256M" \
     "${IMAGE_NAME}" --version 2>/dev/null)"
 CONTAINER_IDS+=("${CID}")
 
@@ -186,6 +187,11 @@ fi
 TMPFS="$(podman inspect "${CID}" --format '{{json .HostConfig.Tmpfs}}')"
 if ! echo "${TMPFS}" | grep -q '"/tmp"'; then
     echo "FAIL: /tmp tmpfs mount not found in HostConfig.Tmpfs: ${TMPFS}"
+    exit 1
+fi
+# Check that the npm cache tmpfs is present at ~/.npm (enables `pi install`)
+if ! echo "${TMPFS}" | grep -qF "\"${HOME}/.npm\""; then
+    echo "FAIL: ~/.npm tmpfs mount not found in HostConfig.Tmpfs: ${TMPFS}"
     exit 1
 fi
 
@@ -224,6 +230,45 @@ fi
 
 podman rm -f "${CID3}" >/dev/null 2>&1 || true
 CONTAINER_IDS=("${CONTAINER_IDS[@]/${CID3}}")
+echo "PASS"
+
+# ---- Test 8: pi install npm:<pkg> works (npm cache tmpfs) ----
+echo ""
+echo "=== Test 8: pi install npm:pi-web-access (npm cache tmpfs) ==="
+# Reproduce the wrapper's mount strategy: only ~/.pi, ~/.agents, and $PWD are
+# writable bind mounts; the rest of $HOME stays on the read-only overlay, so
+# npm's default cache at ~/.npm is unwritable unless the ~/.npm tmpfs is
+# present. Use a synthetic HOME (/home/testuser) so the test never touches
+# the real ~/.pi on the host.
+EXT_HOME="/home/testuser"
+EXT_PI="${TEST_DIR}/ext-pi"
+EXT_AGENTS="${TEST_DIR}/ext-agents"
+EXT_PROJECT="${TEST_DIR}/ext-project"
+mkdir -p "${EXT_PI}" "${EXT_AGENTS}" "${EXT_PROJECT}"
+
+INSTALL_OUTPUT="$(timeout 180 podman run --rm \
+    --read-only \
+    --tmpfs /tmp:noexec,nosuid,size=256M \
+    --tmpfs "${EXT_HOME}/.npm:rw,noexec,nosuid,size=256M" \
+    -e "HOME=${EXT_HOME}" \
+    -v "${EXT_PI}:${EXT_HOME}/.pi:Z" \
+    -v "${EXT_AGENTS}:${EXT_HOME}/.agents:Z" \
+    -v "${EXT_PROJECT}:${EXT_PROJECT}:Z" \
+    -w "${EXT_PROJECT}" \
+    --entrypoint bash \
+    "${IMAGE_NAME}" \
+    -c 'pi install npm:pi-web-access 2>&1; echo "EXIT=$?"' 2>&1 </dev/null)"
+
+if ! echo "${INSTALL_OUTPUT}" | grep -q "Installed npm:pi-web-access"; then
+    echo "FAIL: pi install npm:pi-web-access did not succeed"
+    echo "${INSTALL_OUTPUT}" | tail -15
+    exit 1
+fi
+# Confirm the package actually landed in the user-scope install root.
+if [[ ! -d "${EXT_PI}/agent/npm/node_modules/pi-web-access" ]]; then
+    echo "FAIL: pi-web-access not installed under ~/.pi/agent/npm/node_modules"
+    exit 1
+fi
 echo "PASS"
 
 echo ""

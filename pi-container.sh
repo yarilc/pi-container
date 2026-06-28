@@ -12,6 +12,8 @@
 #   PI_MEMORY_LIMIT       Container memory limit (default: 4g)
 #   PI_CPU_LIMIT          Container CPU limit (default: 2)
 #   PI_PIDS_LIMIT         Container PID limit (default: 512)
+#   PI_NPM_CACHE_SIZE     Ephemeral npm cache tmpfs size at ~/.npm (default: 256M).
+#                        Required for `pi install npm:<pkg>` under the read-only rootfs
 #   PI_NETWORK            Container network mode (e.g. none, host); default: full access
 #   PI_ALLOW_ROOTFUL      Set to 1 to allow running under rootful Podman (not recommended)
 #   PI_ALLOW_UNSAFE_PWD   Set to 1 to allow running from sensitive directories (not recommended)
@@ -65,6 +67,7 @@ Override image name: PI_IMAGE_NAME=my-pi $(basename "$0") ...
 Enable debug output: PI_DEBUG=1 $(basename "$0") ...
 Mount host Podman socket (dangerous): PI_ENABLE_PODMAN=1 $(basename "$0") ...
 Override resource limits: PI_MEMORY_LIMIT=8g PI_CPU_LIMIT=4 $(basename "$0") ...
+Npm cache size (extension installs): PI_NPM_CACHE_SIZE=512M $(basename "$0") ...
 Restrict network egress: PI_NETWORK=none $(basename "$0") ...
 Read-only config (prevent persistence): PI_READONLY_CONFIG=1 $(basename "$0") ...
 Skip gitconfig mount: PI_MOUNT_GITCONFIG=0 $(basename "$0") ...
@@ -295,6 +298,14 @@ RUNTIME_ARGS+=(
     --pids-limit="${PI_PIDS_LIMIT:-512}"
     --read-only
     "--tmpfs" "/tmp:noexec,nosuid,size=256M"
+    # Ephemeral npm cache so `pi install npm:<pkg>` works under the
+    # read-only rootfs. npm defaults its cache to ~/.npm, which would
+    # otherwise sit on the read-only overlay and fail with ENOENT/EROFS.
+    # A tmpfs keeps it writable and isolated from /tmp with zero host
+    # pollution; installed extension code itself persists in the writable
+    # ~/.pi/agent/npm (user scope) or $PWD/.pi/npm (project scope) install root,
+    # so an ephemeral cache only costs a re-fetch on reinstall/update.
+    "--tmpfs" "${HOME}/.npm:rw,noexec,nosuid,size=${PI_NPM_CACHE_SIZE:-256M}"
 )
 
 # SELinux context (relabel for single container use)
