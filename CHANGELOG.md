@@ -8,6 +8,13 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-06-30
+
+First tagged release of the pi-container wrapper (the wrapper version is
+independent of the Pi Coding Agent version in `.version`). Bundles the
+containerized Pi runner, hardening flags, CI (lint/test/scan), and all
+Critical Software Project Review (F-01–F-10) mitigations.
+
 ### Fixed
 - `pi install npm:<pkg>` no longer fails with `npm error ENOENT ... mkdir
   '~/.npm'` under the read-only root filesystem. The wrapper now mounts an
