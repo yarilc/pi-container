@@ -69,7 +69,7 @@ filesystem is mounted read-only with a small tmpfs for `/tmp`.
 ### Volume mounts
 
 | Mount point | Purpose | Read-only mode |
-|---|---|---|
+| --- | --- | --- |
 | `${HOME}/.pi` | Pi configuration, auth, sessions, extensions | `PI_READONLY_CONFIG=1` |
 | `${HOME}/.agents` | Skills (prompt libraries) | `PI_READONLY_CONFIG=1` |
 | `${PWD}` | Current working directory (same path inside and out) | Always writable |
@@ -168,7 +168,7 @@ The script forwards these environment variables to the container **only if
 they are set and non-empty**:
 
 | Variable | Purpose |
-|---|---|
+| --- | --- |
 | `ANTHROPIC_API_KEY` | Anthropic / Claude API key |
 | `OPENAI_API_KEY` | OpenAI API key |
 | `GOOGLE_API_KEY` | Google / Gemini API key |
@@ -185,7 +185,7 @@ forwarded to the container automatically.
 ### Other variables
 
 | Variable | Purpose |
-|---|---|
+| --- | --- |
 | `PI_IMAGE_NAME` | Override the container image name (default: `pi-container`) |
 | `PI_DEBUG` | Set to any value to enable verbose debug output |
 | `PI_ENABLE_PODMAN` | Set to `1` to mount the host Podman socket (opt-in, dangerous) |
@@ -206,7 +206,7 @@ forwarded to the container automatically.
 ## Container hardening
 
 | Control | Implementation |
-|---|---|
+| --- | --- |
 | Capabilities | `--cap-drop=ALL`, only `DAC_OVERRIDE`, `CHOWN`, `SETGID`, `SETUID` added back |
 | Root filesystem | `--read-only` with `--tmpfs /tmp` and `--tmpfs ~/.npm` (npm cache for `pi install`) |
 | Privilege escalation | `--security-opt=no-new-privileges` |
@@ -360,7 +360,7 @@ on the next run.
 ### What survives a rebuild
 
 | Data | Location | Survives `podman rmi`? |
-|---|---|---|
+| --- | --- | --- |
 | Session history | `~/.pi/agent/sessions/` (host) | ✅ Yes |
 | Auth tokens | `~/.pi/agent/auth.json` (host) | ✅ Yes |
 | Settings | `~/.pi/agent/settings.json` (host) | ✅ Yes |
@@ -386,7 +386,7 @@ on the next run.
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
-|---|---|---|
+| --- | --- | --- |
 | `EACCES: permission denied` on `~/.pi/...` | SELinux context missing | Add `:Z` to volume mounts (already included in the script) |
 | `podman: command not found` | Podman not installed | [Install Podman](https://podman.io/docs/installation) |
 | Pi hangs on non-interactive use | `-t` flag allocated without TTY | Script now auto-detects TTY and omits `-t` when not available |
