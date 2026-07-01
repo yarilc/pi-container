@@ -8,6 +8,15 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
 
 ## [Unreleased]
 
+### Added
+- `PI_ENV_VARS`: space-separated list of extra environment variable **names**
+  to forward to the container, for skill/extension/tool secrets the wrapper
+  does not hardcode (e.g. `GITHUB_TOKEN`, `DATABASE_URL`). Variables are
+  forwarded by name only (`-e NAME`, never `NAME=value`), so secret values
+  never appear on the process command line; unset/empty variables are skipped
+  silently. Names already handled explicitly by the wrapper are skipped to
+  avoid duplicate forwarding.
+
 ## [0.1.0] - 2026-06-30
 
 First tagged release of the pi-container wrapper (the wrapper version is

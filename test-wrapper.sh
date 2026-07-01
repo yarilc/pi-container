@@ -259,5 +259,36 @@ grep -qF "${FAKE_HOME}/.npm:rw,noexec,nosuid,size=512M" "${CAPTURE}" \
     || fail "PI_NPM_CACHE_SIZE=512M not honored in tmpfs size"
 pass
 
+# ---- Test 16: PI_ENV_VARS forwards extra env vars by name only ----
+echo ""
+echo "=== Test 16: PI_ENV_VARS forwards vars by name, never by value ==="
+: > "${CAPTURE}"
+run_wrapper PI_ENV_VARS="MY_TOOL_TOKEN OTHER_VAR" MY_TOOL_TOKEN=sekret456 >/dev/null 2>&1
+# The set var is forwarded by name only
+assert_capture_has "MY_TOOL_TOKEN" "PI_ENV_VARS name not forwarded"
+# The value must NEVER appear on the podman run argv
+assert_capture_lacks "sekret456" "PI_ENV_VARS value leaked onto podman run argv"
+assert_capture_lacks "MY_TOOL_TOKEN=sekret456" "PI_ENV_VARS forwarded as NAME=value"
+# The unset var (OTHER_VAR) is skipped silently, no error
+assert_capture_lacks "OTHER_VAR" "unset PI_ENV_VARS name unexpectedly forwarded"
+pass
+
+# ---- Test 17: PI_ENV_VARS skips names already handled explicitly ----
+echo ""
+echo "=== Test 17: PI_ENV_VARS skips already-handled names ==="
+: > "${CAPTURE}"
+run_wrapper PI_ENV_VARS="HOME ANTHROPIC_API_KEY CUSTOM_VAR" ANTHROPIC_API_KEY=dupkey CUSTOM_VAR=val1 >/dev/null 2>&1
+# HOME is forwarded by name via the explicit path; ANTHROPIC_API_KEY too.
+# They must NOT be forwarded twice (no duplicate -e entries beyond the one
+# the wrapper already adds). CUSTOM_VAR must be forwarded.
+assert_capture_has "CUSTOM_VAR" "PI_ENV_VARS custom name not forwarded"
+# Count occurrences of the explicitly-handled name forwarded as a bare -e NAME.
+# The wrapper forwards ANTHROPIC_API_KEY once (explicit), PI_ENV_VARS must not
+# add a second -e ANTHROPIC_API_KEY entry.
+_count=$(grep -cF -- "-e" "${CAPTURE}" 2>/dev/null || echo 0)
+_dup=$(grep -cF -- "ANTHROPIC_API_KEY" "${CAPTURE}" 2>/dev/null || echo 0)
+[[ "${_dup}" -eq 1 ]] || fail "ANTHROPIC_API_KEY forwarded ${_dup} times (expected 1)"
+pass
+
 echo ""
 echo "=== All ${PASS_COUNT} wrapper tests passed ==="

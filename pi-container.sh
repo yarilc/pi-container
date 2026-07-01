@@ -21,6 +21,10 @@
 #   PI_MOUNT_GITCONFIG    Set to 0 to skip mounting ~/.gitconfig (default: 1, mount if present)
 #   PI_PULL_ALWAYS        Set to 1 to force podman build --pull=always
 #   PI_RUN_TIMEOUT        Timeout in seconds for podman run (default: 0 = no timeout)
+#   PI_ENV_VARS          Space-separated list of extra env var NAMES to forward
+#                        to the container (for skill/extension/tool secrets the
+#                        wrapper does not hardcode, e.g. GITHUB_TOKEN).
+#                        Forwarded by name only; values never appear on argv.
 #   ANTHROPIC_API_KEY     Anthropic/Claude API key (forwarded to container)
 #   OPENAI_API_KEY        OpenAI API key (forwarded to container)
 #   GOOGLE_API_KEY        Google/Gemini API key (forwarded to container)
@@ -73,6 +77,8 @@ Read-only config (prevent persistence): PI_READONLY_CONFIG=1 $(basename "$0") ..
 Skip gitconfig mount: PI_MOUNT_GITCONFIG=0 $(basename "$0") ...
 Force fresh base image: PI_PULL_ALWAYS=1 $(basename "$0") ...
 Container run timeout: PI_RUN_TIMEOUT=3600 $(basename "$0") ...
+Forward extra env vars (by name, no values on argv):
+  PI_ENV_VARS="GITHUB_TOKEN DATABASE_URL" $(basename "$0") ...
 Allow rootful Podman (dangerous): PI_ALLOW_ROOTFUL=1 $(basename "$0") ...
 
 Use --help to see Pi's own CLI help.
@@ -382,6 +388,26 @@ if [[ -n "${HTTPS_PROXY:-}" ]]; then
 fi
 if [[ -n "${NO_PROXY:-}" ]]; then
     RUNTIME_ARGS+=(-e "NO_PROXY")
+fi
+
+# Forward arbitrary environment variables by name (space-separated list in
+# PI_ENV_VARS). Useful for skill/extension/tool secrets the wrapper does not
+# hardcode (e.g. GITHUB_TOKEN, DATABASE_URL). Variables are forwarded by name
+# only (-e KEY, not -e KEY=value) so secret values never appear on the command
+# line (visible via ps aux / podman inspect). Variables not set in the host
+# environment are skipped silently (same policy as API keys above).
+if [[ -n "${PI_ENV_VARS:-}" ]]; then
+    for _var in ${PI_ENV_VARS}; do
+        # Skip names already handled explicitly above to avoid duplicates.
+        case "${_var}" in
+            HOME|TERM|EDITOR|VISUAL|ANTHROPIC_API_KEY|OPENAI_API_KEY|GOOGLE_API_KEY|HTTP_PROXY|HTTPS_PROXY|NO_PROXY)
+                continue ;;
+        esac
+        if [[ -n "${!_var:-}" ]]; then
+            RUNTIME_ARGS+=(-e "${_var}")
+        fi
+    done
+    unset _var
 fi
 
 # Image name

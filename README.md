@@ -177,6 +177,43 @@ they are set and non-empty**:
 > visible in `podman inspect` output and inside the container's `/proc`.
 > For production or shared systems, consider using `podman secret` instead.
 
+### Custom environment variables
+
+Skills, extensions, or other tools may require environment variables that the
+wrapper does not hardcode (e.g. `GITHUB_TOKEN`, `DATABASE_URL`, a third-party
+API key). Use `PI_ENV_VARS` to forward arbitrary variables **by name**.
+
+`PI_ENV_VARS` is a space-separated list of variable **names**. Each name that
+is set and non-empty in the host environment is forwarded to the container via
+`-e NAME` (by name only, never as `NAME=value`), so secret values never appear
+on the process command line (visible via `ps aux` / `podman inspect`).
+Variables that are unset or empty are skipped silently.
+
+```bash
+# Forward two secrets to the container
+PI_ENV_VARS="GITHUB_TOKEN DATABASE_URL" pic "fix the bug"
+
+# With the values exported in the current shell
+export GITHUB_TOKEN=ghp_xxx
+export DATABASE_URL=postgres://localhost/app
+PI_ENV_VARS="GITHUB_TOKEN DATABASE_URL" pic "review the schema"
+
+# Persist the list once in ~/.bashrc (values still exported per-session)
+#   echo 'export PI_ENV_VARS="GITHUB_TOKEN DATABASE_URL"' >> ~/.bashrc
+```
+
+Names already handled explicitly by the wrapper (`HOME`, `TERM`, `EDITOR`,
+`VISUAL`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`,
+`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`) are skipped if listed in `PI_ENV_VARS`
+to avoid duplicate forwarding.
+
+> ⚠️ **Security note:** `PI_ENV_VARS` only forwards the *names*; the *values*
+> come from the host environment and are still visible inside the container's
+> `/proc` and in `podman inspect` output (same residual exposure as API keys).
+> Do not list variables you do not need, and prefer the narrowest set possible.
+> For highly sensitive, long-lived secrets on shared systems, consider
+> `podman secret` instead.
+
 ### Proxy support
 
 If `HTTP_PROXY`, `HTTPS_PROXY`, or `NO_PROXY` are set on the host, they are
@@ -198,6 +235,7 @@ forwarded to the container automatically.
 | `PI_MOUNT_GITCONFIG` | Set to `0` to skip mounting `~/.gitconfig` (default: `1`, mount if present) |
 | `PI_PULL_ALWAYS` | Set to `1` to force `podman build --pull=always` |
 | `PI_RUN_TIMEOUT` | Timeout in seconds for `podman run` (default: 0 = no timeout, e.g. `3600` for 1h) |
+| `PI_ENV_VARS` | Space-separated list of extra env var **names** to forward to the container (for skill/extension/tool secrets; forwarded by name only, never as `NAME=value`). See [Custom environment variables](#custom-environment-variables) |
 | `PI_ALLOW_ROOTFUL` | Set to `1` to allow running under rootful Podman (not recommended) |
 | `PI_ALLOW_UNSAFE_PWD` | Set to `1` to allow running from sensitive directories (not recommended) |
 | `TERM` | Terminal type (forwarded for TUI rendering) |
