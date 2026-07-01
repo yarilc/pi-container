@@ -9,6 +9,14 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
 ## [Unreleased]
 
 ### Added
+- `PI_ENABLE_BUN=1`: bake the [Bun](https://bun.sh/) runtime into the image
+  (opt-in, off by default). Bun is installed as a single dependency-free
+  binary in `/usr/local/bin/bun` (on `PATH`, no writes to `$HOME` at runtime
+  — compatible with the read-only rootfs). Toggling `PI_ENABLE_BUN`
+  rebuilds the image via the `INSTALL_BUN` build arg (folded into the
+  stale-image hash, same pattern as `PI_ENABLE_PODMAN`).
+- `PI_BUN_VERSION`: override the Bun release tag to install (default:
+  `bun-v1.3.14`); changing it triggers a rebuild.
 - `PI_ENV_VARS`: space-separated list of extra environment variable **names**
   to forward to the container, for skill/extension/tool secrets the wrapper
   does not hardcode (e.g. `GITHUB_TOKEN`, `DATABASE_URL`). Variables are

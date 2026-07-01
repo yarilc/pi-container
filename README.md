@@ -226,6 +226,8 @@ forwarded to the container automatically.
 | `PI_IMAGE_NAME` | Override the container image name (default: `pi-container`) |
 | `PI_DEBUG` | Set to any value to enable verbose debug output |
 | `PI_ENABLE_PODMAN` | Set to `1` to mount the host Podman socket (opt-in, dangerous) |
+| `PI_ENABLE_BUN` | Set to `1` to bake the Bun runtime into the image (opt-in). See [Bun runtime](#bun-runtime-opt-in) |
+| `PI_BUN_VERSION` | Bun release tag to install when `PI_ENABLE_BUN=1` (default: `bun-v1.3.14`) |
 | `PI_MEMORY_LIMIT` | Container memory limit (default: `4g`) |
 | `PI_CPU_LIMIT` | Container CPU limit (default: `2`) |
 | `PI_PIDS_LIMIT` | Container PID limit (default: `512`) |
@@ -295,6 +297,43 @@ When `PI_ENABLE_PODMAN=1` is set, the wrapper automatically rebuilds the image
 with the `podman` CLI included (via the `INSTALL_PODMAN` build arg) and mounts
 the host Podman socket into the container. Disabling `PI_ENABLE_PODMAN`
 rebuilds without the `podman` client (smaller image).
+
+## Bun runtime (opt-in)
+
+[Bun](https://bun.sh/) is a fast JavaScript runtime, bundler, test runner,
+and package manager. Skills, extensions, or projects may require it. The
+runtime is **off by default** and added only when requested.
+
+To enable, set `PI_ENABLE_BUN=1`:
+
+```bash
+PI_ENABLE_BUN=1 pic "Run the test suite with bun"
+```
+
+The wrapper rebuilds the image with the Bun binary included (via the
+`INSTALL_BUN` build arg). Bun is installed as a single, dependency-free
+binary in `/usr/local/bin/bun`, so it is on `PATH` and requires **no writes
+to `$HOME` at runtime** (compatible with the read-only root filesystem).
+
+```bash
+# Inside pi:
+bun --version    # Bun version
+bun install      # Install project dependencies
+bun test         # Run tests via Bun's test runner
+```
+
+### Pinning a Bun version
+
+The Bun release tag defaults to `bun-v1.3.14` and can be overridden with
+`PI_BUN_VERSION`:
+
+```bash
+PI_BUN_VERSION=bun-v1.2.0 PI_ENABLE_BUN=1 pic ...
+```
+
+Disabling `PI_ENABLE_BUN` rebuilds without the Bun binary (smaller image).
+The Bun version is folded into the stale-image hash, so changing
+`PI_BUN_VERSION` triggers a rebuild automatically.
 
 ```text
 ┌───────────────────────────────────────────┐

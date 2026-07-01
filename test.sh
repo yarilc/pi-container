@@ -14,6 +14,8 @@
 #   5. Expected tools (git, ripgrep) are available
 #   6. Container hardening flags are applied (cap-drop, read-only, seccomp)
 #   7. API keys forwarded by name only (value reaches the container)
+#   8. pi install npm:<pkg> works (npm cache tmpfs)
+#   9. Bun runtime available when INSTALL_BUN=1 (opt-in)
 
 set -euo pipefail
 
@@ -80,7 +82,7 @@ trap cleanup EXIT
 
 # ---- Test 1: Image builds ----
 echo "=== Test 1: Image builds ==="
-podman build -t "${IMAGE_NAME}" -f Containerfile --build-arg "PI_VERSION=${PI_VERSION}" --build-arg "INSTALL_PODMAN=0" .
+podman build -t "${IMAGE_NAME}" -f Containerfile --build-arg "PI_VERSION=${PI_VERSION}" --build-arg "INSTALL_PODMAN=0" --build-arg "INSTALL_BUN=0" .
 BUILT_IMAGE="${IMAGE_NAME}"
 echo "PASS"
 
@@ -267,6 +269,36 @@ fi
 # Confirm the package actually landed in the user-scope install root.
 if [[ ! -d "${EXT_PI}/agent/npm/node_modules/pi-web-access" ]]; then
     echo "FAIL: pi-web-access not installed under ~/.pi/agent/npm/node_modules"
+    exit 1
+fi
+echo "PASS"
+
+# ---- Test 9: PI_ENABLE_BUN bakes the Bun runtime into the image ----
+echo ""
+echo "=== Test 9: Bun runtime available when INSTALL_BUN=1 ==="
+# Build a dedicated image with INSTALL_BUN=1 so the default test image stays
+# bun-free (verifying bun is truly opt-in). The cleanup trap removes it.
+BUN_IMAGE_NAME="${IMAGE_NAME}-bun"
+if podman image exists "${BUN_IMAGE_NAME}" 2>/dev/null; then
+    echo "ERROR: Image '${BUN_IMAGE_NAME}' already exists." >&2
+    exit 1
+fi
+podman build -t "${BUN_IMAGE_NAME}" -f Containerfile \
+    --build-arg "PI_VERSION=${PI_VERSION}" \
+    --build-arg "INSTALL_PODMAN=0" \
+    --build-arg "INSTALL_BUN=1" \
+    --build-arg "BUN_VERSION=bun-v1.3.14" .
+BUILT_IMAGE="${BUN_IMAGE_NAME} ${BUILT_IMAGE}"
+# Verify bun is on PATH and reports the expected version
+BUN_VERSION_OUT="$(podman run --rm --entrypoint bash "${BUN_IMAGE_NAME}" -c 'bun --version')"
+if [[ -z "${BUN_VERSION_OUT}" ]]; then
+    echo "FAIL: bun --version returned empty"
+    exit 1
+fi
+echo "Bun version: ${BUN_VERSION_OUT}"
+# Verify the default test image does NOT contain bun (opt-in is enforced)
+if podman run --rm --entrypoint bash "${IMAGE_NAME}" -c 'command -v bun' 2>/dev/null | grep -q bun; then
+    echo "FAIL: bun present in default image (should be opt-in only)"
     exit 1
 fi
 echo "PASS"

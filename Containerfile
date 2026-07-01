@@ -16,6 +16,8 @@
 # Build arguments:
 #   PI_VERSION      Pi Coding Agent version (set by pi-container.sh from .version)
 #   INSTALL_PODMAN  Set to 1 to include the podman CLI (for PI_ENABLE_PODMAN feature)
+#   INSTALL_BUN     Set to 1 to include the Bun runtime (for PI_ENABLE_BUN feature)
+#   BUN_VERSION     Bun release tag (default: bun-v1.3.14)
 #
 # Base image pinning:
 #   For production use, pin by digest:
@@ -31,6 +33,8 @@ FROM docker.io/library/node:22-bookworm-slim
 
 ARG PI_VERSION
 ARG INSTALL_PODMAN=0
+ARG INSTALL_BUN=0
+ARG BUN_VERSION=bun-v1.3.14
 
 RUN test -n "${PI_VERSION}" || (echo "PI_VERSION build arg is required" && exit 1)
 
@@ -58,6 +62,22 @@ RUN if [ "${INSTALL_PODMAN}" = "1" ]; then \
         && apt-get install -y --no-install-recommends podman \
         && rm -rf /var/lib/apt/lists/* \
         && apt-get clean; \
+    fi
+
+# ---- Layer 2.5: conditional Bun runtime ----
+# Bun is a dependency-free single binary. Installed to /usr/local/bin so it is
+# on PATH and requires no writes to $HOME at runtime (compatible with the
+# read-only rootfs). curl and unzip are required only by the install script
+# and are removed afterwards to keep the layer lean.
+# Enabled by PI_ENABLE_BUN=1 (off by default).
+RUN if [ "${INSTALL_BUN}" = "1" ]; then \
+        apt-get update \
+        && apt-get install -y --no-install-recommends curl unzip \
+        && curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "${BUN_VERSION}" \
+        && apt-get purge -y --auto-remove curl unzip \
+        && rm -rf /var/lib/apt/lists/* \
+        && apt-get clean \
+        && bun --version; \
     fi
 
 # ---- Layer 3: Pi Coding Agent ----

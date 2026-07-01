@@ -7,6 +7,8 @@
 #
 # Environment variables:
 #   PI_ENABLE_PODMAN      Set to 1 to mount the host Podman socket (opt-in, dangerous)
+#   PI_ENABLE_BUN         Set to 1 to bake the Bun runtime into the image (opt-in)
+#   PI_BUN_VERSION         Bun release tag to install (default: bun-v1.3.14)
 #   PI_IMAGE_NAME         Override the container image name (default: pi-container)
 #   PI_DEBUG              Set to any value to enable verbose debug output
 #   PI_MEMORY_LIMIT       Container memory limit (default: 4g)
@@ -70,6 +72,8 @@ Environment variables forwarded to the container:
 Override image name: PI_IMAGE_NAME=my-pi $(basename "$0") ...
 Enable debug output: PI_DEBUG=1 $(basename "$0") ...
 Mount host Podman socket (dangerous): PI_ENABLE_PODMAN=1 $(basename "$0") ...
+Bake Bun runtime into image: PI_ENABLE_BUN=1 $(basename "$0") ...
+Override Bun version: PI_BUN_VERSION=bun-v1.2.0 PI_ENABLE_BUN=1 $(basename "$0") ...
 Override resource limits: PI_MEMORY_LIMIT=8g PI_CPU_LIMIT=4 $(basename "$0") ...
 Npm cache size (extension installs): PI_NPM_CACHE_SIZE=512M $(basename "$0") ...
 Restrict network egress: PI_NETWORK=none $(basename "$0") ...
@@ -202,6 +206,13 @@ if [[ -n "${PI_ENABLE_PODMAN:-}" ]]; then
     INSTALL_PODMAN="1"
 fi
 
+# Whether to include the Bun runtime in the image. The image is rebuilt when
+# this value changes because it is folded into build-inputs-hash below.
+INSTALL_BUN="0"
+if [[ -n "${PI_ENABLE_BUN:-}" ]]; then
+    INSTALL_BUN="1"
+fi
+
 # ---- Stale image detection ----
 # Hash Containerfile, .containerignore, and .version so that changing any of
 # them triggers a rebuild. .version is the documented "single source of truth"
@@ -210,7 +221,7 @@ fi
 # for the Containerfile itself).
 BUILD_INPUTS_HASH=""
 if [[ -f "${SCRIPT_DIR}/Containerfile" ]]; then
-    BUILD_INPUTS_HASH="$( (cat "${SCRIPT_DIR}/Containerfile"; cat "${SCRIPT_DIR}/.containerignore" 2>/dev/null || true; cat "${VERSION_FILE}" 2>/dev/null || true; printf 'INSTALL_PODMAN=%s\n' "${INSTALL_PODMAN}") | sha256sum | cut -d' ' -f1)"
+    BUILD_INPUTS_HASH="$( (cat "${SCRIPT_DIR}/Containerfile"; cat "${SCRIPT_DIR}/.containerignore" 2>/dev/null || true; cat "${VERSION_FILE}" 2>/dev/null || true; printf 'INSTALL_PODMAN=%s\n' "${INSTALL_PODMAN}"; printf 'INSTALL_BUN=%s\n' "${INSTALL_BUN}") | sha256sum | cut -d' ' -f1)"
 fi
 
 NEEDS_REBUILD=false
@@ -235,6 +246,8 @@ if [[ "${NEEDS_REBUILD}" == true ]]; then
         -f "${SCRIPT_DIR}/Containerfile"
         --build-arg "PI_VERSION=${PI_VERSION}"
         --build-arg "INSTALL_PODMAN=${INSTALL_PODMAN}"
+        --build-arg "INSTALL_BUN=${INSTALL_BUN}"
+        --build-arg "BUN_VERSION=${PI_BUN_VERSION:-bun-v1.3.14}"
     )
 
     # Optional: force fresh base image pull

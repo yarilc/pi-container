@@ -240,9 +240,27 @@ grep -qF -- "INSTALL_PODMAN=1" "${BUILD_CAPTURE}" || fail "INSTALL_PODMAN=1 not 
 # check the build arg here.
 pass
 
-# ---- Test 15: npm cache tmpfs is mounted and PI_NPM_CACHE_SIZE honored ----
+# ---- Test 15: PI_ENABLE_BUN unset passes INSTALL_BUN=0 + default BUN_VERSION ----
 echo ""
-echo "=== Test 15: npm cache tmpfs + PI_NPM_CACHE_SIZE ==="
+echo "=== Test 15: PI_ENABLE_BUN unset -> INSTALL_BUN=0, BUN_VERSION default ==="
+: > "${BUILD_CAPTURE}"
+FAKE_IMAGE_EXISTS=1 run_wrapper >/dev/null 2>&1
+grep -qF -- "INSTALL_BUN=0" "${BUILD_CAPTURE}" || fail "INSTALL_BUN=0 not passed when PI_ENABLE_BUN unset"
+grep -qF -- "BUN_VERSION=bun-v1.3.14" "${BUILD_CAPTURE}" || fail "default BUN_VERSION not passed"
+pass
+
+# ---- Test 16: PI_ENABLE_BUN=1 sets INSTALL_BUN=1 and honors PI_BUN_VERSION ----
+echo ""
+echo "=== Test 16: PI_ENABLE_BUN=1 + PI_BUN_VERSION override ==="
+: > "${BUILD_CAPTURE}"
+FAKE_IMAGE_EXISTS=1 run_wrapper PI_ENABLE_BUN=1 PI_BUN_VERSION=bun-v1.2.0 >/dev/null 2>&1
+grep -qF -- "INSTALL_BUN=1" "${BUILD_CAPTURE}" || fail "INSTALL_BUN=1 not passed when PI_ENABLE_BUN set"
+grep -qF -- "BUN_VERSION=bun-v1.2.0" "${BUILD_CAPTURE}" || fail "PI_BUN_VERSION override not forwarded"
+pass
+
+# ---- Test 17: npm cache tmpfs is mounted and PI_NPM_CACHE_SIZE honored ----
+echo ""
+echo "=== Test 17: npm cache tmpfs + PI_NPM_CACHE_SIZE ==="
 : > "${CAPTURE}"
 run_wrapper >/dev/null 2>&1
 assert_capture_has "--tmpfs" "--tmpfs flag absent (npm cache tmpfs missing)"
@@ -259,9 +277,9 @@ grep -qF "${FAKE_HOME}/.npm:rw,noexec,nosuid,size=512M" "${CAPTURE}" \
     || fail "PI_NPM_CACHE_SIZE=512M not honored in tmpfs size"
 pass
 
-# ---- Test 16: PI_ENV_VARS forwards extra env vars by name only ----
+# ---- Test 18: PI_ENV_VARS forwards extra env vars by name only ----
 echo ""
-echo "=== Test 16: PI_ENV_VARS forwards vars by name, never by value ==="
+echo "=== Test 18: PI_ENV_VARS forwards vars by name, never by value ==="
 : > "${CAPTURE}"
 run_wrapper PI_ENV_VARS="MY_TOOL_TOKEN OTHER_VAR" MY_TOOL_TOKEN=sekret456 >/dev/null 2>&1
 # The set var is forwarded by name only
@@ -273,9 +291,9 @@ assert_capture_lacks "MY_TOOL_TOKEN=sekret456" "PI_ENV_VARS forwarded as NAME=va
 assert_capture_lacks "OTHER_VAR" "unset PI_ENV_VARS name unexpectedly forwarded"
 pass
 
-# ---- Test 17: PI_ENV_VARS skips names already handled explicitly ----
+# ---- Test 19: PI_ENV_VARS skips names already handled explicitly ----
 echo ""
-echo "=== Test 17: PI_ENV_VARS skips already-handled names ==="
+echo "=== Test 19: PI_ENV_VARS skips already-handled names ==="
 : > "${CAPTURE}"
 run_wrapper PI_ENV_VARS="HOME ANTHROPIC_API_KEY CUSTOM_VAR" ANTHROPIC_API_KEY=dupkey CUSTOM_VAR=val1 >/dev/null 2>&1
 # HOME is forwarded by name via the explicit path; ANTHROPIC_API_KEY too.
