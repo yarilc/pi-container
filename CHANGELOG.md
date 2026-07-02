@@ -9,6 +9,10 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
 ## [Unreleased]
 
 ### Added
+- Containers are now automatically named `<basename>-<N>` (e.g. `pi-container-0`,
+  `pi-container-1`). The suffix is the lowest available integer, so names are
+  reused when containers exit (via `--rm`). Concurrent instances get unique names
+  for easy identification and management via `podman exec`/`podman logs`.
 - `PI_ENABLE_BUN=1`: bake the [Bun](https://bun.sh/) runtime into the image
   (opt-in, off by default). Bun is installed as a single dependency-free
   binary in `/usr/local/bin/bun` (on `PATH`, no writes to `$HOME` at runtime

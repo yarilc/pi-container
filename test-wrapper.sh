@@ -59,6 +59,22 @@ case "${1:-}" in
         for a in "$@"; do printf '%s\n' "${a}" >> "${PODMAN_CAPTURE}"; done
         exit 0
         ;;
+    container)
+        case "${2:-}" in
+            exists)
+                # Simulate: names matching *-0 exist, others don't
+                case "${3:-}" in
+                    *-0) exit 0 ;;
+                    *)   exit 1 ;;
+                esac
+                ;;
+            *)
+                # Unexpected container subcommand — fail fast
+                printf 'UNEXPECTED podman container %s\n' "${2:-}" >&2
+                exit 1
+                ;;
+        esac
+        ;;
 esac
 exit 0
 FAKE
@@ -306,6 +322,29 @@ assert_capture_has "CUSTOM_VAR" "PI_ENV_VARS custom name not forwarded"
 _count=$(grep -cF -- "-e" "${CAPTURE}" 2>/dev/null || echo 0)
 _dup=$(grep -cF -- "ANTHROPIC_API_KEY" "${CAPTURE}" 2>/dev/null || echo 0)
 [[ "${_dup}" -eq 1 ]] || fail "ANTHROPIC_API_KEY forwarded ${_dup} times (expected 1)"
+pass
+
+# ---- Test 20: container naming picks lowest available suffix ----
+echo ""
+echo "=== Test 20: container naming picks lowest available suffix ==="
+: > "${CAPTURE}"
+# Fake podman has *-0 as existing. The wrapper should skip 0 and pick the next.
+# PROJECT_DIR basename is "project", so expected name ends with -1.
+run_wrapper >/dev/null 2>&1
+# Extract the container name: grep for the line AFTER --name
+_container_name=$(grep -A1 -- "--name" "${CAPTURE}" | tail -1 | tr -d '[:space:]')
+if [[ "${_container_name}" != "project-1" ]]; then
+    fail "expected container name 'project-1', got '${_container_name}'"
+fi
+echo "container name: ${_container_name} (suffix correctly skipped 0)"
+pass
+
+# ---- Test 21: --name flag present in RUNTIME_ARGS ----
+echo ""
+echo "=== Test 21: --name flag present in RUNTIME_ARGS ==="
+: > "${CAPTURE}"
+run_wrapper >/dev/null 2>&1
+assert_capture_has "--name" "--name flag missing from RUNTIME_ARGS"
 pass
 
 echo ""

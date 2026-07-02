@@ -257,6 +257,7 @@ forwarded to the container automatically.
 | Signal handling | `--init` for signal forwarding and zombie reaping |
 | Stale image detection | Content-hash comparison against Containerfile and `.version` |
 | Conditional TTY | `-t` only when stdin is a terminal |
+| Container naming | `<dir>-<N>` (e.g. `pi-container-0`); lowest available suffix, `--rm` frees names on exit |
 
 > **Network egress is unrestricted by default.** An autonomous agent with
 > network access and read access to mounted volumes (including
@@ -459,6 +460,7 @@ on the next run.
 - **Custom image name**: `PI_IMAGE_NAME=my-pi pic ...`
 - **Rebuild the image**: `podman rmi pi-container` (or change `Containerfile` to trigger auto-rebuild)
 - **Interactive CLI args**: all arguments pass straight through to Pi — use `--help` to see Pi's full CLI, or `--wrapper-help` for wrapper-specific options
+- **Multiple instances**: containers are named `<directory>-0`, `<directory>-1`, etc. Concurrent instances get the lowest available suffix.
 
 ## Troubleshooting
 

@@ -65,9 +65,15 @@ Examples:
   $(basename "$0") -p "Summarize the README"
   $(basename "$0") --model sonnet "Review the test suite"
 
+Container naming: containers are named <dir>-<N> (e.g. pi-container-0).
+
+The CONTAINER_NAME environment variable is set inside the container:
+  e.g. CONTAINER_NAME=pi-container-0
+
 Environment variables forwarded to the container:
   ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY,
-  HTTP_PROXY, HTTPS_PROXY, NO_PROXY
+  HTTP_PROXY, HTTPS_PROXY, NO_PROXY,
+  CONTAINER_NAME
 
 Override image name: PI_IMAGE_NAME=my-pi $(basename "$0") ...
 Enable debug output: PI_DEBUG=1 $(basename "$0") ...
@@ -161,6 +167,38 @@ case "${PWD_REAL}" in
         fi
         ;;
 esac
+
+# Derive a container name from the working directory.
+# Format: <basename>-<suffix> where suffix is the lowest available integer
+# starting at 0 (e.g. pi-container-0, pi-container-1, ...).
+CONTAINER_BASE="$(basename "${PWD}")"
+# Sanitize: strip non-alphanumeric chars except _ . -
+CONTAINER_BASE="$(printf '%s' "${CONTAINER_BASE}" | tr -cd 'a-zA-Z0-9._-')"
+# Truncate to 64 chars to stay within podman name limits
+CONTAINER_BASE="${CONTAINER_BASE:0:64}"
+# Fallback for empty/invalid names (e.g. PWD is / or .)
+CONTAINER_BASE="${CONTAINER_BASE:-pi}"
+
+# Find the lowest available suffix. Safety limit prevents infinite loop
+# if podman behaves unexpectedly (e.g. exists returns 0 for all names).
+CONTAINER_SUFFIX=0
+while true; do
+    CONTAINER_NAME="${CONTAINER_BASE}-${CONTAINER_SUFFIX}"
+    if ! podman container exists "${CONTAINER_NAME}" 2>/dev/null; then
+        break
+    fi
+    CONTAINER_SUFFIX=$((CONTAINER_SUFFIX + 1))
+    if [[ ${CONTAINER_SUFFIX} -gt 100 ]]; then
+        printf 'ERROR: Could not find available container name after 100 attempts.\n' >&2
+        exit 1
+    fi
+done
+
+# Note: inherent TOCTOU race between 'exists' returning false and 'run --name'.
+# Two simultaneous launches may pick the same suffix; the second will fail with
+# "name already in use". This is acceptable for a dev tool — the user re-runs.
+
+debug "Container name: ${CONTAINER_NAME}"
 
 # Check that at least one API key is set
 HAS_KEY=false
@@ -423,6 +461,10 @@ if [[ -n "${PI_ENV_VARS:-}" ]]; then
     done
     unset _var
 fi
+
+# Container name
+RUNTIME_ARGS+=(--name "${CONTAINER_NAME}")
+RUNTIME_ARGS+=(-e "CONTAINER_NAME=${CONTAINER_NAME}")
 
 # Image name
 RUNTIME_ARGS+=("${IMAGE_NAME}")
