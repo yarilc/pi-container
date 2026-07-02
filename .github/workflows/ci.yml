@@ -81,7 +81,7 @@ jobs:
       - name: Build image for scanning
         run: |
           PI_VERSION="$(head -1 .version | tr -d '[:space:]')"
-          podman build -t pi-container-scan -f Containerfile --build-arg "PI_VERSION=${PI_VERSION}" .
+          podman build --format docker -t pi-container-scan -f Containerfile --build-arg "PI_VERSION=${PI_VERSION}" .
 
       - name: Save image as tarball
         run: podman save pi-container-scan -o /tmp/pi-container-scan.tar

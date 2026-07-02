@@ -82,7 +82,7 @@ trap cleanup EXIT
 
 # ---- Test 1: Image builds ----
 echo "=== Test 1: Image builds ==="
-podman build -t "${IMAGE_NAME}" -f Containerfile --build-arg "PI_VERSION=${PI_VERSION}" --build-arg "INSTALL_PODMAN=0" --build-arg "INSTALL_BUN=0" .
+podman build --format docker -t "${IMAGE_NAME}" -f Containerfile --build-arg "PI_VERSION=${PI_VERSION}" --build-arg "INSTALL_PODMAN=0" --build-arg "INSTALL_BUN=0" .
 BUILT_IMAGE="${IMAGE_NAME}"
 echo "PASS"
 
@@ -283,7 +283,7 @@ if podman image exists "${BUN_IMAGE_NAME}" 2>/dev/null; then
     echo "ERROR: Image '${BUN_IMAGE_NAME}' already exists." >&2
     exit 1
 fi
-podman build -t "${BUN_IMAGE_NAME}" -f Containerfile \
+podman build --format docker -t "${BUN_IMAGE_NAME}" -f Containerfile \
     --build-arg "PI_VERSION=${PI_VERSION}" \
     --build-arg "INSTALL_PODMAN=0" \
     --build-arg "INSTALL_BUN=1" \

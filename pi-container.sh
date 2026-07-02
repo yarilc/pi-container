@@ -244,6 +244,7 @@ if [[ "${NEEDS_REBUILD}" == true ]]; then
     BUILD_ARGS=(
         -t "${IMAGE_NAME}"
         -f "${SCRIPT_DIR}/Containerfile"
+        --format docker
         --build-arg "PI_VERSION=${PI_VERSION}"
         --build-arg "INSTALL_PODMAN=${INSTALL_PODMAN}"
         --build-arg "INSTALL_BUN=${INSTALL_BUN}"

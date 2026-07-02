@@ -38,6 +38,12 @@ ARG BUN_VERSION=bun-v1.3.14
 
 RUN test -n "${PI_VERSION}" || (echo "PI_VERSION build arg is required" && exit 1)
 
+# Use bash with pipefail as the default shell for RUN commands. The base image's
+# default /bin/sh is dash, which does not support `set -o pipefail`; this makes
+# pipe failures (e.g. `curl ... | bash`) propagate correctly and satisfies
+# hadolint DL4006. bash is already present in the node base image.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 LABEL org.opencontainers.image.title="Pi Coding Agent Container"
 LABEL org.opencontainers.image.description="Containerized Pi Coding Agent for Podman rootless"
 LABEL org.opencontainers.image.version="${PI_VERSION}"
