@@ -206,10 +206,10 @@ if [[ -n "${ANTHROPIC_API_KEY:-}" || -n "${OPENAI_API_KEY:-}" || -n "${GOOGLE_AP
     HAS_KEY=true
 fi
 
-if [[ "${HAS_KEY}" == false ]]; then
-    printf 'WARNING: No API key found. Pi requires at least one provider key.\n' >&2
-    printf '  Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY.\n' >&2
-fi
+# if [[ "${HAS_KEY}" == false ]]; then
+#     printf 'WARNING: No API key found. Pi requires at least one provider key.\n' >&2
+#     printf '  Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY.\n' >&2
+# fi
 
 # Warn about unrestricted network egress when keys are present (F-07)
 if [[ "${HAS_KEY}" == true && -z "${PI_NETWORK:-}" ]]; then
