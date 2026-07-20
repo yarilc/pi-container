@@ -29,7 +29,7 @@
 #   The current mutable tag is used for ease of automated rebuilds.
 #   Weekly CI scans (Trivy) monitor for CVEs in the floating base.
 
-FROM docker.io/library/node:22-bookworm-slim
+FROM docker.io/library/node:26-bookworm-slim
 
 ARG PI_VERSION
 ARG INSTALL_PODMAN=0
