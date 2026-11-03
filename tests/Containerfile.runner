@@ -1,0 +1,5 @@
+# Disposable test tooling; never part of the production Pi image.
+FROM docker.io/library/python:3.11-slim-bookworm
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends bash git podman coreutils \
+    && rm -rf /var/lib/apt/lists/*

@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 # Pi Coding Agent — container image
 #
-# Designed for rootless Podman: the pi process runs as root inside the
-# container. Rootless Podman maps root (UID 0) to the host user,
-# ensuring correct file permissions on all mounted volumes.
+# Designed for rootless Podman with keep-id: the launcher runs Pi as the
+# caller's numeric UID/GID without capabilities. Tooling in /usr/local is
+# readable/executable by arbitrary users; state/cache mounts provide writes.
 #
 # Single-stage build with separated layers:
 #   Layer 1: system packages (git, ripgrep, nano, bash, ca-certificates)

@@ -53,15 +53,38 @@ jobs:
       - name: Install Podman
         run: |
           sudo apt-get update
-          sudo apt-get install -y podman
+          sudo apt-get install -y podman python3
 
       - name: Wrapper logic tests (no build)
         run: |
           chmod +x ./test-wrapper.sh ./test.sh
           ./test-wrapper.sh
 
-      - name: Image smoke tests
+      - name: Start same-host rootless service for acceptance
+        run: |
+          socket="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
+          mkdir -p "$(dirname "$socket")"
+          podman system service --time=0 "unix://$socket" >"$RUNNER_TEMP/pi-service.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/pi-service.pid"
+          for attempt in $(seq 1 50); do
+            if podman --remote --url "unix://$socket" info >/dev/null 2>&1; then
+              echo "CONTAINER_HOST=unix://$socket" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            sleep 0.1
+          done
+          cat "$RUNNER_TEMP/pi-service.log"
+          exit 1
+
+      - name: Image smoke and real wrapper acceptance
         run: ./test.sh
+
+      - name: Stop owned acceptance service
+        if: always()
+        run: |
+          if test -f "$RUNNER_TEMP/pi-service.pid"; then
+            kill "$(cat "$RUNNER_TEMP/pi-service.pid")" || true
+          fi
 
   scan:
     # Skip on pull_request (forks lack security-events: write permission)

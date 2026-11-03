@@ -2,16 +2,17 @@
 
 Run [Pi Coding Agent](https://pi.dev) transparently inside a **Podman container**,
 with access to your Pi configuration (`~/.pi`), skills (`~/.agents`), and the
-current project directory — no permission headaches.
+current project directory, with predictable host file ownership.
 
-> Note: only `~/.pi`, `~/.agents`, the current working directory, and (if
+> By default, only `~/.pi`, `~/.agents`, the current working directory, and (if
 > present) `~/.gitconfig` are mounted. Other host config such as `~/.ssh` or
 > `~/.config` is intentionally **not** exposed to the container.
 
 ## Requirements
 
 - **Podman** ≥ 4.x (rootless mode, no `sudo` needed)
-- Linux (works on WSL2 as well)
+- Linux (including WSL2), GNU coreutils `timeout`, and native Linux storage for private state
+- Python 3 for synthetic tests; the runtime runner provisions its own test tools
 
 ## Quick start
 
@@ -36,35 +37,35 @@ Subsequent runs start instantly. The image is rebuilt automatically whenever
 
 ### Permission model
 
-The main challenge with running CLI tools inside a container is **file ownership**:
-files created inside the container (sessions, config, git repos) must be owned by
-your host user, not by a container-internal user like `root` or `node`.
+Pi runs as your numeric UID/GID using `--userns=keep-id --user <uid>:<gid>`.
+Files created on writable binds retain your host ownership. All capabilities
+are dropped; no DAC_OVERRIDE, CHOWN, SETGID, or SETUID additions are used.
+The root filesystem is read-only, with no-new-privileges and resource limits.
 
 ```text
-┌─────────────────────────────────────┐
-│  Host (you, UID 1000)               │
-│                                     │
-│  rootless Podman user namespace     │
-│  ┌─────────────────────────────────┐│
-│  │ Container (root / UID 0)        ││
-│  │                                 ││
-│  │  pi process runs as root        ││
-│  │  ↓                              ││
-│  │  Podman maps UID 0 → UID 1000   ││
-│  │  ↓                              ││
-│  │  Files on mounted volumes       ││
-│  │  are owned by host user (you!)  ││
-│  └─────────────────────────────────┘│
-└─────────────────────────────────────┘
+Host UID/GID 1000:1000
+  -> Linux rootless Podman, keep-id
+  -> Pi UID/GID 1000:1000, no capabilities
+  -> workspace and private state writes owned by 1000:1000
 ```
 
-**Key insight:** Pi runs as `root` inside the container. Rootless Podman
-transparently maps the container's root (UID 0) to your host UID, so every
-file written to any mounted volume ends up with your ownership on the host.
+Every build and session first verifies a Linux rootless launch engine.
+Local Podman and explicit same-host absolute Unix `CONTAINER_HOST` endpoints
+are supported. Named connections, TCP/SSH, implicit remote contexts, and
+Unix paths consisting only of slashes are rejected. `PI_ALLOW_ROOTFUL`
+is removed and cannot bypass verification. Engine replies must be complete,
+with no CR or extra records, including extra blank records.
 
-To reduce risk, capabilities are dropped to a minimum set
-(`DAC_OVERRIDE`, `CHOWN`, `SETGID`, `SETUID`) and the container's root
-filesystem is mounted read-only with a small tmpfs for `/tmp`.
+Writable `~/.pi` and `~/.agents` must belong to you, allow read/write/traverse,
+and grant no group/other permissions. Missing directories are created privately
+with a scoped umask 077 before image operations. Existing state is never
+chmodded, chowned, replaced, or populated from other credential stores.
+If rejected, inspect and explicitly repair the named directory yourself or
+relocate it to private native Linux storage and use a directory symlink.
+Filesystems that ignore Unix modes cannot provide this privacy check.
+Read-only mode requires existing readable/traversable directories, without
+requiring ownership/privacy/write access; their confidentiality remains yours
+to manage. Missing read-only state fails without creating it.
 
 ### Volume mounts
 
@@ -75,9 +76,21 @@ filesystem is mounted read-only with a small tmpfs for `/tmp`.
 | `${PWD}` | Current working directory (same path inside and out) | Always writable |
 | `${HOME}/.gitconfig` | Git identity (if present) | `PI_MOUNT_GITCONFIG=0` to skip |
 
-All mounts (except `.gitconfig`) use **bind mounts** at **identical paths** inside the container,
-with **SELinux labels** (`:Z`) for compatibility with enforcing SELinux systems.
-On non-SELinux systems the `:Z` flag is harmless.
+The workspace uses `pwd -P`: its physical absolute source and destination
+are identical, as is the working directory. State sources are resolved
+physically and mounted at the existing HOME-relative destinations. No host
+SELinux labels are changed automatically (`:z`/`:Z` are omitted). Access
+failures require checking host policy and permissions explicitly; the wrapper
+never disables confinement or repairs labels.
+
+Temporary storage is declared explicitly with automatic read-only tmpfs
+provisioning disabled. `/tmp` and `/var/tmp` are each 256 MiB, `/run` is 32 MiB,
+and `~/.npm` defaults to 256 MiB (`PI_NPM_CACHE_SIZE` overrides it). All are
+rw,nosuid,nodev,noexec. The first three use mode 1777; npm cache uses mode 0700
+and your UID/GID. Delegated-client stores at `/var/lib/containers` (256 MiB)
+and `/run/containers` (64 MiB) use the same hardening and private ownership.
+Private tmpfs ownership uses Podman `U`; host binds never use recursive
+ownership changes. Every temporary store disappears with the session.
 
 > **Security note:** `~/.pi` and `~/.agents` are mounted **read-write by default**.
 > A compromised agent could plant malicious extensions that persist across runs.
@@ -92,6 +105,47 @@ On non-SELinux systems the `:Z` flag is harmless.
 > Override the cache size with `PI_NPM_CACHE_SIZE` (default: `256M`).
 
 ## Usage
+
+### Wrapper modes
+
+```bash
+pic --container-help                 # also --wrapper-help; no prerequisites
+pic --container-build --version      # force refresh, then start Pi
+pic --container-shell                # Bash with the same sandbox and cleanup
+pic --container-git-worktree         # expose the entire immediate parent
+```
+
+Worktree mode keeps the physical original workdir but exposes siblings in the
+immediate parent read/write. No higher ancestor is selected. It requires the
+explicit flag and applies the sensitive-directory guard to the exposed parent.
+Shell mode discards native Pi arguments; other modes strip only wrapper flags.
+Native `--help` remains Pi's help.
+
+### Session lifecycle
+
+Names are reserved atomically through `podman create`, starting above the
+highest matching suffix across running and stopped containers (`08` is decimal
+8). At most 20 confirmed collisions are retried; existing containers are never
+replaced. `CONTAINER_NAME` inside the session matches the reserved name.
+
+Creation uses a private full-ID record. Attachment preserves stdin and EOF.
+Application/attach exit codes, including 125, survive cleanup failures.
+TERM/INT/HUP select 143/130/129; the first signal is forwarded once and later
+signals neither replace it nor renew deadlines. Attached shutdown allows 5s
+application grace. Each signal/removal control has a 5s timeout plus 1s forced
+termination; local-client reaping allows TERM 5s then KILL 1s.
+Interrupted creation allows 5s completion, TERM 5s, KILL 1s, then re-reads the
+CID and attempts removal within 5s+1s (17s total phase budgets). Attached
+shutdown has at most 23s of phase budgets, excluding scheduling overhead.
+
+Only this invocation's verified full ID is removed. Missing/invalid ownership
+is reported without deleting by name. Cancelling a local client does not prove
+the server stopped creating the container; engine loss, late results, or SIGKILL
+can leave resources requiring explicit inspection and cleanup. `PI_RUN_TIMEOUT`
+is Podman's native container lifetime option, independent of these budgets;
+its exit status depends on the supported engine and application. The tested
+rootless service returned 255 for a sleeping shell with a one-second lifetime;
+this observation is not a portable exit-code guarantee.
 
 ### Interactive mode (default)
 
@@ -138,8 +192,8 @@ pic --name "my-task" -p "Finish what I started"
 echo "List files" | pic -p
 ```
 
-When stdin is not a terminal (e.g. pipes, CI pipelines), the `-t` flag is
-automatically omitted, allowing clean non-interactive usage.
+TTY allocation requires both stdin and stdout to be terminals. Piped or file
+input and EOF are retained even though the attach client runs in the background.
 
 ### Installing extensions
 
@@ -186,7 +240,7 @@ API key). Use `PI_ENV_VARS` to forward arbitrary variables **by name**.
 `PI_ENV_VARS` is a space-separated list of variable **names**. Each name that
 is set and non-empty in the host environment is forwarded to the container via
 `-e NAME` (by name only, never as `NAME=value`), so secret values never appear
-on the process command line (visible via `ps aux` / `podman inspect`).
+on the process command line. Podman still stores their values in container inspection metadata.
 Variables that are unset or empty are skipped silently.
 
 ```bash
@@ -204,7 +258,8 @@ PI_ENV_VARS="GITHUB_TOKEN DATABASE_URL" pic "review the schema"
 
 Names already handled explicitly by the wrapper (`HOME`, `TERM`, `EDITOR`,
 `VISUAL`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`,
-`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`) are skipped if listed in `PI_ENV_VARS`
+`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `CONTAINER_NAME`, `CONTAINER_HOST`,
+`CONTAINER_CONNECTION`) are skipped if listed in `PI_ENV_VARS`
 to avoid duplicate forwarding.
 
 > ⚠️ **Security note:** `PI_ENV_VARS` only forwards the *names*; the *values*
@@ -225,8 +280,9 @@ forwarded to the container automatically.
 | --- | --- |
 | `PI_IMAGE_NAME` | Override the container image name (default: `pi-container`) |
 | `PI_DEBUG` | Set to any value to enable verbose debug output |
-| `PI_ENABLE_PODMAN` | Set to `1` to mount the host Podman socket (opt-in, dangerous) |
-| `PI_ENABLE_BUN` | Set to `1` to bake the Bun runtime into the image (opt-in). See [Bun runtime](#bun-runtime-opt-in) |
+| `PI_ENABLE_PODMAN` | Only exact `1` enables the client and verified host socket; all other values disable delegation |
+| `PI_PODMAN_SOCKET` | Absolute accessible socket override; then Unix `CONTAINER_HOST`, then `${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock` |
+| `PI_ENABLE_BUN` | Nonempty enables Bun (legacy behavior); use `1` to bake the Bun runtime into the image (opt-in). See [Bun runtime](#bun-runtime-opt-in) |
 | `PI_BUN_VERSION` | Bun release tag to install when `PI_ENABLE_BUN=1` (default: `bun-v1.3.14`) |
 | `PI_MEMORY_LIMIT` | Container memory limit (default: `4g`) |
 | `PI_CPU_LIMIT` | Container CPU limit (default: `2`) |
@@ -236,9 +292,8 @@ forwarded to the container automatically.
 | `PI_READONLY_CONFIG` | Set to `1` to mount `~/.pi` and `~/.agents` read-only (prevents persistence) |
 | `PI_MOUNT_GITCONFIG` | Set to `0` to skip mounting `~/.gitconfig` (default: `1`, mount if present) |
 | `PI_PULL_ALWAYS` | Set to `1` to force `podman build --pull=always` |
-| `PI_RUN_TIMEOUT` | Timeout in seconds for `podman run` (default: 0 = no timeout, e.g. `3600` for 1h) |
+| `PI_RUN_TIMEOUT` | Native Podman container lifetime in seconds, placed before the image (0 disables); independent of shutdown budgets |
 | `PI_ENV_VARS` | Space-separated list of extra env var **names** to forward to the container (for skill/extension/tool secrets; forwarded by name only, never as `NAME=value`). See [Custom environment variables](#custom-environment-variables) |
-| `PI_ALLOW_ROOTFUL` | Set to `1` to allow running under rootful Podman (not recommended) |
 | `PI_ALLOW_UNSAFE_PWD` | Set to `1` to allow running from sensitive directories (not recommended) |
 | `TERM` | Terminal type (forwarded for TUI rendering) |
 | `EDITOR`, `VISUAL` | Host editor preference (forwarded with fallback to `nano`) |
@@ -247,17 +302,17 @@ forwarded to the container automatically.
 
 | Control | Implementation |
 | --- | --- |
-| Capabilities | `--cap-drop=ALL`, only `DAC_OVERRIDE`, `CHOWN`, `SETGID`, `SETUID` added back |
-| Root filesystem | `--read-only` with `--tmpfs /tmp` and `--tmpfs ~/.npm` (npm cache for `pi install`) |
+| Identity / capabilities | Caller UID/GID, keep-id, `--cap-drop=ALL`, no additions |
+| Root filesystem | Read-only; explicit bounded `/tmp`, `/var/tmp`, `/run`, and npm cache |
 | Privilege escalation | `--security-opt=no-new-privileges` |
 | Resource limits | `--memory=4g`, `--cpus=2`, `--pids-limit=512` (configurable) |
-| SELinux | `:Z` label on `~/.pi`, `~/.agents`, and `$PWD` mounts |
+| SELinux | Host labels and confinement remain unchanged |
 | Sensitive PWD guard | Refuses to run from `/`, `$HOME`, `/etc`, etc. (override: `PI_ALLOW_UNSAFE_PWD`) |
-| Rootless enforcement | Refuses rootful Podman (override: `PI_ALLOW_ROOTFUL`) |
-| Signal handling | `--init` for signal forwarding and zombie reaping |
+| Rootless enforcement | Verified Linux rootless engine before image operations; no override |
+| Signal handling | Owned full-ID lifecycle with finite cleanup phases; `--init` for reaping |
 | Stale image detection | Content-hash comparison against Containerfile and `.version` |
-| Conditional TTY | `-t` only when stdin is a terminal |
-| Container naming | `<dir>-<N>` (e.g. `pi-container-0`); lowest available suffix, `--rm` frees names on exit |
+| Conditional TTY | Only when stdin and stdout are terminals |
+| Container naming | Sanitized `<dir>-<N>`, max existing suffix+1 including stopped containers; atomic create, at most 20 attempts |
 
 > **Network egress is unrestricted by default.** An autonomous agent with
 > network access and read access to mounted volumes (including
@@ -294,10 +349,30 @@ podman images   # Lists host images
 
 ### Podman socket architecture
 
-When `PI_ENABLE_PODMAN=1` is set, the wrapper automatically rebuilds the image
-with the `podman` CLI included (via the `INSTALL_PODMAN` build arg) and mounts
-the host Podman socket into the container. Disabling `PI_ENABLE_PODMAN`
-rebuilds without the `podman` client (smaller image).
+Only exact `PI_ENABLE_PODMAN=1` installs the client and enables delegation.
+Unset, empty, `0`, `false`, `true`, `yes`, and all other values disable it;
+migrate earlier truthy configurations to `1`.
+
+Selection uses `PI_PODMAN_SOCKET`, then explicit Unix `CONTAINER_HOST`, then
+`${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock`. The accessible socket
+must be absolute, canonical, readable/writable, and report a rootless service
+with an absolute `Host.RemoteSocket.Path`. Enabled verification failures stop
+before image operations; no warning-only fallback or automatic service start
+occurs. Start the rootless service yourself if needed, for example
+`systemctl --user start podman.socket`.
+
+The verified service reports the host-side bind source, which may differ from
+the socket visible to a containerized caller. It is mounted at
+`/run/podman/podman.sock`, with session
+`CONTAINER_HOST=unix:///run/podman/podman.sock`. Disabled sessions explicitly
+unset `CONTAINER_HOST`; `PI_ENV_VARS` cannot change this selection or inject a
+named connection. Containerized callers must preserve host absolute workspace
+and state paths. Use a same-host service; a Unix URI alone does not establish
+host identity. Client/server version compatibility is still required.
+
+Delegation gives the service user's authority over host containers and allows
+further host mounts beyond the workspace. It is independent of Bun and native
+Pi permission controls.
 
 ## Bun runtime (opt-in)
 
@@ -336,51 +411,18 @@ Disabling `PI_ENABLE_BUN` rebuilds without the Bun binary (smaller image).
 The Bun version is folded into the stale-image hash, so changing
 `PI_BUN_VERSION` triggers a rebuild automatically.
 
-```text
-┌───────────────────────────────────────────┐
-│  Host                                      │
-│  ┌───────────────────────────────────────┐ │
-│  │ Podman socket:                        │ │
-│  │   /run/user/1000/podman/podman.sock  │ │
-│  └──────────────┬────────────────────────┘ │
-│                 │ bind mount (opt-in)       │
-│  ┌──────────────▼────────────────────────┐ │
-│  │ Container (Pi)                        │ │
-│  │   CONTAINER_HOST=unix://.../socket    │ │
-│  │   podman ps   → talks to host socket  │ │
-│  └───────────────────────────────────────┘ │
-└───────────────────────────────────────────┘
-```
-
-### Prerequisites
-
-Ensure the Podman socket is active on the host:
-
-```bash
-systemctl --user enable --now podman.socket
-```
-
-### Limitations
-
-- **Version compatibility:** The `podman` client in the container (Debian
-  Bookworm package) must be compatible with the host's podman server.
-  Version differences may cause API incompatibilities.
-- **Service must be running:** The script does not start the Podman service
-  automatically. Use `systemctl --user start podman.socket` to ensure it is
-  active.
-
 ## Stale image detection
 
 The script computes a SHA-256 hash of the `Containerfile`, `.containerignore`,
-**and** `.version` and stores it as a label (`build-inputs-hash`) on the built
+`.version`, Podman/Bun selection, and selected Bun version, and stores it as a label (`build-inputs-hash`) on the built
 image. On each run it recomputes the hash and rebuilds the image automatically
 if any of these files has changed. This ensures you never accidentally run with
 an outdated image after modifying the Containerfile, changing build context
 rules, or bumping the Pi version in `.version`.
 
 > **Note:** The base image (`node:22-bookworm-slim`) uses a mutable tag and is
-> not included in the hash. To force a fresh base image pull, set
-> `PI_PULL_ALWAYS=1` or manually `podman pull` the base image. Weekly CI scans
+> not included in the hash. To force a fresh build and base image pull, use
+> `PI_PULL_ALWAYS=1 pic --container-build --version`. Weekly CI scans
 > monitor the built image for CVEs.
 
 ## File layout
@@ -392,7 +434,9 @@ pi-container/
 ├── .containerignore            # Build context exclusions
 ├── .version                    # Single source of truth for Pi version
 ├── test.sh                     # Image smoke tests
-├── test-wrapper.sh             # Wrapper-logic tests (fake podman, no build)
+├── test-wrapper.sh             # Synthetic wrapper entrypoint (Python 3)
+├── tests/                      # Fake engine and real rootless acceptance
+├── docs/validation.md          # Commands, results, and verification limits
 ├── .github/workflows/ci.yml   # CI pipeline
 ├── SECURITY.md                 # Vulnerability disclosure policy
 ├── LICENSE                     # MIT license
@@ -460,13 +504,13 @@ on the next run.
 - **Custom image name**: `PI_IMAGE_NAME=my-pi pic ...`
 - **Rebuild the image**: `podman rmi pi-container` (or change `Containerfile` to trigger auto-rebuild)
 - **Interactive CLI args**: all arguments pass straight through to Pi — use `--help` to see Pi's full CLI, or `--wrapper-help` for wrapper-specific options
-- **Multiple instances**: containers are named `<directory>-0`, `<directory>-1`, etc. Concurrent instances get the lowest available suffix.
+- **Multiple instances**: containers are named `<directory>-0`, `<directory>-1`, etc. Concurrent instances reserve above the highest existing suffix with bounded collision retries.
 
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
-| `EACCES: permission denied` on `~/.pi/...` | SELinux context missing | Add `:Z` to volume mounts (already included in the script) |
+| `EACCES: permission denied` on a bind | Host permissions or SELinux policy | Inspect host access/policy explicitly; the wrapper does not relabel or weaken confinement |
 | `podman: command not found` | Podman not installed | [Install Podman](https://podman.io/docs/installation) |
 | Pi hangs on non-interactive use | `-t` flag allocated without TTY | Script now auto-detects TTY and omits `-t` when not available |
 | `pi: command not found` | npm install failed | Rebuild: `podman rmi pi-container && ./pi-container.sh --version` |
@@ -475,7 +519,6 @@ on the next run.
 | API key not recognized | Empty key forwarded | Script now only forwards keys that are set and non-empty |
 | Image is stale | Containerfile changed | Automatic detection triggers rebuild |
 | Permission denied on volume | Rootful Podman (sudo) | Run without `sudo` (rootless mode) |
-| Network egress warning on start | API key set without `PI_NETWORK` | Set `PI_NETWORK=none` to suppress (and restrict egress) |
 | Read-only config error | `PI_READONLY_CONFIG=1` and Pi needs to write | Disable `PI_READONLY_CONFIG` for tasks that install extensions |
 | `npm error ENOENT ... mkdir '~/.npm'` during `pi install` | npm cache dir on the read-only rootfs | Fixed: the wrapper mounts an ephemeral tmpfs at `~/.npm`. Raise the cap with `PI_NPM_CACHE_SIZE=512M` for large extensions |
 

@@ -5,7 +5,7 @@
 If you discover a security vulnerability in pi-container, please report it
 privately by opening a GitHub Security Advisory at:
 
-  https://github.com/yarilc/pi-container/security/advisories/new
+[Open a private security advisory](https://github.com/yarilc/pi-container/security/advisories/new)
 
 **Do not report security vulnerabilities via public GitHub issues.**
 
@@ -31,18 +31,19 @@ API keys are passed to the container via environment variables. Keys are
 forwarded by name (`-e KEY`) to avoid placing secret values on the process
 command line. However, the following exposure surfaces exist:
 
-- **Container `/proc`:** Any process running as root inside the container
-  can read `/proc/1/environ` and extract keys.
+- **Container `/proc`:** Processes with appropriate access to the agent environment
+  can extract keys; untrusted code running as the same user shares its authority.
 - **`podman inspect`:** The environment variables are visible in
   `podman inspect <container>` output on the host.
 - **Host process list:** While keys are not on argv, they remain in the
   podman process's environment block, accessible to the host root user
   via `/proc/<pid>/environ`.
-- **Debug output:** When `PI_DEBUG=1` is set, runtime arguments are logged
+- **Debug output:** When `PI_DEBUG=1` is set, only argument counts are logged
   to stderr. However, because API keys are forwarded by name only (`-e KEY`
   not `-e KEY=value`), the actual key values never appear in the log.
 
 **Recommendations:**
+
 - Use API keys with usage limits and minimal permissions
 - Rotate keys regularly
 - Consider using `podman secret` for production deployments
@@ -51,12 +52,24 @@ command line. However, the following exposure surfaces exist:
 
 ### Container Privileges
 
-The pi process runs as `root` inside the container. This is by design:
-rootless Podman maps container root (UID 0) to the host user, ensuring
-correct file ownership on mounted volumes. Capabilities are restricted
-(`--cap-drop=ALL` with minimal additions) and the root filesystem is
-read-only (`--read-only`). Resource limits (`--memory=4g`, `--cpus=2`,
-`--pids-limit=512`) prevent runaway processes.
+Pi runs as the caller's numeric UID/GID with keep-id, a read-only root
+filesystem, all capabilities dropped without additions, no-new-privileges,
+and configurable resource limits. Every build/session requires a verified
+Linux rootless launch engine; the old PI_ALLOW_ROOTFUL bypass is removed.
+Local and explicit same-host absolute Unix engines are supported; named,
+TCP/SSH, and implicit remote connections are rejected. Complete engine
+responses are validated before image operations.
+
+Writable state must be physically resolved, caller-owned, accessible, and
+private (no group/other permissions). Missing state is created privately;
+existing invalid state is rejected without chmod/chown or credential import.
+Read-only state needs existing readable/traversable directories; the wrapper
+does not enforce their ownership/privacy, so confidentiality remains the
+caller's responsibility. Prefer native Linux storage enforcing Unix modes.
+
+Temporary stores are explicit, bounded, nosuid/nodev/noexec: /tmp and /var/tmp
+256 MiB each, /run 32 MiB, npm cache 256 MiB by default. Delegated-client
+stores are 256 MiB and 64 MiB. None persists after the session.
 
 ### Persistent Compromise via Extensions and Skills ⚠️
 
@@ -77,6 +90,7 @@ code execution path. The same attack surface exists for any file in
 session files.
 
 **Mitigations:**
+
 - Set `PI_READONLY_CONFIG=1` to mount `~/.pi` and `~/.agents` **read-only**
   when working with untrusted prompts or projects. This prevents the agent
   from writing any files into these directories.
@@ -89,8 +103,7 @@ session files.
 
 The container has **unrestricted outbound network access by default**, and
 mounts `~/.pi` (which contains `~/.pi/agent/auth.json` auth tokens) and the
-current project directory read-write. The AI agent runs as root inside the
-container with read access to all of this.
+current project directory read-write. The AI agent runs as the mapped caller with read access to all of this.
 
 This means a **prompt-injected or misbehaving agent could read auth tokens or
 project source and transmit them to an arbitrary endpoint.** The filesystem
@@ -98,14 +111,12 @@ and capability hardening does not mitigate this, because the agent legitimately
 has read access and unrestricted egress.
 
 **Recommendations:**
+
 - Treat the agent as trusted with everything it can read and reach over the
   network. Do not run it on projects containing secrets you would not give it.
 - Use `PI_NETWORK=none` to block all egress for tasks that do not need network
   access, or point `PI_NETWORK` at a restricted/proxied network.
 - Be cautious with untrusted project content or untrusted prompts.
-- The wrapper prints a warning when an API key is set and network is
-  unrestricted; this warning cannot be suppressed except by setting
-  `PI_NETWORK`.
 
 ### Host Git Config Exposure
 
@@ -121,6 +132,7 @@ A compromised agent can read the mounted `.gitconfig` and exfiltrate any
 embedded credentials over the unrestricted default network.
 
 **Mitigations:**
+
 - Set `PI_MOUNT_GITCONFIG=0` to prevent `~/.gitconfig` from being mounted.
 - Consider creating a minimal gitconfig with only `user.name` and `user.email`
   for use with the container.
@@ -128,24 +140,50 @@ embedded credentials over the unrestricted default network.
 
 ### Sensitive Working Directories
 
-The current working directory is bind-mounted with the `:Z` SELinux flag,
-which **recursively relabels** the directory's SELinux contexts. Running from
-`/`, `$HOME`, `/home`, `/etc`, `/usr`, `/var`, `/bin`, `/sbin`, `/lib`,
-`/lib64`, `/boot`, `/root`, `/opt`, `/srv`, `/mnt`, `/media`, `/proc`, `/sys`,
-`/dev`, or `/run` would relabel and expose large/sensitive trees (SSH keys,
-credentials). The wrapper refuses to run from such directories unless
-`PI_ALLOW_UNSAFE_PWD=1` is set. Always run from a specific project
-subdirectory.
+The physical workspace is mounted at the same absolute path and used as
+workdir. No automatic :z/:Z relabeling or host policy bypass is performed.
+SELinux denials require explicit host policy/permission inspection. The
+sensitive-directory guard rejects /, HOME, /home, /etc, /usr, /var, /bin,
+/sbin, /lib, /lib64, /boot, /root, /opt, /srv, /mnt, /media, /proc, /sys,
+/dev, and /run unless PI_ALLOW_UNSAFE_PWD is nonempty. Worktree mode applies
+the guard to the immediate parent it exposes. That explicit mode permits
+read/write access to siblings in the whole parent while retaining the
+original workdir. Always use a suitably narrow project directory.
 
 ### Podman Socket (Opt-In, Dangerous)
 
-The host Podman socket can be mounted into the container by setting
-`PI_ENABLE_PODMAN=1`. This gives the AI agent full control over the
-host's container runtime (create privileged containers, mount host
-filesystems). **This is disabled by default.** Enable only if you
-understand the risks and need container management inside pi.
+Only exact `PI_ENABLE_PODMAN=1` enables host authority and installs the
+client. All other values disable delegation, including true/yes/0/false.
+The selected absolute accessible socket (`PI_PODMAN_SOCKET`, Unix
+`CONTAINER_HOST`, then XDG runtime/UID fallback) is canonicalized and queried
+explicitly. It must report rootless operation and an absolute host socket
+path. Enabled failures abort before image operations; services are never
+started automatically. The reported host source is bound at
+`/run/podman/podman.sock`; containerized callers must retain absolute host
+workspace/state paths and select a same-host service. Unix transport alone
+cannot establish host identity.
 
-See README.md for setup instructions.
+Delegation gives control over the service user's containers and permits host
+mounts beyond the workspace. It removes the project-only access boundary.
+Without it no socket is mounted and session CONTAINER_HOST is explicitly
+unset, including PI_ENV_VARS requests. Connection forwarding cannot override
+the selected endpoint. Bun and native Pi permission flags do not enable
+socket access.
+
+### Owned Cleanup and Residual Resources
+
+Only the invocation's verified full CID from private bookkeeping authorizes
+removal; no container is deleted by reusable name or prefix. TERM/INT/HUP
+preserve the first interruption status (143/130/129); application exit codes,
+including 125, survive cleanup errors. Controls have a 5s timeout plus 1s
+kill-after, grace is 5s, and client cancellation is TERM 5s then KILL 1s.
+Interrupted creation adds at most 5s completion grace before cancellation and
+final CID recovery. Repeated signals cannot renew these deadlines.
+
+Unknown/malformed IDs, unresponsive engines, SIGKILL, and delayed server
+results may leave resources requiring explicit engine inspection. Local
+client cancellation is not server cancellation. Diagnostics report owned IDs
+or unresolved creation rather than attempting wider deletion.
 
 ### Supply Chain
 

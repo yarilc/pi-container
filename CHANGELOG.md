@@ -1,3 +1,5 @@
+<!-- markdownlint-configure-file { "MD024": { "siblings_only": true } } -->
+
 # Changelog
 
 All notable changes to pi-container are documented here.
@@ -8,11 +10,27 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
 
 ## [Unreleased]
 
+### Changed
+
+- Require verified Linux rootless launch and delegated engines; remove the
+  rootful bypass and accept delegation only for exact `PI_ENABLE_PODMAN=1`.
+- Use caller UID/GID with keep-id and no added capabilities; validate private
+  writable state and omit automatic SELinux relabeling.
+- Provision bounded hardened temporary mounts and track owned full CIDs through
+  create/attach, redirected input, application exit codes, and finite signal cleanup.
+- Include the selected Bun version in stale-image hashing and report engine/image
+  errors rather than silently rebuilding.
+
 ### Added
+
+- Wrapper build, shell, explicit parent/worktree, and prerequisite-free help modes.
+- `PI_PODMAN_SOCKET` for verified remapped same-host service access.
+- Synthetic protocol/lifecycle regressions and credential-free real rootless
+  acceptance with a disposable tooling runner and native Linux state.
 - Containers are now automatically named `<basename>-<N>` (e.g. `pi-container-0`,
-  `pi-container-1`). The suffix is the lowest available integer, so names are
-  reused when containers exit (via `--rm`). Concurrent instances get unique names
-  for easy identification and management via `podman exec`/`podman logs`.
+  `pi-container-1`). Reservation uses atomic create above the highest bounded
+  decimal suffix across running and stopped containers, with at most 20
+  collision attempts and no replacement.
 - `PI_ENABLE_BUN=1`: bake the [Bun](https://bun.sh/) runtime into the image
   (opt-in, off by default). Bun is installed as a single dependency-free
   binary in `/usr/local/bin/bun` (on `PATH`, no writes to `$HOME` at runtime
@@ -37,6 +55,7 @@ containerized Pi runner, hardening flags, CI (lint/test/scan), and all
 Critical Software Project Review (F-01–F-10) mitigations.
 
 ### Fixed
+
 - `pi install npm:<pkg>` no longer fails with `npm error ENOENT ... mkdir
   '~/.npm'` under the read-only root filesystem. The wrapper now mounts an
   ephemeral tmpfs at `${HOME}/.npm` so npm's default cache directory is
@@ -67,6 +86,7 @@ Critical Software Project Review (F-01–F-10) mitigations.
   Containerfile made it conditional but the wrapper did not pass the arg.
 
 ### Added
+
 - `PI_READONLY_CONFIG=1` mode: mounts `~/.pi` and `~/.agents` read-only to
   prevent persistent compromise via malicious extensions/skills (F-01).
 - `PI_MOUNT_GITCONFIG=0` opt-out: skip mounting `~/.gitconfig` to reduce
@@ -102,13 +122,15 @@ Critical Software Project Review (F-01–F-10) mitigations.
   version warning, resource-limit forwarding, and `--label
   build-inputs-hash`.
 
-### Fixed
+### Additional fixes
+
 - `test.sh` Test 4 no longer uses `-v /tmp:/tmp:Z` (F-05).
 - `SECURITY.md` corrected: removed inaccurate `****` masking claim (F-09).
 - `SECURITY.md` now documents the persistence vector (F-01) and
   `~/.gitconfig` credential exposure (F-08).
 
 ### Security
+
 - All findings from the Critical Software Project Review (June 2026)
   addressed: F-01 through F-10.
 - Container capabilities documented per-capability (F-10).
