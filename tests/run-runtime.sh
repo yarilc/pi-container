@@ -2,12 +2,12 @@
 # Execute credential-free acceptance from native Linux volume storage.
 set -Eeuo pipefail
 root=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-image=${PI_IMAGE_NAME:-pi-container}
+image=${PI_CONTAINER_IMAGE:-pi-container}
 command -v podman >/dev/null || { printf 'Podman is required\n' >&2; exit 1; }
 info=$(podman info --format '{{.Host.Security.Rootless}} {{.Host.OS}}')
 [[ "$info" == 'true linux' ]] || { printf 'A Linux rootless Podman engine is required\n' >&2; exit 1; }
-podman image exists "$image" || { printf 'Build the Pi image first: PI_IMAGE_NAME=%s ./pi-container.sh --container-build --version\n' "$image" >&2; exit 1; }
-socket=${PI_PODMAN_SOCKET:-}
+podman image exists "$image" || { printf 'Build the Pi image first: PI_CONTAINER_IMAGE=%s ./pi-container.sh --container-build --version\n' "$image" >&2; exit 1; }
+socket=${PI_CONTAINER_PODMAN_SOCKET:-}
 if [[ -z "$socket" && "${CONTAINER_HOST:-}" == unix:///?* ]]; then socket=${CONTAINER_HOST#unix://}; fi
 socket=${socket:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock}
 response=$(podman --remote --url "unix://$socket" info --format '{{.Host.Security.Rootless}}{{"\n"}}{{.Host.RemoteSocket.Path}}')
@@ -39,5 +39,5 @@ podman run --rm --interactive --userns=keep-id --user "$(id -u):$(id -g)" \
     --volume "$host_socket:/run/podman/podman.sock:rw" --workdir "$root" \
     --env CONTAINER_HOST=unix:///run/podman/podman.sock \
     --env "PI_TEST_RUNNER_IMAGE=$runner" --env PI_RUNTIME_TESTS=1 --env "PI_TEST_ROOT=$native_root" \
-    --env "PI_IMAGE_NAME=$image" --env "PI_TEST_BUN=${PI_TEST_BUN:-0}" \
+    --env "PI_CONTAINER_IMAGE=$image" --env "PI_TEST_BUN=${PI_TEST_BUN:-0}" \
     --entrypoint python3 "$runner" -B -m unittest discover -s tests -p test_runtime.py -v "$@"

@@ -17,11 +17,15 @@ elif args[:2] == ['image', 'exists']:
 elif args[:2] == ['image', 'inspect']:
     root = pathlib.Path(os.environ['FAKE_ROOT'])
     inputs = b''.join((root / name).read_bytes() for name in ('Containerfile', '.containerignore', '.version'))
-    inputs += ('INSTALL_PODMAN=' + ('1' if os.environ.get('PI_ENABLE_PODMAN') == '1' else '0') + '\n').encode()
+    podman = os.environ.get('PI_CONTAINER_PODMAN', os.environ.get('PI_ENABLE_PODMAN'))
+    inputs += ('INSTALL_PODMAN=' + ('1' if podman == '1' else '0') + '\n').encode()
     inputs += ('INSTALL_BUN=' + ('1' if os.environ.get('PI_ENABLE_BUN') else '0') + '\n').encode()
     inputs += ('BUN_VERSION=' + os.environ.get('PI_BUN_VERSION', 'bun-v1.3.14') + '\n').encode()
     print(os.environ.get('FAKE_LABEL_HASH', hashlib.sha256(inputs).hexdigest()))
     sys.exit(int(os.environ.get('FAKE_INSPECT_STATUS', '0')))
+elif args[:3] == ['inspect', '--type', 'container']:
+    print(os.environ.get('FAKE_AGENT_BUDGETS', '4294967296 2000000000 512'))
+    sys.exit(int(os.environ.get('FAKE_BUDGET_INSPECT_STATUS', '0')))
 elif args[0] == 'build':
     if os.environ.get('FAKE_BUILD_READ_INPUT'):
         pathlib.Path(os.environ['FAKE_LOG'] + '.build-stdin').write_text(sys.stdin.read())
@@ -72,6 +76,9 @@ elif args[0] in ('kill', 'rm'):
         if args[0] == 'rm' or not os.environ.get('FAKE_IGNORE_SIGNAL'):
             pathlib.Path(os.environ['FAKE_SESSION'] + '.done').touch()
     sys.exit(status)
+elif args[0] == 'start' and os.environ.get('FAKE_SLOW'):
+    time.sleep(float(os.environ['FAKE_SLOW']))
+    sys.exit(255)
 elif args[0] in ('run', 'start'):
     if os.environ.get('FAKE_CLIENT_IGNORE_TERM'):
         signal.signal(signal.SIGTERM, signal.SIG_IGN)

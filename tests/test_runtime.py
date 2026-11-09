@@ -17,7 +17,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 WRAPPER = ROOT / 'pi-container.sh'
-IMAGE = os.environ.get('PI_IMAGE_NAME', 'pi-container')
+IMAGE = os.environ.get('PI_CONTAINER_IMAGE', 'pi-container')
 ENABLED = os.environ.get('PI_RUNTIME_TESTS') == '1'
 
 
@@ -99,8 +99,8 @@ class RuntimeTests(unittest.TestCase):
                          'Select a native Linux PI_TEST_ROOT or use tests/run-runtime.sh')
         self.env = {k: v for k, v in os.environ.items()
                     if not k.startswith('PI_') and k not in ('CONTAINER_CONNECTION', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GOOGLE_API_KEY', 'GITHUB_TOKEN')}
-        self.env.update(HOME=str(self.home), PI_IMAGE_NAME=IMAGE, PI_ENABLE_PODMAN='0')
-        self.socket = os.environ.get('PI_PODMAN_SOCKET', '')
+        self.env.update(HOME=str(self.home), PI_CONTAINER_IMAGE=IMAGE, PI_CONTAINER_PODMAN='0')
+        self.socket = os.environ.get('PI_CONTAINER_PODMAN_SOCKET', '')
         if not self.socket:
             connection = self.env.get('CONTAINER_HOST', '')
             if connection.startswith('unix:///'):
@@ -111,7 +111,7 @@ class RuntimeTests(unittest.TestCase):
 
     def shell(self, script, *options, **env):
         return terminal_shell(['bash', str(WRAPPER), '--container-shell', *options],
-                              script, self.env | env, self.project, timeout=360 if env.get('PI_ENABLE_PODMAN') == '1' or env.get('PI_ENABLE_BUN') else 90)
+                              script, self.env | env, self.project, timeout=360 if env.get('PI_CONTAINER_PODMAN') == '1' or env.get('PI_ENABLE_BUN') else 90)
 
     def assert_success(self, result):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -310,14 +310,61 @@ NODE
 
     def test_native_lifetime_timeout(self):
         start = time.monotonic()
-        result = self.shell('sleep 30', PI_RUN_TIMEOUT='1')
+        result = self.shell('sleep 30', PI_CONTAINER_RUN_TIMEOUT='3')
         self.assertLess(time.monotonic()-start, 25, result.stdout + result.stderr)
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn('session lifetime limit reached (3 s); exit status', result.stdout + result.stderr)
         print('Native Podman lifetime timeout status:', result.returncode)
+        result = self.piped('exit 4', PI_CONTAINER_RUN_TIMEOUT='30')
+        self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+        self.assertNotIn('lifetime', result.stderr)
+
+    def piped(self, script, timeout=120, cwd=None, **env):
+        return subprocess.run(['bash', str(WRAPPER), '--container-shell'], input=script, capture_output=True,
+                              text=True, env=self.env | env, cwd=cwd or self.project, timeout=timeout)
+
+    def test_effective_hardening_and_budgets(self):
+        script = '''set -e
+grep -E '^(CapInh|CapPrm|CapEff|CapBnd|CapAmb|NoNewPrivs):' /proc/self/status
+for file in memory.max pids.max cpu.max; do printf '%s=%s\\n' "$file" "$(cat /sys/fs/cgroup/$file)"; done
+'''
+        cases = (({}, ('4294967296', '512', '200000 100000')),
+                 ({'PI_CONTAINER_MEMORY_LIMIT': '1536m', 'PI_CONTAINER_CPU_LIMIT': '1.5',
+                   'PI_CONTAINER_PIDS_LIMIT': '256'}, ('1610612736', '256', '150000 100000')))
+        for env, (memory, pids, cpu) in cases:
+            for delegated in ('0', '1'):
+                with self.subTest(env=env, delegated=delegated):
+                    extra = {'PI_CONTAINER_PODMAN': delegated}
+                    if delegated == '1':
+                        extra['PI_CONTAINER_PODMAN_SOCKET'] = self.socket
+                    result = self.piped(script, timeout=360, **env, **extra)
+                    self.assert_success(result)
+                    for field in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb'):
+                        self.assertRegex(result.stdout, field + r':\s*0+\n')
+                    self.assertRegex(result.stdout, r'NoNewPrivs:\s*1')
+                    self.assertIn('memory.max=' + memory, result.stdout)
+                    self.assertIn('pids.max=' + pids, result.stdout)
+                    self.assertIn('cpu.max=' + cpu, result.stdout)
+
+    def test_process_limit_enforced(self):
+        script = '''node -e '
+const {spawn}=require("child_process"); const kids=[]; let refused=false;
+for (let i=0;i<80;i++) { try { const c=spawn("sleep",["30"]); c.on("error",()=>{refused=true}); kids.push(c); } catch (e) { refused=true; break; } }
+setTimeout(()=>{ kids.forEach(k=>{ try{k.kill()}catch(e){} }); console.log(refused?"PIDS_BUDGET_ENFORCED":"PIDS_NOT_ENFORCED"); },1500);
+'
+'''
+        result = self.piped(script, PI_CONTAINER_PIDS_LIMIT='32')
+        self.assert_success(result)
+        self.assertIn('PIDS_BUDGET_ENFORCED', result.stdout)
+
+    def test_sensitive_home_refused(self):
+        result = self.piped('exit 0', cwd=self.home)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('refusing sensitive workspace', result.stderr)
 
     def test_delegated_child_and_remapped_containerized_caller(self):
         script = 'set -e\ntest -S /run/podman/podman.sock\nfor directory in /var/lib/containers /run/containers; do test ! -e "$directory/sentinel"; printf temporary > "$directory/sentinel"; test "$(stat -c %u "$directory")" = "$(id -u)"; test "$(stat -c %a "$directory")" = 700; done\npodman run --rm --read-only --userns=keep-id --user "$(id -u):$(id -g)" --volume "$PWD:$PWD:rw" --workdir "$PWD" --entrypoint /bin/sh ' + shlex.quote(IMAGE) + " -ec 'printf child > child-file'\n"
-        self.assert_success(self.shell(script, PI_ENABLE_PODMAN='1', PI_PODMAN_SOCKET=self.socket))
+        self.assert_success(self.shell(script, PI_CONTAINER_PODMAN='1', PI_CONTAINER_PODMAN_SOCKET=self.socket))
         self.assertEqual((self.project / 'child-file').stat().st_uid, os.getuid())
         host = self.engine('--remote', '--url', 'unix://' + self.socket, 'info', '--format', '{{.Host.RemoteSocket.Path}}')
         self.assert_success(host)
@@ -328,7 +375,7 @@ NODE
                    '--volume',f'{ROOT}:{ROOT}:ro','--volume',f'{self.base}:{self.base}:rw',
                    '--volume',f'{host.stdout.strip()}:{visible}:rw','--workdir',str(self.project),
                    '--env','CONTAINER_HOST=unix://'+visible,'--env','HOME='+str(self.home),
-                   '--env','PI_IMAGE_NAME='+IMAGE,'--env','PI_ENABLE_PODMAN=1',
+                   '--env','PI_CONTAINER_IMAGE='+IMAGE,'--env','PI_CONTAINER_PODMAN=1',
                    '--entrypoint','/bin/bash',runner_image,str(WRAPPER),'--container-shell']
         self.assert_success(terminal_shell(command, 'set -e\nfor d in /var/lib/containers /run/containers; do test ! -e "$d/sentinel"; done\npodman info >/dev/null\nprintf nested > nested-file', self.env, self.project, timeout=360))
         self.assertEqual((self.project / 'nested-file').stat().st_uid, os.getuid())

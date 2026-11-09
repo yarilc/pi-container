@@ -32,7 +32,7 @@ container. Its primary concerns are:
 
 # Real wrapper acceptance from disposable native Linux storage
 # Build your selected image first; optional Bun coverage is enabled by test.sh
-PI_IMAGE_NAME=pi-container ./tests/run-runtime.sh
+PI_CONTAINER_IMAGE=pi-container ./tests/run-runtime.sh
 ```
 
 Run synthetic tests and credential-free real wrapper/image acceptance before a PR.
@@ -48,7 +48,7 @@ First interruption wins (143/130/129); exit 125 and redirected stdin/EOF must
 remain intact. Check both terminal streams before TTY allocation. Concurrent
 sessions must reserve names atomically above the maximum suffix, never replace
 other sessions, and remove only verified owned IDs. Unknown ownership is a
-diagnostic, not permission to delete by name. The native PI_RUN_TIMEOUT option
+diagnostic, not permission to delete by name. The native PI_CONTAINER_RUN_TIMEOUT option
 is separate from shutdown budgets.
 
 All build/shell/worktree modes share engine/state/socket preflights. Help aliases
@@ -70,7 +70,10 @@ Git, and enabled Bun workflow checks, not only duplicated podman flags.
 - Environment variables containing secrets (API keys) must never appear on
   the process command line; forward by name only (`-e KEY`).
 - New mounts must be documented in SECURITY.md and README.md.
-- Sensitive-PWD guard list must be kept in sync with the case statement.
+- The sensitive-workspace list must stay in sync with the case statement and
+  with the claude-container reference (`sandbox-ref-2`).
+- Wrapper settings use the `PI_CONTAINER_` prefix; earlier names stay
+  deprecated aliases resolved by `select_setting`.
 
 ## Versioning
 
