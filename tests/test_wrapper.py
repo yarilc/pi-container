@@ -80,7 +80,9 @@ class WrapperTests(unittest.TestCase):
                        'PI_CONTAINER_RUN_TIMEOUT', 'PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE',
                        'PI_IMAGE_NAME, PI_ENABLE_PODMAN, PI_PODMAN_SOCKET, PI_MEMORY_LIMIT',
                        'PI_MOUNT_GITCONFIG', 'Pi has no tool-approval layer', '--approve trusts',
-                       'do not limit workspace or state storage', '/mnt/<letter>', '/tmp, the caller'):
+                       'do not limit workspace or state storage', '/mnt/<letter>', '/tmp, the caller',
+                       'PI_CONTAINER_STATE_DIR', 'PI_BUN_VERSION and PI_PULL_ALWAYS are ignored',
+                       'stops the launch until', 'HOME=/pi-home'):
             self.assertIn(needle, result.stdout)
         self.assertEqual(self.calls(), [])
         self.assertFalse(self.state.exists())
@@ -526,7 +528,7 @@ reap_client
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.state.stat().st_mode & 0o777, 0o700)
         self.assertEqual(self.state.stat().st_uid, os.getuid())
-        self.assertIn(f'{self.state}:{self.state}:rw', self.run_args())
+        self.assertIn(f'{self.state}:/pi-home/.pi:rw', self.run_args())
         self.assertIn('mask:0o22', result.stdout)
 
 
@@ -715,7 +717,7 @@ reap_client
             state.symlink_to(target,target_is_directory=True)
             result=self.run_wrapper()
             self.assertEqual(result.returncode,0,result.stderr)
-            self.assertIn(f'{target}:{state}:rw',self.run_args())
+            self.assertIn(f'{target}:/pi-home/{state.name}:rw',self.run_args())
             state.unlink()
             state.mkdir(mode=0o755)
             self.assert_rejected(self.run_wrapper())
@@ -723,7 +725,7 @@ reap_client
         self.state.chmod(0o500)
         result=self.run_wrapper(PI_READONLY_CONFIG='1')
         self.assertEqual(result.returncode,0,result.stderr)
-        self.assertIn(f'{self.state}:{self.state}:ro',self.run_args())
+        self.assertIn(f'{self.state}:/pi-home/.pi:ro',self.run_args())
         self.state.chmod(0o700)
         self.state.rmdir()
         self.assert_rejected(self.run_wrapper(PI_READONLY_CONFIG='1'))
@@ -748,7 +750,7 @@ reap_client
             self.assertLess(args.index('--timeout'),args.index('pi-container'))
             self.assertEqual(args[args.index('--timeout')+1],'12')
             mounts=[args[j+1] for j,a in enumerate(args[:-1]) if a=='--tmpfs']
-            self.assertEqual(len(mounts),4)
+            self.assertEqual(len(mounts),5)
             for value in mounts:
                 self.assertIn('noexec,nosuid,nodev',value)
                 self.assertIn('size=',value)
@@ -767,21 +769,88 @@ reap_client
     def test_hash_inspection_bun_build_inputs_and_failures(self):
         self.assertNotEqual(self.run_wrapper(FAKE_INSPECT_STATUS='125').returncode,0)
         self.assertFalse(any(c[0]=='build' for c in self.calls()))
-        result=self.run_wrapper(FAKE_LABEL_HASH='')
+        # A stale image stops the launch instead of rebuilding silently.
+        for env in ({'FAKE_LABEL_HASH':''},{'FAKE_LABEL_HASH':'0'*64},{'PI_ENABLE_BUN':'1','FAKE_LABEL_HASH':'0'*64}):
+            with self.subTest(env=env):
+                result=self.run_wrapper(**env)
+                self.assertEqual(result.returncode,1,result.stderr)
+                self.assertIn('is stale for the current inputs',result.stderr)
+                self.assertIn('--container-build',result.stderr)
+                self.assertFalse(any(c[0] in ('build','create') for c in self.calls()))
+        result=self.run_wrapper(FAKE_IMAGE_STATUS='1')
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertTrue(any(c[0]=='build' for c in self.calls()))
         hashes=[]
-        for version in ('bun-v1.3.14','bun-v1.2.0'):
-            result=self.run_wrapper('--container-build',PI_ENABLE_BUN='1',PI_BUN_VERSION=version,PI_PULL_ALWAYS='1')
+        for bun in ('','1'):
+            result=self.run_wrapper('--container-build',PI_ENABLE_BUN=bun,PI_BUN_VERSION='bun-v1.2.0',PI_PULL_ALWAYS='1')
             self.assertEqual(result.returncode,0,result.stderr)
+            for name in ('PI_BUN_VERSION','PI_PULL_ALWAYS'):
+                self.assertEqual(result.stderr.count(f'{name} is ignored; image inputs are pinned in Containerfile'),1)
             build=next(c for c in self.calls() if c[0]=='build')
             hashes.append(build[build.index('--label')+1])
-            self.assertIn('BUN_VERSION='+version,build)
-            self.assertIn('--pull=always',build)
+            args=[build[i+1] for i,a in enumerate(build) if a=='--build-arg']
+            self.assertEqual([a.split('=')[0] for a in args],['PI_VERSION','INSTALL_BUN'])
+            self.assertIn('INSTALL_BUN='+('1' if bun else '0'),args)
+            self.assertNotIn('--pull=always',build)
         self.assertNotEqual(*hashes)
+        result=self.run_wrapper(PI_ENABLE_BUN='1')
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertFalse(any(c[0]=='build' for c in self.calls()))
         result=self.run_wrapper(FAKE_CREATE_STATUS='42',FAKE_FAIL_WITH_CID='1')
         self.assertEqual(result.returncode,42,result.stderr)
         self.assert_owned_cleanup()
+
+    def test_dedicated_home_layout(self):
+        (self.home/'.gitconfig').write_text('[user]\n name = Test\n')
+        result=self.run_wrapper(PI_CONTAINER_GITCONFIG='1')
+        self.assertEqual(result.returncode,0,result.stderr)
+        args=self.run_args()
+        self.assertEqual(args[args.index('--env', args.index('--workdir'))+1],'HOME=/pi-home')
+        tmpfs=[args[i+1] for i,a in enumerate(args) if a=='--tmpfs']
+        self.assertIn('/pi-home:rw,noexec,nosuid,nodev,mode=1777,size=64M',tmpfs)
+        self.assertTrue(any(v.startswith('/pi-home/.npm:rw,noexec') for v in tmpfs))
+        volumes=[args[i+1] for i,a in enumerate(args) if a=='--volume']
+        self.assertIn(f'{self.state}:/pi-home/.pi:rw',volumes)
+        self.assertIn(f'{self.agents}:/pi-home/.agents:rw',volumes)
+        self.assertIn(f'{self.home}/.gitconfig:/pi-home/.gitconfig:ro',volumes)
+        self.assertIn(f'{self.project}:{self.project}:rw',volumes)
+        self.assertFalse(any(v.split(':')[1].startswith(str(self.home)) for v in volumes))
+        self.assertFalse(any(v.startswith(str(self.home)) for v in tmpfs))
+
+    def test_isolated_state_directory(self):
+        state=self.base/'isolated'/'state'
+        result=self.run_wrapper(PI_CONTAINER_STATE_DIR=str(state))
+        self.assertEqual(result.returncode,0,result.stderr)
+        for path in (state,state/'.pi',state/'.agents'):
+            self.assertEqual(path.stat().st_mode & 0o777,0o700,str(path))
+        args=self.run_args()
+        volumes=[args[i+1] for i,a in enumerate(args) if a=='--volume']
+        self.assertIn(f'{state}:/pi-home:rw',volumes)
+        self.assertFalse(any(v.startswith('/pi-home:') for v in [args[i+1] for i,a in enumerate(args) if a=='--tmpfs']))
+        self.assertFalse(any('/pi-home/.pi' in v or '/pi-home/.agents' in v for v in volumes))
+        self.assertFalse(self.state.exists())
+        # Read-only mode mounts the isolated .pi and .agents under an ephemeral home.
+        (state/'.pi').chmod(0o500); (state/'.agents').chmod(0o500)
+        result=self.run_wrapper(PI_CONTAINER_STATE_DIR=str(state),PI_READONLY_CONFIG='1')
+        self.assertEqual(result.returncode,0,result.stderr)
+        volumes=[a for i,a in enumerate(self.run_args()) if self.run_args()[i-1]=='--volume']
+        self.assertIn(f'{state}/.pi:/pi-home/.pi:ro',volumes)
+        self.assertIn(f'{state}/.agents:/pi-home/.agents:ro',volumes)
+        (state/'.pi').chmod(0o700); (state/'.agents').chmod(0o700)
+        missing=self.base/'missing-ro'
+        result=self.run_wrapper(PI_CONTAINER_STATE_DIR=str(missing),PI_READONLY_CONFIG='1')
+        self.assertNotEqual(result.returncode,0)
+        self.assertFalse(missing.exists())
+        shared=self.base/'shared'; shared.mkdir(mode=0o755)
+        for value in ('relative/state','',str(shared),str(self.project),str(self.project/'state'),
+                      str(self.project.parent),'/bad:colon'):
+            with self.subTest(value=value):
+                result=self.run_wrapper(PI_CONTAINER_STATE_DIR=value)
+                self.assertEqual(result.returncode,1,result.stderr)
+                self.assertIn('PI_CONTAINER_STATE_DIR',result.stderr)
+                self.assertEqual(self.calls(),[])
+        self.assertFalse((self.project/'state').exists())
+        self.assertEqual(shared.stat().st_mode & 0o777,0o755)
 
     def test_prefix_fallback_identity_records_and_attempt_environment(self):
         original=self.project
@@ -840,7 +909,7 @@ reap_client
         args=self.run_args()
         for value in ('ANTHROPIC_API_KEY','HTTP_PROXY','CUSTOM_SECRET','EDITOR=vim','VISUAL=code'):
             self.assertIn(value,args)
-        self.assertIn(f'{self.home}/.gitconfig:{self.home}/.gitconfig:ro',args)
+        self.assertIn(f'{self.home}/.gitconfig:/pi-home/.gitconfig:ro',args)
         for value in ('dummy-secret','dummy-proxy','dummy-custom'):
             self.assertNotIn(value,json.dumps(self.calls())+result.stderr)
         result=self.run_wrapper(PI_CONTAINER_GITCONFIG='0')
@@ -860,7 +929,7 @@ reap_client
         self.assertNotIn('name = Test',result.stderr)
         result=self.run_wrapper(PI_CONTAINER_GITCONFIG='1')
         self.assertEqual(result.returncode,0,result.stderr)
-        self.assertEqual(self.gitconfig_mounts(),[f'{target}:{self.home}/.gitconfig:ro'])
+        self.assertEqual(self.gitconfig_mounts(),[f'{target}:/pi-home/.gitconfig:ro'])
         self.assertNotIn('no longer mounted',result.stderr)
         for value in ('true','yes','','0','01'):
             with self.subTest(value=value):
@@ -888,7 +957,7 @@ reap_client
         result=self.run_wrapper(PI_MOUNT_GITCONFIG='1')
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertEqual(result.stderr.count(warning),1)
-        self.assertEqual(self.gitconfig_mounts(),[f'{self.home}/.gitconfig:{self.home}/.gitconfig:ro'])
+        self.assertEqual(self.gitconfig_mounts(),[f'{self.home}/.gitconfig:/pi-home/.gitconfig:ro'])
         result=self.run_wrapper(PI_MOUNT_GITCONFIG='0')
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertEqual(result.stderr.count(warning),1)

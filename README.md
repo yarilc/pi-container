@@ -198,7 +198,7 @@ PI_NPM_CACHE_SIZE=512M pic install npm:pi-web-access
 - **Alias in `~/.bashrc`**: `alias pic='/path/to/pi-container/pi-container.sh'`
 - **Debug mode**: `PI_DEBUG=1 pic ...` to see verbose output
 - **Custom image name**: `PI_CONTAINER_IMAGE=my-pi pic ...`
-- **Rebuild the image**: `podman rmi pi-container` (or change `Containerfile` to trigger auto-rebuild)
+- **Rebuild the image**: `pic --container-build --version`
 - **Interactive CLI args**: all arguments pass straight through to Pi — use `--help` to see Pi's full CLI, or `--wrapper-help` for wrapper-specific options
 - **Multiple instances**: containers are named `<directory>-0`, `<directory>-1`, etc. Concurrent instances reserve above the highest existing suffix with bounded collision retries.
 
@@ -271,16 +271,15 @@ forwarded to the container automatically.
 | `PI_CONTAINER_PODMAN` | Only exact `1` enables the client and verified host socket; all other values disable delegation |
 | `PI_CONTAINER_PODMAN_SOCKET` | Absolute accessible socket override; then Unix `CONTAINER_HOST`, then `${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock` |
 | `PI_ENABLE_BUN` | Nonempty enables Bun (legacy behavior); use `1` to bake the Bun runtime into the image (opt-in). See [Bun runtime](#bun-runtime-opt-in) |
-| `PI_BUN_VERSION` | Bun release tag to install when `PI_ENABLE_BUN=1` (default: `bun-v1.3.14`) |
+| `PI_CONTAINER_STATE_DIR` | Private host directory holding `.pi` and `.agents` instead of `~/.pi` and `~/.agents`; see [Isolated state](#isolated-state) |
 | `PI_CONTAINER_MEMORY_LIMIT` | Container memory limit (default: `4g`); see [Session hardening](#session-hardening-budgets-and-lifetime) |
 | `PI_CONTAINER_CPU_LIMIT` | Container CPU limit (default: `2`) |
 | `PI_CONTAINER_PIDS_LIMIT` | Container PID limit (default: `512`) |
-| `PI_NPM_CACHE_SIZE` | Size of the ephemeral npm cache tmpfs at `~/.npm`, used by `pi install npm:<pkg>` (default: `256M`) |
+| `PI_NPM_CACHE_SIZE` | Size of the ephemeral npm cache tmpfs at `/pi-home/.npm`, used by `pi install npm:<pkg>` (default: `256M`) |
 | `PI_NETWORK` | Container network mode, e.g. `none` to block all egress (default: full access) |
 | `PI_READONLY_CONFIG` | Set to `1` to mount `~/.pi` and `~/.agents` read-only (prevents persistence) |
 | `PI_CONTAINER_GITCONFIG` | Exactly `1` mounts `~/.gitconfig` read-only from its physical file (default: not mounted). The opt-in fails if `~/.gitconfig` is not a regular file |
 | `PI_MOUNT_GITCONFIG` | Deprecated alias with a warning: `1` mounts, `0` does not. Conflicting values with `PI_CONTAINER_GITCONFIG` are errors |
-| `PI_PULL_ALWAYS` | Set to `1` to force `podman build --pull=always` |
 | `PI_CONTAINER_RUN_TIMEOUT` | Native Podman container lifetime in seconds, placed before the image (0 disables); independent of shutdown budgets |
 | `PI_ENV_VARS` | Space-separated list of extra env var **names** to forward to the container (for skill/extension/tool secrets; forwarded by name only, never as `NAME=value`). See [Custom environment variables](#custom-environment-variables) |
 | `PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE` | Exactly `1` allows a refused sensitive workspace, with a warning (not recommended) |
@@ -321,14 +320,37 @@ Read-only mode requires existing readable/traversable directories, without
 requiring ownership/privacy/write access; their confidentiality remains yours
 to manage. Missing read-only state fails without creating it.
 
+### Dedicated home
+
+Sessions use `HOME=/pi-home`, an ephemeral 64 MiB noexec tmpfs. Your `~/.pi`
+and `~/.agents`, the npm cache tmpfs and the opted-in `~/.gitconfig` are
+mounted below it, so Pi, extensions and Git find them as before; the
+workspace keeps its host absolute path. Other files written in `/pi-home`
+do not survive the session.
+
+### Isolated state
+
+`PI_CONTAINER_STATE_DIR=/absolute/path` keeps Pi state apart from your
+everyday `~/.pi` and `~/.agents`. The directory holds its own `.pi` and
+`.agents`:
+
+- In the default writable mode the directory becomes the persistent
+  `/pi-home`. It and its `.pi` and `.agents` are created privately when
+  missing and must belong to you without group/other permissions.
+- With `PI_READONLY_CONFIG=1`, its `.pi` and `.agents` must already exist and
+  are mounted read-only below an ephemeral home.
+
+The directory must not equal, contain or lie inside the workspace. No
+credentials are copied; authenticate again inside an isolated state.
+
 ### Volume mounts
 
 | Mount point | Purpose | Read-only mode |
 | --- | --- | --- |
-| `${HOME}/.pi` | Pi configuration, auth, sessions, extensions | `PI_READONLY_CONFIG=1` |
-| `${HOME}/.agents` | Skills (prompt libraries) | `PI_READONLY_CONFIG=1` |
+| `/pi-home/.pi` ← `~/.pi` | Pi configuration, auth, sessions, extensions | `PI_READONLY_CONFIG=1` |
+| `/pi-home/.agents` ← `~/.agents` | Skills (prompt libraries) | `PI_READONLY_CONFIG=1` |
 | `${PWD}` | Current working directory (same path inside and out) | Always writable |
-| `${HOME}/.gitconfig` | Git identity, only with `PI_CONTAINER_GITCONFIG=1` | Always read-only |
+| `/pi-home/.gitconfig` ← `~/.gitconfig` | Git identity, only with `PI_CONTAINER_GITCONFIG=1` | Always read-only |
 
 The workspace uses `pwd -P`: its physical absolute source and destination
 are identical, as is the working directory. State sources are resolved
@@ -360,7 +382,7 @@ ownership changes. Every temporary store disappears with the session.
 > Set `PI_READONLY_CONFIG=1` when working with untrusted prompts or projects.
 > See [SECURITY.md](./SECURITY.md) for details.
 >
-> **npm cache:** An ephemeral tmpfs is mounted at `${HOME}/.npm` so that
+> **npm cache:** An ephemeral tmpfs is mounted at `/pi-home/.npm` so that
 > `pi install npm:<package>` works under the read-only root filesystem (npm
 > defaults its cache to `~/.npm`, which would otherwise be unwritable). The
 > cache is cleared when the container exits; installed extensions themselves
@@ -379,7 +401,7 @@ ownership changes. Every temporary store disappears with the session.
 | Sensitive workspace guard | Refuses `/`, system directories, `/tmp`, `$HOME` and `/mnt/<letter>` on physical paths (override: exact `PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1`) |
 | Rootless enforcement | Verified Linux rootless engine before image operations; no override |
 | Signal handling | Owned full-ID lifecycle with finite cleanup phases; `--init` for reaping |
-| Stale image detection | Content-hash comparison against Containerfile and `.version` |
+| Image build policy | Pinned inputs; a stale content hash stops the launch until `--container-build` |
 | Conditional TTY | Only when stdin and stdout are terminals |
 | Container naming | Sanitized `<dir>-<N>`, max existing suffix+1 including stopped containers; atomic create, at most 20 attempts |
 
@@ -437,22 +459,40 @@ only prints a warning that it has no effect.
 
 ## Included Tools
 
+`Containerfile` builds the image on `docker.io/library/node:22-bookworm-slim`,
+pinned by digest, with the toolset shared with the other wrappers: `bash`,
+`bubblewrap`, `bzip2`, `ca-certificates`, `coreutils`, `curl`, `diffutils`,
+`file`, `findutils`, `gawk`, `git`, `grep`, `jq`, `less`, `nano`, `patch`,
+`podman`, `procps`, `python3`, `ripgrep`, `sed`, `tar`, `unzip`, `util-linux`,
+`xz-utils` and `zip`. Pi (`@earendil-works/pi-coding-agent` at the version in
+`.version`) and OpenSpec (`@fission-ai/openspec@1.16.0`) are installed from npm
+at exact versions; npm verifies each package's registry integrity, and the
+build fails unless `pi --version` and `openspec --version` report the recorded
+versions. The Podman client is part of every image; host socket access stays
+the separate `PI_CONTAINER_PODMAN=1` opt-in.
+
 ### Bun runtime (opt-in)
 
 [Bun](https://bun.sh/) is a fast JavaScript runtime, bundler, test runner,
 and package manager. Skills, extensions, or projects may require it. The
 runtime is **off by default** and added only when requested.
 
-To enable, set `PI_ENABLE_BUN=1`:
+Build the Bun image explicitly, then use it with `PI_ENABLE_BUN=1`:
 
 ```bash
+PI_ENABLE_BUN=1 pic --container-build --version
 PI_ENABLE_BUN=1 pic "Run the test suite with bun"
 ```
 
-The wrapper rebuilds the image with the Bun binary included (via the
-`INSTALL_BUN` build arg). Bun is installed as a single, dependency-free
-binary in `/usr/local/bin/bun`, so it is on `PATH` and requires **no writes
-to `$HOME` at runtime** (compatible with the read-only root filesystem).
+Bun is installed from npm as exactly `bun@1.3.14` (`ARG BUN_VERSION` in
+`Containerfile`), whose platform binaries are exact-version dependencies.
+It lives in `/usr/local/bin`, on `PATH`, and needs **no writes to `$HOME`
+at runtime**. `PI_BUN_VERSION` is ignored with a warning; change the recorded
+version through the update procedure below. Switching `PI_ENABLE_BUN` on or
+off changes the image inputs, so the next launch asks for `--container-build`.
+
+The npm install selects the x64 AVX2 or baseline Bun binary from the build
+host's CPU: build the image on the host that runs it.
 
 ```bash
 # Inside pi:
@@ -461,86 +501,56 @@ bun install      # Install project dependencies
 bun test         # Run tests via Bun's test runner
 ```
 
-#### Pinning a Bun version
+### Image build policy
 
-The Bun release tag defaults to `bun-v1.3.14` and can be overridden with
-`PI_BUN_VERSION`:
+The script computes a SHA-256 hash of `Containerfile`, `.containerignore`,
+`.version` and the Bun selection, and stores it as the `build-inputs-hash`
+label on the built image. The build context contains only those three files.
 
-```bash
-PI_BUN_VERSION=bun-v1.2.0 PI_ENABLE_BUN=1 pic ...
-```
+- A missing image is built automatically.
+- A stale image (the label differs from the current inputs) stops the launch
+  with a message naming `--container-build`; it is never rebuilt silently.
+- `--container-build` always rebuilds from the pinned inputs.
 
-Disabling `PI_ENABLE_BUN` rebuilds without the Bun binary (smaller image).
-The Bun version is folded into the stale-image hash, so changing
-`PI_BUN_VERSION` triggers a rebuild automatically.
-
-### Stale image detection
-
-The script computes a SHA-256 hash of the `Containerfile`, `.containerignore`,
-`.version`, Podman/Bun selection, and selected Bun version, and stores it as a label (`build-inputs-hash`) on the built
-image. On each run it recomputes the hash and rebuilds the image automatically
-if any of these files has changed. This ensures you never accidentally run with
-an outdated image after modifying the Containerfile, changing build context
-rules, or bumping the Pi version in `.version`.
-
-> **Note:** The base image (`node:22-bookworm-slim`) uses a mutable tag and is
-> not included in the hash. To force a fresh build and base image pull, use
-> `PI_PULL_ALWAYS=1 pic --container-build --version`. Weekly CI scans
-> monitor the built image for CVEs.
+`PI_PULL_ALWAYS` is ignored with a warning: the base image is pinned by digest.
+Weekly CI scans monitor the built image for CVEs.
 
 ### File layout
 
 ```text
 pi-container/
-├── Containerfile              # Image definition
+├── Containerfile              # Image definition (pinned inputs)
 ├── pi-container.sh            # Entry point script (builds & runs)
-├── .containerignore            # Build context exclusions
+├── .containerignore            # Build context allowlist
 ├── .version                    # Single source of truth for Pi version
-├── test.sh                     # Image smoke tests
+├── test.sh                     # Disposable image build plus real checks
 ├── test-wrapper.sh             # Synthetic wrapper entrypoint (Python 3)
-├── tests/                      # Fake engine and real rootless acceptance
+├── tests/                      # Fake engine, pin checks, real rootless acceptance
 ├── docs/validation.md          # Commands, results, and verification limits
 ├── .github/workflows/ci.yml   # CI pipeline
+├── AGENTS.md                   # Repository guidelines
 ├── SECURITY.md                 # Vulnerability disclosure policy
 ├── LICENSE                     # MIT license
 ├── .gitignore
 └── README.md                   # This file
 ```
 
-### Updating
+### Updating pinned image inputs
 
-Pi and the container image are separate artifacts that can be updated independently.
+`.version` records Pi's version; `Containerfile` records `OPENSPEC_VERSION`,
+`BUN_VERSION` and the base image digest. `tests/test_image_pins.py` rejects
+floating inputs, `@latest`, version ranges and piped install scripts. To update:
 
-#### Update Pi to the latest version
-
-Pi version is controlled by the `.version` file (single source of truth):
-
-```bash
-echo "0.80.0" > .version
-```
-
-The stale-image detection monitors both `Containerfile` and `.version`.
-Changing `.version` automatically triggers a rebuild on the next run.
-
-If you prefer a manual rebuild:
-
-```bash
-podman rmi pi-container
-./pi-container.sh --version
-```
+1. Change `.version`, or the recorded version or digest in `Containerfile`.
+2. Rebuild explicitly with `pic --container-build --version` (and once with
+   `PI_ENABLE_BUN=1` when you use Bun).
+3. Rerun `./test-wrapper.sh` and `./test.sh`.
+4. Record the tested versions with the date in `docs/validation.md`.
 
 Your session history, auth tokens, and settings in `~/.pi/agent/` are preserved
 because they live on the host filesystem and are mounted into the container.
-
-#### Update the wrapper script and Containerfile
-
-```bash
-cd /path/to/pi-container
-git pull
-```
-
-After pulling changes, the stale-image detection will rebuild automatically
-on the next run.
+After `git pull`, a changed `Containerfile` or `.version` makes the next launch
+ask for `--container-build`.
 
 #### What survives a rebuild
 
@@ -571,7 +581,7 @@ on the next run.
 | `.version` missing or empty | Version file absent | Ensure `.version` contains the Pi version (e.g., `0.79.8`); the wrapper now fails hard if absent |
 | Slow first start | apt + npm install during build | One-time cost; subsequent runs use cached image |
 | API key not recognized | Empty key forwarded | Script now only forwards keys that are set and non-empty |
-| Image is stale | Containerfile changed | Automatic detection triggers rebuild |
+| `Image pi-container is stale for the current inputs` | `Containerfile`, `.version` or `PI_ENABLE_BUN` changed | Run `pic --container-build --version` |
 | Permission denied on volume | Rootful Podman (sudo) | Run without `sudo` (rootless mode) |
 | Read-only config error | `PI_READONLY_CONFIG=1` and Pi needs to write | Disable `PI_READONLY_CONFIG` for tasks that install extensions |
 | `npm error ENOENT ... mkdir '~/.npm'` during `pi install` | npm cache dir on the read-only rootfs | Fixed: the wrapper mounts an ephemeral tmpfs at `~/.npm`. Raise the cap with `PI_NPM_CACHE_SIZE=512M` for large extensions |
@@ -616,6 +626,13 @@ Behavior changes:
 - Sessions start only when the engine applied the budgets; hosts need
   delegated rootless cgroup v2 `cpu`, `memory` and `pids` controllers.
 - `~/.gitconfig` is mounted only with `PI_CONTAINER_GITCONFIG=1`.
+- Sessions use `HOME=/pi-home`; state is mounted below it from the same host
+  directories, and other files written in the home are ephemeral.
+- The image is pinned and built once more after upgrading: run
+  `pic --container-build --version`. A stale image no longer rebuilds
+  automatically, and toggling `PI_ENABLE_BUN` also needs `--container-build`.
+- `PI_BUN_VERSION` and `PI_PULL_ALWAYS` are ignored with warnings; Bun is
+  installed from npm at the version recorded in `Containerfile`.
 
 ## Security
 

@@ -12,6 +12,16 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
 
 ### Changed
 
+- **Breaking:** the image is pinned: digest base, the toolset shared with the
+  other wrappers (including the Podman client and OpenSpec 1.16.0), Pi from
+  `.version`, and optional Bun installed from npm as `bun@1.3.14`. The
+  `curl | bash` Bun installer and the `INSTALL_PODMAN` variant are gone.
+- **Breaking:** a stale image stops the launch with a message naming
+  `--container-build` instead of rebuilding automatically; a missing image
+  still builds.
+- **Breaking:** sessions use `HOME=/pi-home`, with `~/.pi`, `~/.agents`, the
+  npm cache and the opted-in gitconfig mounted below it.
+
 - **Breaking:** wrapper settings use the common `PI_CONTAINER_*` names
   (`PI_CONTAINER_IMAGE`, `PI_CONTAINER_PODMAN`, `PI_CONTAINER_PODMAN_SOCKET`,
   `PI_CONTAINER_MEMORY_LIMIT`, `PI_CONTAINER_CPU_LIMIT`,
@@ -42,6 +52,8 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
 
 ### Deprecated
 
+- `PI_BUN_VERSION` and `PI_PULL_ALWAYS` are ignored with a warning; image
+  inputs are pinned in the Containerfile.
 - `PI_IMAGE_NAME`, `PI_ENABLE_PODMAN`, `PI_PODMAN_SOCKET`, `PI_MEMORY_LIMIT`,
   `PI_CPU_LIMIT`, `PI_PIDS_LIMIT`, `PI_RUN_TIMEOUT` and `PI_ALLOW_UNSAFE_PWD`:
   use the `PI_CONTAINER_*` names; each prints a warning.
@@ -49,6 +61,10 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
   `0` does not, with a warning; conflicting values are errors.
 
 ### Added
+
+- `PI_CONTAINER_STATE_DIR` keeps `.pi` and `.agents` in a private directory
+  separate from the host's everyday state.
+- `tests/test_image_pins.py` checks that every image input is pinned.
 
 - Wrapper build, shell, explicit parent/worktree, and prerequisite-free help modes.
 - `PI_PODMAN_SOCKET` for verified remapped same-host service access.

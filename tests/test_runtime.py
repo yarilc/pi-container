@@ -284,7 +284,49 @@ NODE
         self.assert_success(self.shell('set -e\ngit worktree add -qb test-worktree ../sibling\ntest -d ../sibling/.git || test -f ../sibling/.git', '--container-git-worktree'))
         self.assert_success(self.pipe_shell('test ! -e ../sibling/.git\n'))
         if os.environ.get('PI_TEST_BUN') == '1':
-            self.assert_success(self.shell('set -e\nbun --version\nprintf \'console.log("bun-ok")\\n\' > bun-test.js\nbun bun-test.js', PI_ENABLE_BUN='1'))
+            # A disposable Bun image is built explicitly; a stale image never rebuilds itself.
+            bun_image = f'{IMAGE}-bun-{os.getpid()}'
+            self.assertNotEqual(self.engine('image', 'exists', bun_image).returncode, 0)
+            try:
+                result = self.piped('set -e\ntest "$(bun --version)" = 1.3.14\n'
+                                    'printf \'console.log("bun-ok")\\n\' > bun-test.js\nbun bun-test.js\n',
+                                    timeout=900, args=('--container-build',), PI_ENABLE_BUN='1',
+                                    PI_CONTAINER_IMAGE=bun_image)
+                self.assert_success(result)
+                self.assertIn('bun-ok', result.stdout)
+                result = self.piped('exit 0', PI_CONTAINER_IMAGE=bun_image)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn('is stale for the current inputs', result.stderr)
+                self.assertIn('--container-build', result.stderr)
+            finally:
+                self.engine('rmi', '--force', bun_image, timeout=60)
+
+    def test_home_layout_tools_and_isolated_state(self):
+        result = self.piped('''set -e
+test "$HOME" = /pi-home
+test -d /pi-home/.pi && test -d /pi-home/.agents && test -d /pi-home/.npm
+grep -q ' /pi-home tmpfs ' /proc/mounts
+for tool in pi openspec podman bash bwrap bzip2 curl diff file find gawk git grep jq less nano patch ps python3 rg sed tar unzip xz zip; do
+    command -v "$tool" >/dev/null || { echo "MISSING $tool"; exit 3; }
+done
+test "$(openspec --version)" = 1.16.0
+printf scratch > "$HOME/scratch"
+printf kept > "$HOME/.pi/home-sentinel"
+echo LAYOUT_OK
+''')
+        self.assert_success(result)
+        self.assertIn('LAYOUT_OK', result.stdout)
+        self.assertEqual((self.state / 'home-sentinel').read_text(), 'kept')
+        self.assert_success(self.piped('test ! -e "$HOME/scratch"'))
+        isolated = self.home / 'isolated'
+        result = self.piped('set -e\ntest "$HOME" = /pi-home\nprintf kept > "$HOME/notes"\nprintf pi > "$HOME/.pi/isolated"\n',
+                            PI_CONTAINER_STATE_DIR=str(isolated))
+        self.assert_success(result)
+        self.assertEqual((isolated / 'notes').read_text(), 'kept')
+        self.assertEqual((isolated / '.pi/isolated').read_text(), 'pi')
+        self.assertEqual(isolated.stat().st_mode & 0o777, 0o700)
+        self.assertFalse((self.state / 'isolated').exists())
+        self.assert_success(self.piped('test "$(cat "$HOME/notes")" = kept', PI_CONTAINER_STATE_DIR=str(isolated)))
 
     def test_gitconfig_only_on_opt_in(self):
         (self.home/'.gitconfig').write_text('[user]\n\tname = Runtime Test\n')
@@ -319,8 +361,8 @@ NODE
         self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
         self.assertNotIn('lifetime', result.stderr)
 
-    def piped(self, script, timeout=120, cwd=None, **env):
-        return subprocess.run(['bash', str(WRAPPER), '--container-shell'], input=script, capture_output=True,
+    def piped(self, script, timeout=120, cwd=None, args=(), **env):
+        return subprocess.run(['bash', str(WRAPPER), *args, '--container-shell'], input=script, capture_output=True,
                               text=True, env=self.env | env, cwd=cwd or self.project, timeout=timeout)
 
     def test_effective_hardening_and_budgets(self):
@@ -390,7 +432,7 @@ setTimeout(()=>{ kids.forEach(k=>{ try{k.kill()}catch(e){} }); console.log(refus
             path=context/name
             path.parent.mkdir(parents=True,exist_ok=True)
             path.write_text('DUMMY-NOT-A-CREDENTIAL')
-        (context/'Containerfile').write_text('FROM '+IMAGE+'\nCOPY . /context\nRUN test ! -e /context/.env && test ! -e /context/.pi && test ! -e /context/unknown && test ! -e /context/tests && test ! -e /context/nested\n')
+        (context/'Containerfile').write_text('FROM '+IMAGE+'\nCOPY . /context\nRUN test ! -e /context/.env && test ! -e /context/.pi && test ! -e /context/unknown && test ! -e /context/tests && test ! -e /context/nested && test ! -e /context/.gitignore && test "$(find /context -type f | wc -l)" = 3 && test -f /context/Containerfile && test -f /context/.containerignore && test -f /context/.version\n')
         iid=self.base/'image-id'
         def remove():
             if iid.exists(): self.engine('rmi','--force',iid.read_text().strip())

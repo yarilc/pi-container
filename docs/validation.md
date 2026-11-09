@@ -190,3 +190,73 @@ Initial failures and reruns:
 Containers present on the host before and after the runs (`project-with-spaces-0/1`
 from 2026-11-03, `project-0`, `strange_allen` and the agent's own session) were
 not created by these tests and were left untouched.
+
+## Runtime image and container home (A03, A04, A05, A06): 2026-11-09
+
+Change `align-runtime-image` (Wave 2). Host: rootless Podman 4.9.3 server. No
+credentials, Pi login or model requests were used.
+
+Pinned inputs:
+
+- base `docker.io/library/node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da`;
+- `@earendil-works/pi-coding-agent@0.80.8` (from `.version`);
+- `@fission-ai/openspec@1.16.0`;
+- optional `bun@1.3.14`.
+
+npm channel facts: `npm view` reports a registry SHA-512 integrity for Pi
+0.80.8 and `bun@1.3.14`. Bun's platform binaries (`@oven/bun-linux-x64` and
+others) are exact-version optional dependencies selected by its postinstall.
+The build fails unless `pi --version`, `openspec --version` and, with Bun,
+`bun --version` report the recorded versions. A build with a nonexistent
+`PI_VERSION` failed as expected.
+
+Baseline before the change: the previous `pi-container` image (`d2c47c167ea5`,
+floating base) had `HOME=/home/node` in the image. It lacked `openspec`,
+`podman` (without the delegation variant), `bwrap`, `bzip2`, `curl`, `file`,
+`gawk`, `jq`, `less`, `patch`, `ps`, `python3`, `unzip`, `xz` and `zip`.
+
+After the change, in real sessions:
+
+- every toolset command, `pi`, `openspec` and `podman` are present;
+- `HOME=/pi-home` is a tmpfs, and the host `~/.pi` and `~/.agents` are seen at
+  `/pi-home/.pi` and `/pi-home/.agents`;
+- a scratch file in the home disappears after the session, while state writes
+  persist;
+- `PI_CONTAINER_STATE_DIR` persists its whole home across sessions with mode
+  700 and leaves `~/.pi` untouched;
+- the explicit Bun build reports `bun --version` 1.3.14 and runs a script;
+- the same image launched without `PI_ENABLE_BUN` stops as stale and names
+  `--container-build`.
+
+| Check | Result |
+| --- | --- |
+| Unit discovery in a runner container (wrapper and pin tests; runtime tests skipped without opt-in) | 76 tests, OK (15 skipped) |
+| New wrapper cases | stale image stops without build or create; missing image builds; explicit build passes only `PI_VERSION` and `INSTALL_BUN`; Bun selection changes the hash; one warning each for `PI_BUN_VERSION` and `PI_PULL_ALWAYS`; dedicated home destinations; isolated state in writable and read-only modes with invalid, foreign and overlapping values; help |
+| `tests/test_image_pins.py` | Passes; mutated recipes (tag-only base, `@latest`, unversioned package, version range, missing package, `curl \| bash` installer, missing toolset package) fail |
+| `./test.sh` (disposable image build plus `tests/run-runtime.sh` with Bun) | 15 tests, OK, run twice (before and after the last wrapper edit) |
+| Build context | Only `Containerfile`, `.containerignore` and `.version` reach the build |
+| Lifetime | Status 255 with the notice, unchanged |
+| `bash -n`, ShellCheck, hadolint with `.hadolint.yaml`, `git diff --check` | Passed |
+| Markdownlint (README, SECURITY, CONTRIBUTING, CHANGELOG, AGENTS, validation evidence, change Markdown) | 0 errors |
+
+Initial failures and reruns:
+
+- **Wrapper suite.** After the code change, seven existing assertions failed
+  as expected because they named host-path destinations, the old build
+  arguments or the automatic stale rebuild. They now expect the new layout and
+  policy.
+- **Pin test parser.** The parser copied from Codex read the `if` clause
+  around the Bun install as package names. It now reads only the text after
+  `npm install`.
+- **Runtime Bun check.** It relied on the automatic stale rebuild. It now builds
+  a disposable Bun image explicitly with `--container-build`, checks that the
+  stale stop happens, and removes the image.
+- **ShellCheck.** It reported SC2015 on the new private-mode check. The line is
+  annotated, because `die` must also run when the second test fails.
+
+The agent sandbox has a read-only home, so the image was built through
+`./test.sh` and the wrapper's `--container-build` inside the runtime suite. The
+operator's existing `pi-container` image (`d2c47c167ea5`) was not rebuilt, so
+its next launch reports it as stale and asks for `--container-build`. The
+`localhost/pi-align-test:bun` image built during the investigation was
+removed. Containers present before the runs were left untouched.

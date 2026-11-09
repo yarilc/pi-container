@@ -1,5 +1,5 @@
+# Only deliberate root image inputs are sent to Podman.
 *
 !Containerfile
 !.containerignore
-!.gitignore
 !.version

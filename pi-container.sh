@@ -46,12 +46,14 @@ Environment:
                          workspace with a warning (default: disabled)
   PI_CONTAINER_GITCONFIG exactly 1 mounts ~/.gitconfig read-only (default: not
                          mounted; it may hold credential helpers or tokens)
-  PI_ENABLE_BUN          nonempty enables optional Bun (legacy switch semantics)
-  PI_BUN_VERSION         default: bun-v1.3.14; participates in image freshness
+  PI_CONTAINER_STATE_DIR private host directory holding .pi and .agents instead
+                         of ~/.pi and ~/.agents; writable mode makes it the
+                         persistent /pi-home (default: unset, shared host state)
+  PI_ENABLE_BUN          nonempty builds the image with the pinned Bun runtime;
+                         changing it requires --container-build
   PI_NPM_CACHE_SIZE      default: 256M
   PI_NETWORK             optional network selection, e.g. none (default: full)
   PI_READONLY_CONFIG     nonempty mounts existing state read-only
-  PI_PULL_ALWAYS         nonempty selects --pull=always on a build
   PI_ENV_VARS            space-separated extra variable names; never values
   PI_DEBUG               nonempty enables debug output without secret values
   EDITOR, VISUAL         defaults: nano
@@ -60,6 +62,15 @@ Deprecated names (warned; conflicting old and new values are errors):
   PI_IMAGE_NAME, PI_ENABLE_PODMAN, PI_PODMAN_SOCKET, PI_MEMORY_LIMIT,
   PI_CPU_LIMIT, PI_PIDS_LIMIT, PI_RUN_TIMEOUT, PI_ALLOW_UNSAFE_PWD (exact 1
   only) and PI_MOUNT_GITCONFIG map to the PI_CONTAINER_* names above.
+  PI_BUN_VERSION and PI_PULL_ALWAYS are ignored: image inputs (base digest,
+  Pi from .version, OpenSpec and Bun) are pinned in Containerfile.
+
+A missing image is built automatically. A stale image (Containerfile,
+.containerignore, .version or PI_ENABLE_BUN changed) stops the launch until
+--container-build is run explicitly.
+Sessions use HOME=/pi-home, an ephemeral noexec tmpfs, with ~/.pi, ~/.agents,
+the npm cache and an opted-in ~/.gitconfig mounted below it; other files
+written in /pi-home do not survive the session.
 
 Pi has no tool-approval layer: its tools run without prompts, so the container
 is the only boundary and there is no YOLO switch. Pi's --approve trusts
@@ -150,6 +161,11 @@ select_setting PI_CONTAINER_PIDS_LIMIT PI_PIDS_LIMIT
 pids_text=512; ((setting_set == 0)) || pids_text=$setting_value
 select_setting PI_CONTAINER_RUN_TIMEOUT PI_RUN_TIMEOUT; timeout_text=${setting_value:-0}
 select_setting PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE PI_ALLOW_UNSAFE_PWD switch; unsafe_setting=$setting_value
+for variable_name in PI_BUN_VERSION PI_PULL_ALWAYS; do
+    if [[ -n "${!variable_name+x}" ]]; then
+        printf 'pi-container: %s is ignored; image inputs are pinned in Containerfile\n' "$variable_name" >&2
+    fi
+done
 if [[ -n "${PI_CONTAINER_YOLO:-}" ]]; then
     printf 'pi-container: PI_CONTAINER_YOLO has no effect; Pi has no tool-approval layer and the container is the only boundary\n' >&2
 fi
@@ -212,6 +228,42 @@ if ((unsafe_workspace)); then
         || die "refusing sensitive workspace $workspace_mount; launch from a project subdirectory or set exact PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1"
     printf 'pi-container: WARNING: sensitive workspace explicitly exposed read/write: %s\n' "$workspace_mount" >&2
 fi
+readonly CONTAINER_HOME=/pi-home
+state_mode=rw
+[[ -z "${PI_READONLY_CONFIG:-}" ]] || state_mode=ro
+# Isolated state replaces ~/.pi and ~/.agents; it is validated before engine use.
+state_root=$HOME
+isolated_home=''
+if [[ -n "${PI_CONTAINER_STATE_DIR+x}" ]]; then
+    state_request=$PI_CONTAINER_STATE_DIR
+    [[ "$state_request" == /* && "$state_request" != *:* && "$state_request" != *$'\n'* && "$state_request" != *$'\r'* ]] \
+        || die "PI_CONTAINER_STATE_DIR must be an absolute path without colon, CR or LF: $state_request"
+    state_physical=$state_request
+    if [[ -d "$state_request" ]]; then
+        state_physical=$(CDPATH='' cd -- "$state_request" && pwd -P)
+    elif [[ -d "$(dirname -- "$state_request")" ]]; then
+        state_physical=$(CDPATH='' cd -- "$(dirname -- "$state_request")" && pwd -P)/$(basename -- "$state_request")
+    fi
+    state_physical=${state_physical%/}
+    [[ "$state_physical/" != "$workspace_mount/"* && "$workspace_mount/" != "$state_physical/"* ]] \
+        || die "PI_CONTAINER_STATE_DIR must not overlap the workspace: $state_request"
+    if [[ "$state_mode" == rw ]]; then
+        if [[ ! -e "$state_request" && ! -L "$state_request" ]]; then
+            (umask 077; mkdir -p -- "$state_request") || die "Cannot create PI_CONTAINER_STATE_DIR: $state_request"
+        fi
+        [[ -d "$state_request" ]] || die "PI_CONTAINER_STATE_DIR is not a directory: $state_request"
+        isolated_home=$(CDPATH='' cd -- "$state_request" && pwd -P) || die "Cannot resolve PI_CONTAINER_STATE_DIR: $state_request"
+        [[ -r "$isolated_home" && -w "$isolated_home" && -x "$isolated_home" ]] || die "PI_CONTAINER_STATE_DIR is not accessible: $state_request"
+        state_owner=$(stat -c '%u' -- "$isolated_home") || die "Cannot inspect PI_CONTAINER_STATE_DIR owner: $state_request"
+        state_perm=$(stat -c '%a' -- "$isolated_home") || die "Cannot inspect PI_CONTAINER_STATE_DIR permissions: $state_request"
+        [[ "$state_owner" == "$caller_uid" ]] || die "PI_CONTAINER_STATE_DIR must belong to the calling user: $state_request"
+        # shellcheck disable=SC2015 # die must run when either test fails.
+        [[ "$state_perm" =~ ^[0-7]{3,4}$ ]] && (( (8#$state_perm & 077) == 0 )) \
+            || die "PI_CONTAINER_STATE_DIR must be private: $state_request (explicitly repair it or use a filesystem that enforces Unix permissions)"
+    fi
+    state_root=$state_physical
+fi
+
 # Host Git configuration is mounted only on exact opt-in, from its physical file.
 gitconfig_source=''
 gitconfig_request=0
@@ -279,8 +331,6 @@ if [[ "$podman_setting" == 1 ]]; then
     [[ "$host_socket" == /* && -n "${host_socket//\//}" && "$host_socket" != *$'\n'* ]] || die 'Selected socket must report one absolute host socket path beyond /'
 fi
 
-state_mode=rw
-[[ -z "${PI_READONLY_CONFIG:-}" ]] || state_mode=ro
 validate_state() {
     local path=$1 owner mode
     if [[ "$state_mode" == rw && ! -e "$path" && ! -L "$path" ]]; then
@@ -298,19 +348,19 @@ validate_state() {
         (( (8#$mode & 077) == 0 )) || die "State must be private: $path (explicitly repair it or use a filesystem that enforces Unix permissions)"
     fi
 }
-validate_state "$HOME/.pi"; pi_state=$state_path
-validate_state "$HOME/.agents"; agents_state=$state_path
+validate_state "$state_root/.pi"; pi_state=$state_path
+validate_state "$state_root/.agents"; agents_state=$state_path
 
 install_bun=0
 [[ -z "${PI_ENABLE_BUN:-}" ]] || install_bun=1
-bun_version=${PI_BUN_VERSION:-bun-v1.3.14}
-build_hash=$({ cat "$script_dir/Containerfile" "$script_dir/.containerignore" "$version_file"; printf 'INSTALL_PODMAN=%s\nINSTALL_BUN=%s\nBUN_VERSION=%s\n' "$install_podman" "$install_bun" "$bun_version"; } | sha256sum)
+build_hash=$({ cat "$script_dir/Containerfile" "$script_dir/.containerignore" "$version_file"; printf 'INSTALL_BUN=%s\n' "$install_bun"; } | sha256sum)
 build_hash=${build_hash%% *}
 needs_build=$build_image
 if ((build_image == 0)); then
     if podman image exists "$image"; then
         label_hash=$(podman image inspect "$image" --format '{{index .Labels "build-inputs-hash"}}') || die "Cannot inspect staleness label for $image; check engine/storage"
-        [[ "$label_hash" == "$build_hash" ]] || needs_build=1
+        [[ "$label_hash" == "$build_hash" ]] \
+            || die "Image $image is stale for the current inputs (Containerfile, .containerignore, .version or PI_ENABLE_BUN); rebuild explicitly with --container-build"
     else
         image_status=$?
         [[ "$image_status" == 1 ]] || { printf 'pi-container: Cannot inspect image %s (status %s)\n' "$image" "$image_status" >&2; exit "$image_status"; }
@@ -319,10 +369,8 @@ if ((build_image == 0)); then
 fi
 if ((needs_build)); then
     build_args=(--tag "$image" --file "$script_dir/Containerfile" --format docker
-        --build-arg "PI_VERSION=$pi_version" --build-arg "INSTALL_PODMAN=$install_podman"
-        --build-arg "INSTALL_BUN=$install_bun" --build-arg "BUN_VERSION=$bun_version"
+        --build-arg "PI_VERSION=$pi_version" --build-arg "INSTALL_BUN=$install_bun"
         --label "build-inputs-hash=$build_hash")
-    [[ -z "${PI_PULL_ALWAYS:-}" ]] || build_args+=(--pull=always)
     printf 'Building Pi v%s image...\n' "$pi_version" >&2
     timeout --kill-after=1s 300s podman build "${build_args[@]}" "$script_dir" </dev/null || die 'Image build failed or timed out (300s); check build output and network'
 fi
@@ -331,20 +379,26 @@ podman_args=(--rm --interactive --init --read-only --read-only-tmpfs=false
     --userns=keep-id --user "$caller_uid:$caller_gid"
     --cap-drop=ALL --security-opt=no-new-privileges
     "--memory=$memory_bytes" "--cpus=$cpu_text" "--pids-limit=$pids_limit"
-    --workdir "$workspace" --env "HOME=$HOME"
+    --workdir "$workspace" --env "HOME=$CONTAINER_HOME"
     --env "EDITOR=${EDITOR:-nano}" --env "VISUAL=${VISUAL:-nano}"
     --tmpfs "/tmp:rw,noexec,nosuid,nodev,mode=1777,size=256M"
     --tmpfs "/var/tmp:rw,noexec,nosuid,nodev,mode=1777,size=256M"
     --tmpfs "/run:rw,noexec,nosuid,nodev,mode=1777,size=32M"
-    --tmpfs "$HOME/.npm:rw,noexec,nosuid,nodev,mode=0700,U,size=${PI_NPM_CACHE_SIZE:-256M}"
-    --volume "$workspace_mount:$workspace_mount:rw"
-    --volume "$pi_state:$HOME/.pi:$state_mode"
-    --volume "$agents_state:$HOME/.agents:$state_mode")
+    --volume "$workspace_mount:$workspace_mount:rw")
+# The dedicated home is a private state directory or an ephemeral tmpfs.
+if [[ -n "$isolated_home" ]]; then
+    podman_args+=(--volume "$isolated_home:$CONTAINER_HOME:rw")
+else
+    podman_args+=(--tmpfs "$CONTAINER_HOME:rw,noexec,nosuid,nodev,mode=1777,size=64M"
+        --volume "$pi_state:$CONTAINER_HOME/.pi:$state_mode"
+        --volume "$agents_state:$CONTAINER_HOME/.agents:$state_mode")
+fi
+podman_args+=(--tmpfs "$CONTAINER_HOME/.npm:rw,noexec,nosuid,nodev,mode=0700,U,size=${PI_NPM_CACHE_SIZE:-256M}")
 if [[ -t 0 && -t 1 ]]; then
     podman_args+=(--tty)
     [[ -z "${TERM:-}" ]] || podman_args+=(--env TERM)
 fi
-[[ -z "$gitconfig_source" ]] || podman_args+=(--volume "$gitconfig_source:$HOME/.gitconfig:ro")
+[[ -z "$gitconfig_source" ]] || podman_args+=(--volume "$gitconfig_source:$CONTAINER_HOME/.gitconfig:ro")
 [[ -z "${PI_NETWORK:-}" ]] || podman_args+=(--network "$PI_NETWORK")
 ((run_timeout == 0)) || podman_args+=(--timeout "$run_timeout")
 # Values for credentials remain in the creating client's environment, never argv.
