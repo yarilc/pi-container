@@ -36,21 +36,21 @@ The wrapper SHALL retain query exit failures and complete record boundaries, all
 
 ### Requirement: Exact delegation opt-in
 
-Host service delegation and conditional Podman client installation SHALL be enabled only by exact `PI_ENABLE_PODMAN=1`. Disabled delegation SHALL omit the socket bind and explicitly remove session `CONTAINER_HOST`, including requests through `PI_ENV_VARS`. Native Pi permissions and Bun selection SHALL remain independent.
+Host service delegation and conditional Podman client installation SHALL be enabled only by exact `PI_CONTAINER_PODMAN=1`, or by the deprecated `PI_ENABLE_PODMAN=1` when the new name is unset. Disabled delegation SHALL omit the socket bind and explicitly remove session `CONTAINER_HOST`, including requests through `PI_ENV_VARS`. Native Pi permissions and Bun selection SHALL remain independent.
 
 #### Scenario: Non-enabling values
 
-- **WHEN** `PI_ENABLE_PODMAN` is unset, empty, `0`, `false`, `true`, `yes`, or any value other than `1`
+- **WHEN** `PI_CONTAINER_PODMAN` is unset, empty, `0`, `false`, `true`, `yes`, or any value other than `1`, and no enabling alias applies
 - **THEN** no delegated-service query or socket mount occurs, `INSTALL_PODMAN=0`, and session `CONTAINER_HOST` is absent even if forwarded by name.
 
 #### Scenario: Enabled authority cannot be verified
 
-- **WHEN** `PI_ENABLE_PODMAN=1` and selected socket verification fails
+- **WHEN** delegation is enabled and selected socket verification fails
 - **THEN** startup fails before image operations without silently degrading to an undelegated session or starting a host service.
 
 ### Requirement: Verified socket selection and host remapping
 
-Enabled delegation SHALL select `PI_PODMAN_SOCKET`, then an explicit Unix `CONTAINER_HOST`, then `${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock`. It SHALL require an absolute canonical accessible socket with read/write permission, query that exact endpoint, require rootless `true` and an absolute reported host pathname beyond slash characters, and bind that reported source to the session connection destination.
+Enabled delegation SHALL select `PI_CONTAINER_PODMAN_SOCKET` (or the deprecated `PI_PODMAN_SOCKET`), then an explicit Unix `CONTAINER_HOST`, then `${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock`. It SHALL require an absolute canonical accessible socket with read/write permission, query that exact endpoint, require rootless `true` and an absolute reported host pathname beyond slash characters, and bind that reported source to the session connection destination.
 
 #### Scenario: Containerized caller with a remapped service
 

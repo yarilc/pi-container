@@ -145,18 +145,36 @@ exfiltrate any embedded credentials over the unrestricted default network.
 The physical workspace is mounted at the same absolute path and used as
 workdir. No automatic :z/:Z relabeling or host policy bypass is performed.
 SELinux denials require explicit host policy/permission inspection. The
-sensitive-directory guard rejects /, HOME, /home, /etc, /usr, /var, /bin,
-/sbin, /lib, /lib64, /boot, /root, /opt, /srv, /mnt, /media, /proc, /sys,
-/dev, and /run unless PI_ALLOW_UNSAFE_PWD is nonempty. Worktree mode applies
+sensitive-workspace guard compares physical paths and rejects /, the caller's
+home, /home, /root, /etc, /usr, /var, /bin, /sbin, /lib, /lib64, /boot, /opt,
+/srv, /mnt, /media, /proc, /sys, /dev, /run, /tmp and /mnt/<letter> drive
+roots unless exactly `PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1` is set (the
+deprecated `PI_ALLOW_UNSAFE_PWD` also requires exactly `1`). Worktree mode applies
 the guard to the immediate parent it exposes. That explicit mode permits
 read/write access to siblings in the whole parent while retaining the
 original workdir. Always use a suitably narrow project directory.
 
+### No Tool-Approval Layer
+
+Pi runs its tools without approval prompts, so the container is the only
+boundary around them and this wrapper offers no YOLO switch. Pi's `--approve`
+option trusts project-local files for a run; it does not approve tools.
+Combine `PI_NETWORK=none`, `PI_READONLY_CONFIG=1` and narrow workspaces for
+untrusted tasks.
+
+### Resource Budgets
+
+Every session has validated memory, CPU and process budgets
+(`PI_CONTAINER_MEMORY_LIMIT`, `PI_CONTAINER_CPU_LIMIT`,
+`PI_CONTAINER_PIDS_LIMIT`; defaults 4g, 2 and 512). The wrapper inspects the
+created container and starts it only when the engine applied them. Budgets do
+not bound workspace or state storage growth.
+
 ### Podman Socket (Opt-In, Dangerous)
 
-Only exact `PI_ENABLE_PODMAN=1` enables host authority and installs the
+Only exact `PI_CONTAINER_PODMAN=1` enables host authority and installs the
 client. All other values disable delegation, including true/yes/0/false.
-The selected absolute accessible socket (`PI_PODMAN_SOCKET`, Unix
+The selected absolute accessible socket (`PI_CONTAINER_PODMAN_SOCKET`, Unix
 `CONTAINER_HOST`, then XDG runtime/UID fallback) is canonicalized and queried
 explicitly. It must report rootless operation and an absolute host socket
 path. Enabled failures abort before image operations; services are never

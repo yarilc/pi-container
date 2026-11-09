@@ -8,64 +8,15 @@ usage() {
     cat <<'HELP'
 Usage: pi-container.sh [container options] [Pi arguments...]
 
-  --container-build         force image refresh, then start the selected session
-  --container-shell         start Bash instead of Pi (discard Pi arguments)
-  --container-git-worktree  expose the physical workspace's immediate parent
-                            read/write; retain the original working directory
-  --container-help          show this help without runtime prerequisites
-  --wrapper-help            alias for --container-help
+Container options:
+  --container-build      force image refresh, then start the selected session
+  --container-shell      start Bash instead of Pi (discard Pi arguments)
+  --container-git-worktree expose the physical workspace's immediate parent
+                         read/write; retain the original working directory
+  --container-help       show this help without runtime prerequisites
+  --wrapper-help         alias for --container-help
 
 All other arguments, including --help, are passed unchanged to Pi.
-Launch requires a verified Linux rootless engine, without a rootful override.
-Use local Podman or an explicit same-host absolute Unix CONTAINER_HOST.
-Named connections, TCP/SSH, implicit remote contexts, and slash-only paths fail.
-Writable ~/.pi and ~/.agents must be caller-owned, accessible, and private
-(no group/other permissions). Missing writable state is created privately;
-existing state is never repaired. Use native Linux storage for Unix modes.
-Read-only state must already exist and be readable/traversable.
-Sessions use caller UID/GID, keep-id, no capabilities, and a read-only rootfs.
-No automatic SELinux relabeling or confinement overrides are performed.
-Temporary /tmp and /var/tmp: 256 MiB each; /run: 32 MiB; npm cache: 256 MiB.
-All temporary stores use nosuid,nodev,noexec and disappear after the session.
-TTY requires terminal stdin AND stdout; redirected input and EOF are retained.
-Names use a sanitized directory prefix and highest existing decimal suffix+1;
-create reserves atomically with at most 20 attempts, without replacement.
-
-Environment:
-  PI_IMAGE_NAME          image name (default: pi-container)
-  PI_ENABLE_PODMAN       delegation/client enabled only for exact 1
-  PI_PODMAN_SOCKET       absolute socket override; then Unix CONTAINER_HOST;
-                         then ${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock
-  PI_ENABLE_BUN          nonempty enables optional Bun (legacy switch semantics)
-  PI_BUN_VERSION         default: bun-v1.3.14; participates in image freshness
-  PI_MEMORY_LIMIT        default: 4g
-  PI_CPU_LIMIT           default: 2
-  PI_PIDS_LIMIT          default: 512
-  PI_NPM_CACHE_SIZE      default: 256M
-  PI_NETWORK             optional network selection, e.g. none (default: full)
-  PI_READONLY_CONFIG     nonempty mounts existing state read-only
-  PI_CONTAINER_GITCONFIG exactly 1 mounts ~/.gitconfig read-only (default: not
-                         mounted; it may hold credential helpers or tokens)
-  PI_MOUNT_GITCONFIG     deprecated alias: 1 mounts, 0 does not; conflicts with
-                         PI_CONTAINER_GITCONFIG are errors
-  PI_ALLOW_UNSAFE_PWD    nonempty bypasses the sensitive-directory guard
-  PI_PULL_ALWAYS         nonempty selects --pull=always on a build
-  PI_RUN_TIMEOUT         native Podman container lifetime in seconds; 0 disables
-                         independent from wrapper shutdown budgets
-  PI_ENV_VARS            space-separated extra variable names; never values
-  PI_DEBUG               nonempty enables debug output without secret values
-  EDITOR, VISUAL         defaults: nano
-
-API keys and proxy variables are forwarded by name only when nonempty.
-Engine verification rejects incomplete/extra records and CR characters.
-Delegation verifies the selected rootless service and binds its reported
-host-side socket to /run/podman/podman.sock; it never starts a service.
-Without delegation session CONTAINER_HOST is explicitly unset, even if listed
-in PI_ENV_VARS. Connection settings cannot override the selected session URI.
-Delegation grants the service user's host authority, including further mounts.
-Worktree mode exposes siblings in the whole immediate parent read/write.
-Bun and native Pi permissions are independent of delegation.
-
 TERM/INT/HUP select 143/130/129. The first signal is forwarded once; later
 signals do not replace status or renew deadlines. Application grace: 5s.
 Each control call: 5s plus 1s kill-after; client cancellation: TERM 5s, KILL 1s.
@@ -74,6 +25,72 @@ Only this invocation's full verified CID is removed. Cancellation does not
 prove the server request stopped. Unknown IDs, engine loss, or SIGKILL can
 leave resources requiring manual inspection. Cleanup preserves exit codes,
 including 125. Host GNU coreutils timeout is required.
+TTY requires terminal stdin AND stdout; redirected input and EOF are retained.
+Names use a sanitized directory prefix and highest existing decimal suffix+1;
+create reserves atomically with at most 20 attempts, without replacement.
+
+Environment:
+  PI_CONTAINER_IMAGE     image name (default: pi-container)
+  PI_CONTAINER_PODMAN    delegation/client enabled only for exact 1
+                         (default: disabled; other values also disable it)
+  PI_CONTAINER_PODMAN_SOCKET absolute socket override; then Unix CONTAINER_HOST;
+                         then ${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock
+  PI_CONTAINER_MEMORY_LIMIT session memory, integer with k/m/g unit (default: 4g)
+  PI_CONTAINER_CPU_LIMIT    session CPUs, up to 3 decimals (default: 2)
+  PI_CONTAINER_PIDS_LIMIT   session process limit (default: 512)
+                         Budgets cannot be disabled; they require delegated
+                         rootless cgroup v2 cpu/memory/pids controllers
+  PI_CONTAINER_RUN_TIMEOUT  session container lifetime in whole seconds
+                         (default: 0, disabled); independent from shutdown budgets
+  PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE exact 1 permits a refused sensitive
+                         workspace with a warning (default: disabled)
+  PI_CONTAINER_GITCONFIG exactly 1 mounts ~/.gitconfig read-only (default: not
+                         mounted; it may hold credential helpers or tokens)
+  PI_ENABLE_BUN          nonempty enables optional Bun (legacy switch semantics)
+  PI_BUN_VERSION         default: bun-v1.3.14; participates in image freshness
+  PI_NPM_CACHE_SIZE      default: 256M
+  PI_NETWORK             optional network selection, e.g. none (default: full)
+  PI_READONLY_CONFIG     nonempty mounts existing state read-only
+  PI_PULL_ALWAYS         nonempty selects --pull=always on a build
+  PI_ENV_VARS            space-separated extra variable names; never values
+  PI_DEBUG               nonempty enables debug output without secret values
+  EDITOR, VISUAL         defaults: nano
+
+Deprecated names (warned; conflicting old and new values are errors):
+  PI_IMAGE_NAME, PI_ENABLE_PODMAN, PI_PODMAN_SOCKET, PI_MEMORY_LIMIT,
+  PI_CPU_LIMIT, PI_PIDS_LIMIT, PI_RUN_TIMEOUT, PI_ALLOW_UNSAFE_PWD (exact 1
+  only) and PI_MOUNT_GITCONFIG map to the PI_CONTAINER_* names above.
+
+Pi has no tool-approval layer: its tools run without prompts, so the container
+is the only boundary and there is no YOLO switch. Pi's --approve trusts
+project-local files; it does not approve tools.
+Launch requires a verified Linux rootless engine, without a rootful override.
+Use local Podman or an explicit same-host absolute Unix CONTAINER_HOST.
+Named connections, TCP/SSH, implicit remote contexts, and slash-only paths fail.
+Engine verification rejects incomplete/extra records and CR characters.
+Writable ~/.pi and ~/.agents must be caller-owned, accessible, and private
+(no group/other permissions). Missing writable state is created privately;
+existing state is never repaired. Use native Linux storage for Unix modes.
+Read-only state must already exist and be readable/traversable.
+Sessions use caller UID/GID, keep-id, no capabilities, no-new-privileges and a
+read-only rootfs. No automatic SELinux relabeling or confinement overrides are
+performed. Budgets and tmpfs sizes do not limit workspace or state storage.
+When the lifetime limit stops a session, a notice is printed and the engine
+client's exit status is kept.
+Temporary /tmp and /var/tmp: 256 MiB each; /run: 32 MiB; npm cache: 256 MiB.
+All temporary stores use nosuid,nodev,noexec and disappear after the session.
+The writable workspace (or worktree parent) must not physically be /, /home,
+/root, /etc, /usr, /var, /bin, /sbin, /lib, /lib64, /boot, /opt, /srv, /mnt,
+/media, /proc, /sys, /dev, /run, /tmp, the caller's home or a /mnt/<letter>
+drive root; descendants such as /mnt/d/project are allowed.
+API keys and proxy variables are forwarded by name only when nonempty.
+Delegation verifies the selected rootless service and binds its reported
+host-side socket to /run/podman/podman.sock; it never starts a service.
+Without delegation session CONTAINER_HOST is explicitly unset, even if listed
+in PI_ENV_VARS. Connection settings cannot override the selected session URI.
+Delegation grants the service user's host authority, including further mounts.
+Worktree mode exposes siblings in the whole immediate parent read/write.
+Bun and native Pi permissions are independent of delegation.
 HELP
 }
 
@@ -91,6 +108,81 @@ for arg in "$@"; do
     esac
 done
 
+# Common PI_CONTAINER_* names; earlier names remain deprecated aliases.
+# select_setting NEW OLD [switch] sets setting_value and setting_set.
+select_setting() {
+    local new=$1 old=$2 kind=${3:-text} new_on old_on
+    setting_value=''
+    setting_set=0
+    if [[ -n "${!old+x}" ]]; then
+        if [[ "$kind" == switch ]]; then
+            printf 'pi-container: %s is deprecated; use %s (only the exact value 1 enables it)\n' "$old" "$new" >&2
+        else
+            printf 'pi-container: %s is deprecated; use %s\n' "$old" "$new" >&2
+        fi
+    fi
+    if [[ -n "${!new+x}" ]]; then
+        if [[ -n "${!old+x}" ]]; then
+            if [[ "$kind" == switch ]]; then
+                new_on=0; old_on=0
+                [[ "${!new}" != 1 ]] || new_on=1
+                [[ "${!old}" != 1 ]] || old_on=1
+                ((new_on == old_on)) || die "$old and $new conflict; set only $new"
+            else
+                [[ "${!new}" == "${!old}" ]] || die "$old and $new conflict; set only $new"
+            fi
+        fi
+        setting_value=${!new}
+        setting_set=1
+    elif [[ -n "${!old+x}" ]]; then
+        setting_value=${!old}
+        setting_set=1
+    fi
+}
+select_setting PI_CONTAINER_IMAGE PI_IMAGE_NAME; image_setting=$setting_value
+select_setting PI_CONTAINER_PODMAN PI_ENABLE_PODMAN switch; podman_setting=$setting_value
+select_setting PI_CONTAINER_PODMAN_SOCKET PI_PODMAN_SOCKET; socket_setting=$setting_value
+select_setting PI_CONTAINER_MEMORY_LIMIT PI_MEMORY_LIMIT
+memory_text=4g; ((setting_set == 0)) || memory_text=$setting_value
+select_setting PI_CONTAINER_CPU_LIMIT PI_CPU_LIMIT
+cpu_text=2; ((setting_set == 0)) || cpu_text=$setting_value
+select_setting PI_CONTAINER_PIDS_LIMIT PI_PIDS_LIMIT
+pids_text=512; ((setting_set == 0)) || pids_text=$setting_value
+select_setting PI_CONTAINER_RUN_TIMEOUT PI_RUN_TIMEOUT; timeout_text=${setting_value:-0}
+select_setting PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE PI_ALLOW_UNSAFE_PWD switch; unsafe_setting=$setting_value
+if [[ -n "${PI_CONTAINER_YOLO:-}" ]]; then
+    printf 'pi-container: PI_CONTAINER_YOLO has no effect; Pi has no tool-approval layer and the container is the only boundary\n' >&2
+fi
+
+# Session budgets and lifetime, validated before any engine or state operation.
+# Same rules and messages as the claude-container reference (sandbox-ref-2).
+# Only an unset budget selects its default; no value disables a budget.
+memory_bytes=0
+if [[ "$memory_text" =~ ^([1-9][0-9]{0,15})([kmgKMG])$ ]]; then
+    case "${BASH_REMATCH[2],,}" in
+        k) unit=1024 ;;
+        m) unit=1048576 ;;
+        *) unit=1073741824 ;;
+    esac
+    ((10#${BASH_REMATCH[1]} > (1 << 50) / unit)) || memory_bytes=$((10#${BASH_REMATCH[1]} * unit))
+fi
+((memory_bytes > 0)) || die 'PI_CONTAINER_MEMORY_LIMIT must be a positive integer with unit k, m or g, for example 4g'
+cpu_nano=0
+if [[ "$cpu_text" =~ ^([0-9]{1,4})(\.([0-9]{1,3}))?$ ]]; then
+    fraction=${BASH_REMATCH[3]}000
+    cpu_nano=$((10#${BASH_REMATCH[1]} * 1000000000 + 10#${fraction:0:3} * 1000000))
+    ((cpu_nano <= 1024000000000)) || cpu_nano=0
+fi
+((cpu_nano > 0)) || die 'PI_CONTAINER_CPU_LIMIT must be a positive number of CPUs with at most 3 decimals, for example 2 or 1.5'
+# shellcheck disable=SC2015 # die must run when either test fails.
+[[ "$pids_text" =~ ^(0|[1-9][0-9]{0,9})$ ]] && ((pids_text > 0 && pids_text <= 4194304)) \
+    || die 'PI_CONTAINER_PIDS_LIMIT must be a positive integer process count up to 4194304'
+# shellcheck disable=SC2015 # die must run when either test fails.
+[[ "$timeout_text" =~ ^(0|[1-9][0-9]{0,9})$ ]] && ((timeout_text <= 2147483647)) \
+    || die 'PI_CONTAINER_RUN_TIMEOUT must be whole seconds; 0 disables the lifetime limit'
+pids_limit=$((10#$pids_text))
+run_timeout=$((10#$timeout_text))
+
 for tool in podman timeout stat readlink sha256sum; do
     command -v "$tool" >/dev/null || die "$tool is required on the host"
 done
@@ -100,7 +192,7 @@ version_file=$script_dir/.version
 [[ -s "$version_file" ]] || die '.version is missing or empty'
 pi_version=$(head -1 "$version_file" | tr -d '[:space:]')
 [[ -n "$pi_version" ]] || die '.version is missing or empty'
-image=${PI_IMAGE_NAME:-pi-container}
+image=${image_setting:-pi-container}
 caller_uid=$(id -u)
 caller_gid=$(id -g)
 [[ "${HOME:-}" == /* ]] || die 'HOME must be an absolute directory path'
@@ -108,11 +200,18 @@ workspace=$(pwd -P) || die 'Cannot resolve physical workspace'
 workspace_mount=$workspace
 ((git_worktree == 0)) || workspace_mount=$(dirname -- "$workspace")
 physical_home=$(CDPATH='' cd -- "$HOME" && pwd -P) || die 'Cannot resolve HOME'
+# Refuse sensitive writable workspaces before any engine or state operation.
+unsafe_workspace=0
 case "$workspace_mount" in
-    /|"$physical_home"|/home|/etc|/usr|/var|/bin|/sbin|/lib|/lib64|/boot|/root|/opt|/srv|/mnt|/media|/proc|/sys|/dev|/run)
-        [[ -n "${PI_ALLOW_UNSAFE_PWD:-}" ]] || die "Refusing sensitive exposed directory: $workspace_mount (use a project subdirectory)"
-        printf 'pi-container: WARNING: sensitive directory explicitly exposed: %s\n' "$workspace_mount" >&2 ;;
+    /|/home|/root|/etc|/usr|/var|/bin|/sbin|/lib|/lib64|/boot|/opt|/srv|/mnt|/media|/proc|/sys|/dev|/run|/tmp)
+        unsafe_workspace=1 ;;
 esac
+[[ "$workspace_mount" != "$physical_home" && ! "$workspace_mount" =~ ^/mnt/[A-Za-z]$ ]] || unsafe_workspace=1
+if ((unsafe_workspace)); then
+    [[ "$unsafe_setting" == 1 ]] \
+        || die "refusing sensitive workspace $workspace_mount; launch from a project subdirectory or set exact PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1"
+    printf 'pi-container: WARNING: sensitive workspace explicitly exposed read/write: %s\n' "$workspace_mount" >&2
+fi
 # Host Git configuration is mounted only on exact opt-in, from its physical file.
 gitconfig_source=''
 gitconfig_request=0
@@ -165,9 +264,9 @@ case "$service_remote" in
 esac
 
 install_podman=0
-if [[ "${PI_ENABLE_PODMAN:-}" == 1 ]]; then
+if [[ "$podman_setting" == 1 ]]; then
     install_podman=1
-    socket=${PI_PODMAN_SOCKET:-}
+    socket=$socket_setting
     if [[ -z "$socket" && "${CONTAINER_HOST:-}" == unix:///?* ]]; then socket=${CONTAINER_HOST#unix://}; fi
     socket=${socket:-${XDG_RUNTIME_DIR:-/run/user/$caller_uid}/podman/podman.sock}
     [[ "$socket" == /* ]] || die "Podman socket path must be absolute: $socket"
@@ -231,7 +330,7 @@ fi
 podman_args=(--rm --interactive --init --read-only --read-only-tmpfs=false
     --userns=keep-id --user "$caller_uid:$caller_gid"
     --cap-drop=ALL --security-opt=no-new-privileges
-    "--memory=${PI_MEMORY_LIMIT:-4g}" "--cpus=${PI_CPU_LIMIT:-2}" "--pids-limit=${PI_PIDS_LIMIT:-512}"
+    "--memory=$memory_bytes" "--cpus=$cpu_text" "--pids-limit=$pids_limit"
     --workdir "$workspace" --env "HOME=$HOME"
     --env "EDITOR=${EDITOR:-nano}" --env "VISUAL=${VISUAL:-nano}"
     --tmpfs "/tmp:rw,noexec,nosuid,nodev,mode=1777,size=256M"
@@ -247,7 +346,7 @@ if [[ -t 0 && -t 1 ]]; then
 fi
 [[ -z "$gitconfig_source" ]] || podman_args+=(--volume "$gitconfig_source:$HOME/.gitconfig:ro")
 [[ -z "${PI_NETWORK:-}" ]] || podman_args+=(--network "$PI_NETWORK")
-[[ -z "${PI_RUN_TIMEOUT:-}" ]] || podman_args+=(--timeout "$PI_RUN_TIMEOUT")
+((run_timeout == 0)) || podman_args+=(--timeout "$run_timeout")
 # Values for credentials remain in the creating client's environment, never argv.
 for variable in ANTHROPIC_API_KEY OPENAI_API_KEY GOOGLE_API_KEY HTTP_PROXY HTTPS_PROXY NO_PROXY; do
     [[ -z "${!variable:-}" ]] || podman_args+=(--env "$variable")
@@ -440,8 +539,18 @@ done
 [[ -n "$container_id" ]] || die "Cannot reserve a container name after 20 attempts"
 ((pending_status == 0)) || exit "$pending_status"
 
+# Engine flags alone are not evidence: require the created configuration to
+# carry every selected budget before the application starts.
+configured_budgets=$(timeout --kill-after=1s 10s podman inspect --type container \
+    --format '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}}' "$container_id") \
+    || die 'Cannot inspect session resource budgets; session not started'
+((pending_status == 0)) || exit "$pending_status"
+[[ "$configured_budgets" == "$memory_bytes $cpu_nano $pids_limit" ]] \
+    || die "Session resource budgets were not applied (expected memory=$memory_bytes nano_cpus=$cpu_nano pids=$pids_limit); check rootless cgroup v2 cpu/memory/pids controller delegation; session not started"
+
 # Explicit redirection retains redirected stdin for the background client.
 attached=1
+started_at=$SECONDS
 podman start --attach --interactive --sig-proxy=false "$container_id" <&0 &
 client_pid=$!
 if ((pending_status)); then
@@ -451,4 +560,7 @@ status=0
 wait "$client_pid" || status=$?
 ((pending_status == 0)) || exit "$pending_status"
 client_pid=''
+if ((run_timeout > 0 && status != 0 && SECONDS - started_at >= run_timeout)); then
+    printf 'pi-container: session lifetime limit reached (%s s); exit status %s\n' "$run_timeout" "$status" >&2
+fi
 exit "$status"

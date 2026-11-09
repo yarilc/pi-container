@@ -71,8 +71,16 @@ class WrapperTests(unittest.TestCase):
     def test_help_without_engine_or_state(self):
         result = self.run_wrapper('--container-help', CONTAINER_CONNECTION='bad')
         self.assertEqual(result.returncode, 0, result.stderr)
-        for needle in ('PI_CONTAINER_GITCONFIG exactly 1 mounts ~/.gitconfig read-only',
-                       'PI_MOUNT_GITCONFIG     deprecated alias'):
+        for needle in ('Container options:', 'Environment:', 'Deprecated names',
+                       'PI_CONTAINER_GITCONFIG exactly 1 mounts ~/.gitconfig read-only',
+                       'PI_CONTAINER_IMAGE     image name (default: pi-container)',
+                       'PI_CONTAINER_PODMAN    delegation', 'PI_CONTAINER_PODMAN_SOCKET',
+                       'PI_CONTAINER_MEMORY_LIMIT', '(default: 4g)', 'PI_CONTAINER_CPU_LIMIT',
+                       '(default: 2)', 'PI_CONTAINER_PIDS_LIMIT', '(default: 512)',
+                       'PI_CONTAINER_RUN_TIMEOUT', 'PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE',
+                       'PI_IMAGE_NAME, PI_ENABLE_PODMAN, PI_PODMAN_SOCKET, PI_MEMORY_LIMIT',
+                       'PI_MOUNT_GITCONFIG', 'Pi has no tool-approval layer', '--approve trusts',
+                       'do not limit workspace or state storage', '/mnt/<letter>', '/tmp, the caller'):
             self.assertIn(needle, result.stdout)
         self.assertEqual(self.calls(), [])
         self.assertFalse(self.state.exists())
@@ -108,7 +116,7 @@ class WrapperTests(unittest.TestCase):
             with self.subTest(shell=shell, build=build, access=access, info=info):
                 args = (['--container-shell'] if shell else []) + (['--container-build'] if build else [])
                 result = self.run_wrapper(*args, FAKE_INFO=info,
-                                          PI_ENABLE_PODMAN=access)
+                                          PI_CONTAINER_PODMAN=access)
                 self.assert_rejected(result)
                 self.assertFalse(self.state.exists())
                 self.assertFalse(any(c[0] == '--remote' for c in self.calls()))
@@ -150,8 +158,8 @@ class WrapperTests(unittest.TestCase):
         for shell, build, launch_end, socket_end in itertools.product((False, True), (False, True), ('', '\n'), ('', '\n')):
             with self.subTest(shell=shell, build=build, launch_end=launch_end, socket_end=socket_end):
                 options = (['--container-shell'] if shell else []) + (['--container-build'] if build else [])
-                result = self.run_wrapper(*options, PI_ENABLE_PODMAN='1',
-                                          PI_PODMAN_SOCKET=str(self.sock_path),
+                result = self.run_wrapper(*options, PI_CONTAINER_PODMAN='1',
+                                          PI_CONTAINER_PODMAN_SOCKET=str(self.sock_path),
                                           FAKE_INFO_RAW='true linux false' + launch_end,
                                           FAKE_SOCKET_INFO_RAW='true\n/host/socket with spaces.sock' + socket_end)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -166,7 +174,7 @@ class WrapperTests(unittest.TestCase):
         for shell, build, access, response in itertools.product((False, True), (False, True), ('0', '1'), invalid):
             with self.subTest(shell=shell, build=build, access=access, response=response):
                 options = (['--container-shell'] if shell else []) + (['--container-build'] if build else [])
-                self.assert_rejected(self.run_wrapper(*options, PI_ENABLE_PODMAN=access,
+                self.assert_rejected(self.run_wrapper(*options, PI_CONTAINER_PODMAN=access,
                                                       FAKE_INFO_RAW=response))
                 self.assertFalse(any(c[0] == '--remote' for c in self.calls()))
                 self.assertFalse(self.state.exists())
@@ -180,8 +188,8 @@ class WrapperTests(unittest.TestCase):
         for shell, build, response in itertools.product((False, True), (False, True), invalid):
             with self.subTest(shell=shell, build=build, response=response):
                 options = (['--container-shell'] if shell else []) + (['--container-build'] if build else [])
-                self.assert_rejected(self.run_wrapper(*options, PI_ENABLE_PODMAN='1',
-                                                      PI_PODMAN_SOCKET=str(self.sock_path),
+                self.assert_rejected(self.run_wrapper(*options, PI_CONTAINER_PODMAN='1',
+                                                      PI_CONTAINER_PODMAN_SOCKET=str(self.sock_path),
                                                       FAKE_SOCKET_INFO_RAW=response))
                 self.assertFalse(self.state.exists())
 
@@ -192,8 +200,8 @@ class WrapperTests(unittest.TestCase):
                 options = (['--container-shell'] if shell else []) + (['--container-build'] if build else [])
                 response = {'FAKE_INFO_RAW': 'true linux false\n', 'FAKE_INFO_STATUS': '125'} if endpoint == 'launch' else {
                     'FAKE_SOCKET_INFO_RAW': 'true\n/host/podman.sock\n', 'FAKE_SOCKET_STATUS': '125'}
-                self.assert_rejected(self.run_wrapper(*options, PI_ENABLE_PODMAN='1',
-                                                      PI_PODMAN_SOCKET=str(self.sock_path), **response))
+                self.assert_rejected(self.run_wrapper(*options, PI_CONTAINER_PODMAN='1',
+                                                      PI_CONTAINER_PODMAN_SOCKET=str(self.sock_path), **response))
 
 
     def run_args(self):
@@ -498,8 +506,8 @@ reap_client
         for shell, access, image in itertools.product((False, True), ('0', '1'), (0, 1, 125, 42)):
             with self.subTest(shell=shell, access=access, image=image):
                 result = self.run_wrapper(*(['--container-shell'] if shell else []),
-                                          PI_ENABLE_PODMAN=access,
-                                          PI_PODMAN_SOCKET=str(self.sock_path),
+                                          PI_CONTAINER_PODMAN=access,
+                                          PI_CONTAINER_PODMAN_SOCKET=str(self.sock_path),
                                           FAKE_IMAGE_STATUS=str(image))
                 self.assertEqual(result.returncode, image if image not in (0, 1) else 0, result.stderr)
                 self.assertEqual(any(c[0] == 'build' for c in self.calls()), image == 1)
@@ -577,8 +585,8 @@ reap_client
 
 
     def test_socket_override_and_remapped_source(self):
-        result = self.run_wrapper(PI_ENABLE_PODMAN='1',
-                                  PI_PODMAN_SOCKET=str(self.sock_path),
+        result = self.run_wrapper(PI_CONTAINER_PODMAN='1',
+                                  PI_CONTAINER_PODMAN_SOCKET=str(self.sock_path),
                                   CONTAINER_HOST='unix:///different/launch.sock',
                                   FAKE_INFO='true linux true',
                                   FAKE_SOCKET_INFO='true\n/host/socket with spaces.sock')
@@ -597,10 +605,10 @@ reap_client
         link.symlink_to(self.sock_path)
         cases = [dict(CONTAINER_HOST='unix://' + str(link), FAKE_INFO='true linux true'),
                  dict(XDG_RUNTIME_DIR=str(runtime)),
-                 dict(XDG_RUNTIME_DIR=str(runtime), PI_PODMAN_SOCKET='')]
+                 dict(XDG_RUNTIME_DIR=str(runtime), PI_CONTAINER_PODMAN_SOCKET='')]
         for env in cases:
             with self.subTest(env=env):
-                result = self.run_wrapper(PI_ENABLE_PODMAN='1', **env)
+                result = self.run_wrapper(PI_CONTAINER_PODMAN='1', **env)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 query = next(c for c in self.calls() if c[0] == '--remote')
                 self.assertEqual(query[2], 'unix://' + str(self.sock_path))
@@ -617,7 +625,7 @@ reap_client
         for xdg in ('', None):
             self.env.pop('XDG_RUNTIME_DIR', None)
             env = {} if xdg is None else dict(XDG_RUNTIME_DIR=xdg)
-            result = self.run_wrapper(PI_ENABLE_PODMAN='1', **env)
+            result = self.run_wrapper(PI_CONTAINER_PODMAN='1', **env)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(selection.read_text(), f'/run/user/{os.getuid()}/podman/podman.sock')
 
@@ -628,7 +636,7 @@ reap_client
         for path in ('relative.sock', str(file), str(self.base / 'missing'),
                      str(self.base / 'absent' / 'missing.sock')):
             with self.subTest(path=path):
-                result = self.run_wrapper(PI_ENABLE_PODMAN='1', PI_PODMAN_SOCKET=path)
+                result = self.run_wrapper(PI_CONTAINER_PODMAN='1', PI_CONTAINER_PODMAN_SOCKET=path)
                 self.assert_rejected(result)
                 self.assertIn(path, result.stderr)
 
@@ -637,8 +645,8 @@ reap_client
     def test_inaccessible_socket(self):
         self.sock_path.chmod(0)
         try:
-            self.assert_rejected(self.run_wrapper(PI_ENABLE_PODMAN='1',
-                                                 PI_PODMAN_SOCKET=str(self.sock_path)))
+            self.assert_rejected(self.run_wrapper(PI_CONTAINER_PODMAN='1',
+                                                 PI_CONTAINER_PODMAN_SOCKET=str(self.sock_path)))
         finally:
             self.sock_path.chmod(0o700)
 
@@ -650,15 +658,15 @@ reap_client
             with self.subTest(shell=shell, build=build, info=info):
                 args = (['--container-shell'] if shell else []) + (['--container-build'] if build else [])
                 self.assert_rejected(self.run_wrapper(
-                    *args, PI_ENABLE_PODMAN='1',
-                    PI_PODMAN_SOCKET=str(self.sock_path), FAKE_SOCKET_INFO=info))
-        self.assert_rejected(self.run_wrapper(PI_ENABLE_PODMAN='1',
-                                             PI_PODMAN_SOCKET=str(self.sock_path),
+                    *args, PI_CONTAINER_PODMAN='1',
+                    PI_CONTAINER_PODMAN_SOCKET=str(self.sock_path), FAKE_SOCKET_INFO=info))
+        self.assert_rejected(self.run_wrapper(PI_CONTAINER_PODMAN='1',
+                                             PI_CONTAINER_PODMAN_SOCKET=str(self.sock_path),
                                              FAKE_SOCKET_STATUS='125'))
 
 
     def test_modes_image_override_and_native_help(self):
-        result = self.run_wrapper('--container-build', '--container-shell', 'ignored', PI_IMAGE_NAME='test/custom:tag')
+        result = self.run_wrapper('--container-build', '--container-shell', 'ignored', PI_CONTAINER_IMAGE='test/custom:tag')
         self.assertEqual(result.returncode, 0, result.stderr)
         build = next(c for c in self.calls() if c[0] == 'build')
         self.assertIn('test/custom:tag', build)
@@ -685,8 +693,8 @@ reap_client
 
     def test_exact_delegation_bun_and_connection_forwarding(self):
         for access, bun in itertools.product(('', '0', 'false', 'true', 'yes', '1', 'unexpected'), ('', '1')):
-            result=self.run_wrapper('--version', PI_ENABLE_PODMAN=access, PI_ENABLE_BUN=bun,
-                PI_PODMAN_SOCKET=str(self.sock_path), PI_ENV_VARS='CONTAINER_HOST CONTAINER_CONNECTION CUSTOM_SECRET',
+            result=self.run_wrapper('--version', PI_CONTAINER_PODMAN=access, PI_ENABLE_BUN=bun,
+                PI_CONTAINER_PODMAN_SOCKET=str(self.sock_path), PI_ENV_VARS='CONTAINER_HOST CONTAINER_CONNECTION CUSTOM_SECRET',
                 CONTAINER_HOST='unix:///launch.sock', FAKE_INFO='true linux true', CUSTOM_SECRET='dummy-private-value', PI_DEBUG='1')
             self.assertEqual(result.returncode,0,result.stderr)
             args=self.run_args()
@@ -723,8 +731,9 @@ reap_client
 
     def test_workspace_parent_identity_tmpfs_and_controls(self):
         for flags,mount in (([],self.project),(['--container-git-worktree'],self.project.parent)):
-            result=self.run_wrapper('--container-shell',*flags,PI_RUN_TIMEOUT='12',PI_NPM_CACHE_SIZE='512M',
-                PI_MEMORY_LIMIT='8g',PI_CPU_LIMIT='3',PI_PIDS_LIMIT='100',PI_NETWORK='none')
+            result=self.run_wrapper('--container-shell',*flags,PI_CONTAINER_RUN_TIMEOUT='12',PI_NPM_CACHE_SIZE='512M',
+                PI_CONTAINER_MEMORY_LIMIT='8g',PI_CONTAINER_CPU_LIMIT='3',PI_CONTAINER_PIDS_LIMIT='100',PI_NETWORK='none',
+                FAKE_AGENT_BUDGETS='8589934592 3000000000 100')
             self.assertEqual(result.returncode,0,result.stderr)
             args=self.run_args()
             self.assertEqual(args[args.index('--workdir')+1],str(self.project))
@@ -734,7 +743,7 @@ reap_client
             self.assertIn('--cap-drop=ALL',args)
             self.assertFalse(any(a.startswith('--cap-add') for a in args))
             self.assertIn('--security-opt=no-new-privileges',args)
-            for value in ('--memory=8g','--cpus=3','--pids-limit=100','--read-only-tmpfs=false'):
+            for value in ('--memory=8589934592','--cpus=3','--pids-limit=100','--read-only-tmpfs=false'):
                 self.assertIn(value,args)
             self.assertLess(args.index('--timeout'),args.index('pi-container'))
             self.assertEqual(args[args.index('--timeout')+1],'12')
@@ -912,6 +921,148 @@ reap_client
         path=Path(probe.name)
         probe.cleanup()
         self.assertFalse(path.exists())
+
+    def assert_refused_early(self, result, *needles):
+        self.assertEqual(result.returncode, 1, result.stderr)
+        for needle in needles:
+            self.assertIn(needle, result.stderr)
+        self.assertEqual(self.calls(), [])
+
+    ALIASES = (('PI_CONTAINER_IMAGE', 'PI_IMAGE_NAME', 'test/alias:1', 'test/other:1'),
+               ('PI_CONTAINER_MEMORY_LIMIT', 'PI_MEMORY_LIMIT', '2g', '3g'),
+               ('PI_CONTAINER_CPU_LIMIT', 'PI_CPU_LIMIT', '1.5', '2'),
+               ('PI_CONTAINER_PIDS_LIMIT', 'PI_PIDS_LIMIT', '256', '128'),
+               ('PI_CONTAINER_RUN_TIMEOUT', 'PI_RUN_TIMEOUT', '30', '40'))
+
+    def test_common_names_and_deprecated_aliases(self):
+        budgets = {'PI_CONTAINER_MEMORY_LIMIT': '2147483648 2000000000 512',
+                   'PI_CONTAINER_CPU_LIMIT': '4294967296 1500000000 512',
+                   'PI_CONTAINER_PIDS_LIMIT': '4294967296 2000000000 256'}
+        expected = {'PI_CONTAINER_IMAGE': 'test/alias:1', 'PI_CONTAINER_MEMORY_LIMIT': '--memory=2147483648',
+                    'PI_CONTAINER_CPU_LIMIT': '--cpus=1.5', 'PI_CONTAINER_PIDS_LIMIT': '--pids-limit=256',
+                    'PI_CONTAINER_RUN_TIMEOUT': '30'}
+        for new, old, value, other in self.ALIASES:
+            fake = {'FAKE_AGENT_BUDGETS': budgets[new]} if new in budgets else {}
+            for env, warned in (({old: value}, 1), ({new: value}, 0), ({new: value, old: value}, 1)):
+                with self.subTest(env=env):
+                    result = self.run_wrapper(**env, **fake)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stderr.count(f'{old} is deprecated; use {new}'), warned)
+                    self.assertIn(expected[new], self.run_args())
+            with self.subTest(conflict=new):
+                result = self.run_wrapper(**{new: value, old: other})
+                self.assert_refused_early(result, f'{old} and {new} conflict')
+        for env, conflict in (({'PI_ENABLE_PODMAN': '1', 'PI_CONTAINER_PODMAN': '0'}, True),
+                              ({'PI_ENABLE_PODMAN': 'yes', 'PI_CONTAINER_PODMAN': '0'}, False),
+                              ({'PI_ENABLE_PODMAN': '1', 'PI_CONTAINER_PODMAN': '1'}, False),
+                              ({'PI_ALLOW_UNSAFE_PWD': '1', 'PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE': 'true'}, True)):
+            with self.subTest(switch=env):
+                result = self.run_wrapper(**env, PI_CONTAINER_PODMAN_SOCKET=str(self.sock_path))
+                if conflict:
+                    self.assert_refused_early(result, 'conflict; set only')
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.run_wrapper(PI_ENABLE_PODMAN='1', PI_PODMAN_SOCKET=str(self.sock_path))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('/host/podman.sock:/run/podman/podman.sock:rw', self.run_args())
+        self.assertIn('PI_ENABLE_PODMAN is deprecated; use PI_CONTAINER_PODMAN (only the exact value 1 enables it)', result.stderr)
+        self.assertIn('PI_PODMAN_SOCKET is deprecated; use PI_CONTAINER_PODMAN_SOCKET', result.stderr)
+        result = self.run_wrapper(PI_CONTAINER_PODMAN_SOCKET=str(self.sock_path), PI_PODMAN_SOCKET='/other.sock')
+        self.assert_refused_early(result, 'PI_PODMAN_SOCKET and PI_CONTAINER_PODMAN_SOCKET conflict')
+
+    def test_yolo_has_no_effect(self):
+        self.run_wrapper()
+        baseline = self.run_args()
+        result = self.run_wrapper(PI_CONTAINER_YOLO='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('PI_CONTAINER_YOLO has no effect; Pi has no tool-approval layer', result.stderr)
+        self.assertEqual(len(self.run_args()), len(baseline))
+        self.assertEqual([a for a in self.run_args() if 'cid' not in a], [a for a in baseline if 'cid' not in a])
+
+    def test_budget_validation(self):
+        result = self.run_wrapper()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for flag in ('--memory=4294967296', '--cpus=2', '--pids-limit=512'):
+            self.assertIn(flag, self.run_args())
+        self.assertNotIn('--timeout', self.run_args())
+        invalid = {'PI_CONTAINER_MEMORY_LIMIT': ('', '  ', '0', '-1', 'max', '4', '4t', '4gb', '1.5g', '2000000g'),
+                   'PI_CONTAINER_CPU_LIMIT': ('', '0', '0.0', '-1', '1.2345', '2000', 'max', 'a'),
+                   'PI_CONTAINER_PIDS_LIMIT': ('', '0', '-1', 'max', '4194305', '1.5'),
+                   'PI_CONTAINER_RUN_TIMEOUT': ('-1', '1.5', 'abc', '0007', '12345678901')}
+        for name, values in invalid.items():
+            for value in values:
+                with self.subTest(name=name, value=value):
+                    fresh = self.base / 'fresh-home'
+                    fresh.mkdir(exist_ok=True)
+                    self.assert_refused_early(self.run_wrapper(HOME=str(fresh), **{name: value}), name)
+                    self.assertEqual(list(fresh.iterdir()), [])
+        for value, expected in (('', None), ('0', None), ('7', '7')):
+            result = self.run_wrapper(PI_CONTAINER_RUN_TIMEOUT=value)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            args = self.run_args()
+            if expected is None:
+                self.assertNotIn('--timeout', args)
+            else:
+                self.assertEqual(args[args.index('--timeout') + 1], expected)
+        for env in ({'PI_CONTAINER_PODMAN': '1', 'PI_CONTAINER_PODMAN_SOCKET': str(self.sock_path)}, {'PI_CONTAINER_YOLO': '1'}):
+            result = self.run_wrapper('--container-shell', **env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for flag in ('--memory=4294967296', '--cpus=2', '--pids-limit=512', '--cap-drop=ALL'):
+                self.assertIn(flag, self.run_args())
+
+    def test_budget_inspection(self):
+        result = self.run_wrapper()
+        names = [c[0] for c in self.calls()]
+        inspect = names.index('inspect')
+        self.assertLess(names.index('create'), inspect)
+        self.assertLess(inspect, names.index('start'))
+        for env in ({'FAKE_AGENT_BUDGETS': '0 0 0'}, {'FAKE_AGENT_BUDGETS': '4294967296 2000000000 -1'},
+                    {'FAKE_AGENT_BUDGETS': '1 2000000000 512'}, {'FAKE_BUDGET_INSPECT_STATUS': '125'}):
+            with self.subTest(env=env):
+                result = self.run_wrapper(**env)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn('session not started', result.stderr)
+                names = [c[0] for c in self.calls()]
+                self.assertNotIn('start', names)
+                self.assertIn(['rm', '--force', '--ignore', '--time', '0', 'a' * 64], self.calls())
+        self.assertIn('cgroup v2', self.run_wrapper(FAKE_AGENT_BUDGETS='0 0 0').stderr)
+
+    def test_lifetime_notice(self):
+        result = self.run_wrapper(PI_CONTAINER_RUN_TIMEOUT='2', FAKE_SLOW='2.2')
+        self.assertEqual(result.returncode, 255, result.stderr)
+        self.assertIn('session lifetime limit reached (2 s); exit status 255', result.stderr)
+        result = self.run_wrapper(PI_CONTAINER_RUN_TIMEOUT='30', FAKE_EXIT='3')
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertNotIn('lifetime', result.stderr)
+
+    def test_sensitive_workspaces(self):
+        def launch(cwd, *args, **env):
+            self.log.unlink(missing_ok=True)
+            return subprocess.run(['bash', str(WRAPPER), *args], cwd=cwd, env=self.env | env, text=True,
+                                  capture_output=True, timeout=10, umask=0o022)
+        for cwd in (self.home, Path('/'), Path('/etc'), Path('/tmp'), Path('/usr')):
+            with self.subTest(cwd=cwd):
+                result = launch(cwd)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn('refusing sensitive workspace', result.stderr)
+                self.assertEqual(self.calls(), [])
+                self.assertFalse(self.state.exists())
+        child = self.home / 'project'; child.mkdir()
+        self.assertEqual(launch(child, '--container-git-worktree').returncode, 1)
+        link = self.base / 'etc-link'; link.symlink_to('/etc')
+        result = launch(link)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('/etc', result.stderr)
+        for env in ({'PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE': 'true'}, {'PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE': ''},
+                    {'PI_ALLOW_UNSAFE_PWD': 'yes'}):
+            with self.subTest(env=env):
+                self.assertEqual(launch(self.home, **env).returncode, 1)
+        for env in ({'PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE': '1'}, {'PI_ALLOW_UNSAFE_PWD': '1'}):
+            with self.subTest(env=env):
+                result = launch(self.home, **env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('WARNING: sensitive workspace explicitly exposed read/write', result.stderr)
+        self.assertEqual(launch(child).returncode, 0)
 
 if __name__ == '__main__':
     unittest.main()

@@ -130,3 +130,63 @@ Initial failures and reruns: the change Markdown first failed markdownlint
 reformatted to the repository's `# Spec Delta` convention and rerun. The two
 pre-existing `project-with-spaces-0/1` containers from 2026-11-03 were present
 before and after the runs and were left untouched.
+
+## Common wrapper baseline (A01, A02, A08, A11): 2026-11-09
+
+Change `align-wrapper-baseline` (Wave 2). Host: rootless Podman 4.9.3 server.
+Image `pi-container` (`d2c47c167ea5`, Pi 0.80.8), unchanged by this change. No
+credentials, Pi login or model requests were used.
+
+Pi approval facts, from `pi --help` on that image: Pi exposes no tool-approval
+option and runs its tools without prompts. `--approve`/`-a` means "Trust
+project-local files for this run". The wrapper therefore has no YOLO switch;
+`PI_CONTAINER_YOLO` only prints a warning that it has no effect.
+
+Behavior changes:
+
+- **Common names.** Wrapper settings use `PI_CONTAINER_IMAGE`,
+  `PI_CONTAINER_PODMAN`, `PI_CONTAINER_PODMAN_SOCKET`,
+  `PI_CONTAINER_MEMORY_LIMIT`, `PI_CONTAINER_CPU_LIMIT`,
+  `PI_CONTAINER_PIDS_LIMIT`, `PI_CONTAINER_RUN_TIMEOUT` and
+  `PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE`. The earlier names warn, and
+  conflicting old and new values fail before engine queries.
+- **Budgets and lifetime.** They are validated with the `sandbox-ref-2` rules;
+  only an unset variable selects a default. The created container is inspected
+  and started only when the configured budgets match. A lifetime stop prints a
+  notice and keeps the client status.
+- **Sensitive workspaces.** The guard uses the reference refused set on
+  physical paths, which adds `/tmp` and `/mnt/<letter>`, and only exact `1`
+  overrides it.
+
+| Check | Result |
+| --- | --- |
+| Unit discovery in a runner container (wrapper tests; runtime tests skipped without opt-in) | 71 tests, OK (14 skipped) |
+| New wrapper cases | alias table (old alone, new alone, equal, conflicting, switch meaning); every rejected budget and lifetime form with no engine call or state; inspection mismatch and failure removing only the owned container without start; lifetime notice and early exit; refused roots including `/tmp`, `/mnt/d` and a symlink to `/etc`, worktree parent, exact and non-exact override and the old alias; YOLO warning with unchanged arguments; help |
+| `bash tests/run-runtime.sh` (real rootless engine) | 14 tests, OK |
+| Effective hardening | Zero capability sets, `NoNewPrivs: 1`; `memory.max=4294967296`, `pids.max=512`, `cpu.max=200000 100000` by default and `1610612736`/`256`/`150000 100000` overridden, with and without delegation |
+| Process limit 32 | Process creation refused inside the session |
+| Lifetime (`PI_CONTAINER_RUN_TIMEOUT=3`, `sleep 30`) | Stopped; client status 255; notice printed. Early exit kept status 4 without notice |
+| Refused home workspace | Exit 1 before engine use |
+| `bash -n`, ShellCheck, hadolint with `.hadolint.yaml` (production and runner Containerfiles), `git diff --check` | Passed |
+| Markdownlint (README, SECURITY, CONTRIBUTING, CHANGELOG, AGENTS, validation evidence, change Markdown) | 0 errors |
+
+The README was reordered into the common section order: requirements, quick
+start, optional Podman API access, usage, environment, mounts and security,
+included tools, troubleshooting, verification, migration, security and
+license. A sentence-level comparison with the previous file found only renamed
+variables and the intentionally rewritten guard, budget and table rows.
+
+Initial failures and reruns:
+
+- **Wrapper tests, first run.** Two existing assertions expected the old help
+  text and unconverted budget flags. After that, the new rejection cases
+  failed because a state directory created earlier in the same test was
+  checked. The rejected cases now use a fresh home.
+- **README reorder.** The first attempt missed four trailing sections and
+  demoted the Podman subsections one level too far, which markdownlint caught.
+- **hadolint.** Run from stdin, it ignored `.hadolint.yaml` and reported DL3008.
+  The documented command now passes the configuration, as CI does.
+
+Containers present on the host before and after the runs (`project-with-spaces-0/1`
+from 2026-11-03, `project-0`, `strange_allen` and the agent's own session) were
+not created by these tests and were left untouched.

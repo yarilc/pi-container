@@ -35,4 +35,4 @@ podman build --format docker --tag "$image" --file "$root/Containerfile" \
 owned=1
 # Actual wrapper acceptance verifies the built image, installation, ownership,
 # temp mounts, worktrees, delegated children, native timeout, and bounded signals.
-PI_IMAGE_NAME="$image" PI_TEST_BUN=1 bash "$root/tests/run-runtime.sh"
+PI_CONTAINER_IMAGE="$image" PI_TEST_BUN=1 bash "$root/tests/run-runtime.sh"

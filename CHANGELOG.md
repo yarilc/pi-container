@@ -12,6 +12,21 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
 
 ### Changed
 
+- **Breaking:** wrapper settings use the common `PI_CONTAINER_*` names
+  (`PI_CONTAINER_IMAGE`, `PI_CONTAINER_PODMAN`, `PI_CONTAINER_PODMAN_SOCKET`,
+  `PI_CONTAINER_MEMORY_LIMIT`, `PI_CONTAINER_CPU_LIMIT`,
+  `PI_CONTAINER_PIDS_LIMIT`, `PI_CONTAINER_RUN_TIMEOUT`,
+  `PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE`); conflicting old and new values fail.
+- **Breaking:** budgets and the lifetime are validated before any engine
+  query with the claude-container `sandbox-ref-2` rules; empty or malformed
+  values fail. The created container is inspected and started only when the
+  engine applied the budgets.
+- **Breaking:** the sensitive-workspace guard also refuses `/tmp` and
+  `/mnt/<letter>` drive roots, and only exact `1` overrides it.
+- A lifetime stop prints a notice while keeping the client's exit status.
+- Wrapper help, README and the new `AGENTS.md` follow the layout shared with
+  the other wrappers and state that Pi has no tool-approval layer.
+
 - **Breaking:** `~/.gitconfig` is no longer mounted by default. Set exact
   `PI_CONTAINER_GITCONFIG=1` to mount it read-only from its physical file; a
   notice is printed while it exists and no gitconfig variable is set.
@@ -27,6 +42,9 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
 
 ### Deprecated
 
+- `PI_IMAGE_NAME`, `PI_ENABLE_PODMAN`, `PI_PODMAN_SOCKET`, `PI_MEMORY_LIMIT`,
+  `PI_CPU_LIMIT`, `PI_PIDS_LIMIT`, `PI_RUN_TIMEOUT` and `PI_ALLOW_UNSAFE_PWD`:
+  use the `PI_CONTAINER_*` names; each prints a warning.
 - `PI_MOUNT_GITCONFIG`: use `PI_CONTAINER_GITCONFIG=1`. `1` still mounts and
   `0` does not, with a warning; conflicting values are errors.
 
