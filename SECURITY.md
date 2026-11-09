@@ -207,14 +207,15 @@ or unresolved creation rather than attempting wider deletion.
 
 ### Supply Chain
 
-The npm package `@earendil-works/pi-coding-agent` is pinned to a specific
-version (see `.version` file) for reproducibility.
-
-The base image uses a mutable tag (`node:22-bookworm-slim`) by default.
-For pinning instructions, see the Containerfile comments. Weekly CI scans
+Every image input is pinned: the base image `node:22-bookworm-slim` by
+digest, `@earendil-works/pi-coding-agent` at the version in `.version`,
+`@fission-ai/openspec` and the optional `bun` at versions recorded in the
+Containerfile. npm verifies each package's registry integrity; no remote
+install script is piped to a shell, and `tests/test_image_pins.py` rejects
+floating inputs. A stale image is never rebuilt silently. Weekly CI scans
 (Trivy) monitor the built image for known vulnerabilities.
 
 Third-party GitHub Actions are pinned by commit SHA. Dependabot is
 configured to propose updates automatically.
 
-See the "Updating" section in README.md for upgrade procedures.
+See "Updating pinned image inputs" in README.md for upgrade procedures.

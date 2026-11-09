@@ -8,8 +8,10 @@ English. Communicate with the user in the language and style the user asks for.
 - `pi-container.sh` owns runtime policy: setting resolution and deprecated
   aliases, engine and delegation verification, state validation, mounts,
   hardening and budgets, environment forwarding, naming and owned cleanup.
-- `Containerfile` and `.containerignore` define the Pi image (pinned Pi version
-  from `.version`, optional Podman client and Bun) and its build context.
+- `Containerfile` and `.containerignore` define the Pi image (digest-pinned
+  base, common toolset with the Podman client, Pi from `.version`, pinned
+  OpenSpec and optional pinned Bun) and its three-file build context.
+- `tests/test_image_pins.py` rejects floating image inputs.
 - `README.md` documents setup, usage and security; `SECURITY.md`,
   `CONTRIBUTING.md` and `CHANGELOG.md` complement it.
 - `openspec/specs/` contains current behavior contracts; `openspec/changes/`
@@ -96,5 +98,11 @@ changes.
   exactly `PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1`.
 - Delegate the host Podman socket only with exact `PI_CONTAINER_PODMAN=1`, after
   verifying the rootless service; never start services or fall back silently.
+- Keep every image input pinned and the build policy explicit: build a
+  missing image automatically, stop on a stale `build-inputs-hash` until
+  `--container-build`, and never pipe remote install scripts to a shell.
+- Sessions use `HOME=/pi-home` (ephemeral noexec tmpfs, or the private
+  `PI_CONTAINER_STATE_DIR` in writable mode) with `.pi`, `.agents`, the npm
+  cache and the opted-in gitconfig below it; the workspace keeps its host path.
 - Mount `~/.gitconfig` only with exact `PI_CONTAINER_GITCONFIG=1`; keep `~/.pi`
   and `~/.agents` private and never repair or import state.

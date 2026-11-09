@@ -17,10 +17,7 @@ elif args[:2] == ['image', 'exists']:
 elif args[:2] == ['image', 'inspect']:
     root = pathlib.Path(os.environ['FAKE_ROOT'])
     inputs = b''.join((root / name).read_bytes() for name in ('Containerfile', '.containerignore', '.version'))
-    podman = os.environ.get('PI_CONTAINER_PODMAN', os.environ.get('PI_ENABLE_PODMAN'))
-    inputs += ('INSTALL_PODMAN=' + ('1' if podman == '1' else '0') + '\n').encode()
     inputs += ('INSTALL_BUN=' + ('1' if os.environ.get('PI_ENABLE_BUN') else '0') + '\n').encode()
-    inputs += ('BUN_VERSION=' + os.environ.get('PI_BUN_VERSION', 'bun-v1.3.14') + '\n').encode()
     print(os.environ.get('FAKE_LABEL_HASH', hashlib.sha256(inputs).hexdigest()))
     sys.exit(int(os.environ.get('FAKE_INSPECT_STATUS', '0')))
 elif args[:3] == ['inspect', '--type', 'container']:
