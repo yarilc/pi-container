@@ -82,3 +82,15 @@ SIGKILL, lost engine ownership, delayed server outcomes, or authenticated Pi
 operations. Actual SELinux denial injection and an actual unresponsive engine
 were not performed; synthetic contracts verify no relabel/security override and
 bounded failure handling.
+
+## Common specification names: 2026-11-09
+
+The OpenSpec capabilities were renamed to the scheme shared by the five wrappers (Wave 1, `sandbox-ref-2`). Requirements and scenarios are unchanged; only directory names and spec titles changed. Earlier sections and archived changes keep the names that were current at the time.
+
+| Previous name | Current name |
+| --- | --- |
+| `container-wrapper` | `container-launcher` |
+| `container-engine` | `container-podman-access` |
+| `container-filesystem` | `container-isolation` |
+
+`openspec validate --specs` passed: 4 specs, 0 failures.

@@ -1,4 +1,4 @@
-# container-filesystem Specification
+# container-isolation Specification
 
 ## Purpose
 

@@ -1,4 +1,4 @@
-# container-wrapper Specification
+# container-launcher Specification
 
 ## Purpose
 
