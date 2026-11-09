@@ -4,9 +4,10 @@ Run [Pi Coding Agent](https://pi.dev) transparently inside a **Podman container*
 with access to your Pi configuration (`~/.pi`), skills (`~/.agents`), and the
 current project directory, with predictable host file ownership.
 
-> By default, only `~/.pi`, `~/.agents`, the current working directory, and (if
-> present) `~/.gitconfig` are mounted. Other host config such as `~/.ssh` or
-> `~/.config` is intentionally **not** exposed to the container.
+> By default, only `~/.pi`, `~/.agents` and the current working directory are
+> mounted. `~/.gitconfig` is mounted read-only only with
+> `PI_CONTAINER_GITCONFIG=1`. Other host config such as `~/.ssh` or `~/.config`
+> is intentionally **not** exposed to the container.
 
 ## Requirements
 
@@ -74,7 +75,7 @@ to manage. Missing read-only state fails without creating it.
 | `${HOME}/.pi` | Pi configuration, auth, sessions, extensions | `PI_READONLY_CONFIG=1` |
 | `${HOME}/.agents` | Skills (prompt libraries) | `PI_READONLY_CONFIG=1` |
 | `${PWD}` | Current working directory (same path inside and out) | Always writable |
-| `${HOME}/.gitconfig` | Git identity (if present) | `PI_MOUNT_GITCONFIG=0` to skip |
+| `${HOME}/.gitconfig` | Git identity, only with `PI_CONTAINER_GITCONFIG=1` | Always read-only |
 
 The workspace uses `pwd -P`: its physical absolute source and destination
 are identical, as is the working directory. State sources are resolved
@@ -82,6 +83,15 @@ physically and mounted at the existing HOME-relative destinations. No host
 SELinux labels are changed automatically (`:z`/`:Z` are omitted). Access
 failures require checking host policy and permissions explicitly; the wrapper
 never disables confinement or repairs labels.
+
+`~/.gitconfig` is not mounted by default because Git configuration often holds
+credential helpers, URL tokens, `include` paths and signing-key references.
+When the file exists and neither `PI_CONTAINER_GITCONFIG` nor
+`PI_MOUNT_GITCONFIG` is set, the wrapper prints one notice;
+`PI_CONTAINER_GITCONFIG=0` silences it. Alternatives to mounting it: set the
+identity in the repository (`git config user.name ...`), or forward
+`GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME` and
+`GIT_COMMITTER_EMAIL` by name with `PI_ENV_VARS`.
 
 Temporary storage is declared explicitly with automatic read-only tmpfs
 provisioning disabled. `/tmp` and `/var/tmp` are each 256 MiB, `/run` is 32 MiB,
@@ -290,7 +300,8 @@ forwarded to the container automatically.
 | `PI_NPM_CACHE_SIZE` | Size of the ephemeral npm cache tmpfs at `~/.npm`, used by `pi install npm:<pkg>` (default: `256M`) |
 | `PI_NETWORK` | Container network mode, e.g. `none` to block all egress (default: full access) |
 | `PI_READONLY_CONFIG` | Set to `1` to mount `~/.pi` and `~/.agents` read-only (prevents persistence) |
-| `PI_MOUNT_GITCONFIG` | Set to `0` to skip mounting `~/.gitconfig` (default: `1`, mount if present) |
+| `PI_CONTAINER_GITCONFIG` | Exactly `1` mounts `~/.gitconfig` read-only from its physical file (default: not mounted). The opt-in fails if `~/.gitconfig` is not a regular file |
+| `PI_MOUNT_GITCONFIG` | Deprecated alias with a warning: `1` mounts, `0` does not. Conflicting values with `PI_CONTAINER_GITCONFIG` are errors |
 | `PI_PULL_ALWAYS` | Set to `1` to force `podman build --pull=always` |
 | `PI_RUN_TIMEOUT` | Native Podman container lifetime in seconds, placed before the image (0 disables); independent of shutdown budgets |
 | `PI_ENV_VARS` | Space-separated list of extra env var **names** to forward to the container (for skill/extension/tool secrets; forwarded by name only, never as `NAME=value`). See [Custom environment variables](#custom-environment-variables) |

@@ -44,7 +44,10 @@ Environment:
   PI_NPM_CACHE_SIZE      default: 256M
   PI_NETWORK             optional network selection, e.g. none (default: full)
   PI_READONLY_CONFIG     nonempty mounts existing state read-only
-  PI_MOUNT_GITCONFIG     0 skips optional read-only ~/.gitconfig
+  PI_CONTAINER_GITCONFIG exactly 1 mounts ~/.gitconfig read-only (default: not
+                         mounted; it may hold credential helpers or tokens)
+  PI_MOUNT_GITCONFIG     deprecated alias: 1 mounts, 0 does not; conflicts with
+                         PI_CONTAINER_GITCONFIG are errors
   PI_ALLOW_UNSAFE_PWD    nonempty bypasses the sensitive-directory guard
   PI_PULL_ALWAYS         nonempty selects --pull=always on a build
   PI_RUN_TIMEOUT         native Podman container lifetime in seconds; 0 disables
@@ -110,6 +113,31 @@ case "$workspace_mount" in
         [[ -n "${PI_ALLOW_UNSAFE_PWD:-}" ]] || die "Refusing sensitive exposed directory: $workspace_mount (use a project subdirectory)"
         printf 'pi-container: WARNING: sensitive directory explicitly exposed: %s\n' "$workspace_mount" >&2 ;;
 esac
+# Host Git configuration is mounted only on exact opt-in, from its physical file.
+gitconfig_source=''
+gitconfig_request=0
+[[ "${PI_CONTAINER_GITCONFIG:-}" != 1 ]] || gitconfig_request=1
+if [[ -n "${PI_MOUNT_GITCONFIG+x}" ]]; then
+    case "$PI_MOUNT_GITCONFIG" in
+        0|1) ;;
+        *) die 'PI_MOUNT_GITCONFIG must be 0 or 1; use PI_CONTAINER_GITCONFIG=1 instead' ;;
+    esac
+    printf 'pi-container: PI_MOUNT_GITCONFIG is deprecated; use PI_CONTAINER_GITCONFIG=1 to mount ~/.gitconfig\n' >&2
+    if [[ -n "${PI_CONTAINER_GITCONFIG+x}" ]]; then
+        [[ "$PI_MOUNT_GITCONFIG" == "$gitconfig_request" ]] \
+            || die 'PI_MOUNT_GITCONFIG and PI_CONTAINER_GITCONFIG conflict; set only PI_CONTAINER_GITCONFIG'
+    else
+        gitconfig_request=$PI_MOUNT_GITCONFIG
+    fi
+elif [[ -z "${PI_CONTAINER_GITCONFIG+x}" && -e "$HOME/.gitconfig" ]]; then
+    printf 'pi-container: ~/.gitconfig is no longer mounted by default; set PI_CONTAINER_GITCONFIG=1 to mount it read-only (PI_CONTAINER_GITCONFIG=0 silences this notice)\n' >&2
+fi
+if ((gitconfig_request)); then
+    gitconfig_source=$(readlink -f -- "$HOME/.gitconfig") && [[ -f "$gitconfig_source" ]] \
+        || die "PI_CONTAINER_GITCONFIG=1 requires a regular file: $HOME/.gitconfig"
+    [[ "$gitconfig_source" != *[:$'\n'$'\r']* ]] \
+        || die "gitconfig path must not contain colon, CR or LF: $gitconfig_source"
+fi
 
 [[ -z "${CONTAINER_CONNECTION:-}" ]] || die 'Named Podman connections are not supported; use local Podman or a same-host Unix CONTAINER_HOST'
 case "${CONTAINER_HOST:-}" in
@@ -217,7 +245,7 @@ if [[ -t 0 && -t 1 ]]; then
     podman_args+=(--tty)
     [[ -z "${TERM:-}" ]] || podman_args+=(--env TERM)
 fi
-[[ ! -f "$HOME/.gitconfig" || "${PI_MOUNT_GITCONFIG:-1}" == 0 ]] || podman_args+=(--volume "$HOME/.gitconfig:$HOME/.gitconfig:ro")
+[[ -z "$gitconfig_source" ]] || podman_args+=(--volume "$gitconfig_source:$HOME/.gitconfig:ro")
 [[ -z "${PI_NETWORK:-}" ]] || podman_args+=(--network "$PI_NETWORK")
 [[ -z "${PI_RUN_TIMEOUT:-}" ]] || podman_args+=(--timeout "$PI_RUN_TIMEOUT")
 # Values for credentials remain in the creating client's environment, never argv.

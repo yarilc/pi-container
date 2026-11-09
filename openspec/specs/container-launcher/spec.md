@@ -68,7 +68,7 @@ Image freshness SHALL account for Containerfile, build-context policy, `.version
 
 ### Requirement: Retained runtime and secret controls
 
-The wrapper SHALL retain resource-limit overrides, network selection, read-only configuration, optional read-only gitconfig, editor preferences, bounded npm cache, and API/proxy/extra variable forwarding by name. Secret values SHALL not appear in wrapper-generated argv or debug output. Connection variables SHALL remain governed by the engine specification rather than extra-variable forwarding.
+The wrapper SHALL retain resource-limit overrides, network selection, read-only configuration, the opt-in read-only gitconfig, editor preferences, bounded npm cache, and API/proxy/extra variable forwarding by name. Secret values SHALL not appear in wrapper-generated argv or debug output. Connection variables SHALL remain governed by the engine specification rather than extra-variable forwarding.
 
 #### Scenario: Existing options and secret values
 

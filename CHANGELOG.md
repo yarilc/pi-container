@@ -12,6 +12,10 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
 
 ### Changed
 
+- **Breaking:** `~/.gitconfig` is no longer mounted by default. Set exact
+  `PI_CONTAINER_GITCONFIG=1` to mount it read-only from its physical file; a
+  notice is printed while it exists and no gitconfig variable is set.
+
 - Require verified Linux rootless launch and delegated engines; remove the
   rootful bypass and accept delegation only for exact `PI_ENABLE_PODMAN=1`.
 - Use caller UID/GID with keep-id and no added capabilities; validate private
@@ -20,6 +24,11 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
   create/attach, redirected input, application exit codes, and finite signal cleanup.
 - Include the selected Bun version in stale-image hashing and report engine/image
   errors rather than silently rebuilding.
+
+### Deprecated
+
+- `PI_MOUNT_GITCONFIG`: use `PI_CONTAINER_GITCONFIG=1`. `1` still mounts and
+  `0` does not, with a warning; conflicting values are errors.
 
 ### Added
 

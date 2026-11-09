@@ -120,7 +120,8 @@ has read access and unrestricted egress.
 
 ### Host Git Config Exposure
 
-The file `~/.gitconfig` is mounted read-only into the container when present.
+The file `~/.gitconfig` is not mounted by default. It is mounted read-only only
+with exact `PI_CONTAINER_GITCONFIG=1` (or the deprecated `PI_MOUNT_GITCONFIG=1`).
 Git configurations routinely contain:
 
 - Credential helper invocations (`credential.helper`)
@@ -128,12 +129,13 @@ Git configurations routinely contain:
 - `includePath` directives pointing at other host files
 - Signing keys references (`user.signingkey`)
 
-A compromised agent can read the mounted `.gitconfig` and exfiltrate any
-embedded credentials over the unrestricted default network.
+When it is opted in, a compromised agent can read the mounted `.gitconfig` and
+exfiltrate any embedded credentials over the unrestricted default network.
 
 **Mitigations:**
 
-- Set `PI_MOUNT_GITCONFIG=0` to prevent `~/.gitconfig` from being mounted.
+- Leave `PI_CONTAINER_GITCONFIG` unset (the default) unless the session needs
+  the host Git configuration.
 - Consider creating a minimal gitconfig with only `user.name` and `user.email`
   for use with the container.
 - Keep `PI_NETWORK=none` when working with untrusted content.
