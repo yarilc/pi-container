@@ -71,6 +71,9 @@ class WrapperTests(unittest.TestCase):
     def test_help_without_engine_or_state(self):
         result = self.run_wrapper('--container-help', CONTAINER_CONNECTION='bad')
         self.assertEqual(result.returncode, 0, result.stderr)
+        for needle in ('PI_CONTAINER_GITCONFIG exactly 1 mounts ~/.gitconfig read-only',
+                       'PI_MOUNT_GITCONFIG     deprecated alias'):
+            self.assertIn(needle, result.stdout)
         self.assertEqual(self.calls(), [])
         self.assertFalse(self.state.exists())
 
@@ -822,7 +825,8 @@ reap_client
     def test_retained_editors_gitconfig_and_secrets(self):
         (self.home/'.gitconfig').write_text('[user]\n name = Test\n')
         result=self.run_wrapper(ANTHROPIC_API_KEY='dummy-secret',HTTP_PROXY='dummy-proxy',EDITOR='vim',VISUAL='code',
-            PI_ENV_VARS='ANTHROPIC_API_KEY HTTP_PROXY CUSTOM_SECRET',CUSTOM_SECRET='dummy-custom',PI_DEBUG='1')
+            PI_ENV_VARS='ANTHROPIC_API_KEY HTTP_PROXY CUSTOM_SECRET',CUSTOM_SECRET='dummy-custom',PI_DEBUG='1',
+            PI_CONTAINER_GITCONFIG='1')
         self.assertEqual(result.returncode,0,result.stderr)
         args=self.run_args()
         for value in ('ANTHROPIC_API_KEY','HTTP_PROXY','CUSTOM_SECRET','EDITOR=vim','VISUAL=code'):
@@ -830,9 +834,84 @@ reap_client
         self.assertIn(f'{self.home}/.gitconfig:{self.home}/.gitconfig:ro',args)
         for value in ('dummy-secret','dummy-proxy','dummy-custom'):
             self.assertNotIn(value,json.dumps(self.calls())+result.stderr)
-        result=self.run_wrapper(PI_MOUNT_GITCONFIG='0')
+        result=self.run_wrapper(PI_CONTAINER_GITCONFIG='0')
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertFalse(any('.gitconfig:' in a for a in self.run_args()))
+
+    def gitconfig_mounts(self):
+        return [a for a in self.run_args() if '.gitconfig:' in a]
+
+    def test_gitconfig_requires_exact_opt_in(self):
+        target=self.base/'dotfiles'/'gitconfig'; target.parent.mkdir(); target.write_text('[user]\n name = Test\n')
+        (self.home/'.gitconfig').symlink_to(target)
+        result=self.run_wrapper()
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(self.gitconfig_mounts(),[])
+        self.assertEqual(result.stderr.count('~/.gitconfig is no longer mounted by default'),1)
+        self.assertNotIn('name = Test',result.stderr)
+        result=self.run_wrapper(PI_CONTAINER_GITCONFIG='1')
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(self.gitconfig_mounts(),[f'{target}:{self.home}/.gitconfig:ro'])
+        self.assertNotIn('no longer mounted',result.stderr)
+        for value in ('true','yes','','0','01'):
+            with self.subTest(value=value):
+                result=self.run_wrapper(PI_CONTAINER_GITCONFIG=value)
+                self.assertEqual(result.returncode,0,result.stderr)
+                self.assertEqual(self.gitconfig_mounts(),[])
+                self.assertNotIn('no longer mounted',result.stderr)
+
+    def test_gitconfig_opt_in_without_regular_file(self):
+        result=self.run_wrapper(PI_CONTAINER_GITCONFIG='1')
+        self.assert_rejected(result)
+        self.assertIn('PI_CONTAINER_GITCONFIG=1',result.stderr)
+        self.assertEqual(self.calls(),[]); self.assertFalse(self.state.exists())
+        (self.home/'.gitconfig').mkdir()
+        result=self.run_wrapper(PI_CONTAINER_GITCONFIG='1')
+        self.assert_rejected(result)
+        self.assertEqual(self.calls(),[])
+        result=self.run_wrapper()
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertIn('no longer mounted',result.stderr)
+
+    def test_gitconfig_deprecated_alias(self):
+        (self.home/'.gitconfig').write_text('[user]\n name = Test\n')
+        warning='PI_MOUNT_GITCONFIG is deprecated; use PI_CONTAINER_GITCONFIG=1'
+        result=self.run_wrapper(PI_MOUNT_GITCONFIG='1')
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(result.stderr.count(warning),1)
+        self.assertEqual(self.gitconfig_mounts(),[f'{self.home}/.gitconfig:{self.home}/.gitconfig:ro'])
+        result=self.run_wrapper(PI_MOUNT_GITCONFIG='0')
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(result.stderr.count(warning),1)
+        self.assertNotIn('no longer mounted',result.stderr)
+        self.assertEqual(self.gitconfig_mounts(),[])
+        for env in ({'PI_MOUNT_GITCONFIG':'1','PI_CONTAINER_GITCONFIG':'1'},
+                    {'PI_MOUNT_GITCONFIG':'0','PI_CONTAINER_GITCONFIG':'0'}):
+            result=self.run_wrapper(**env)
+            self.assertEqual(result.returncode,0,result.stderr)
+        for env in ({'PI_MOUNT_GITCONFIG':'0','PI_CONTAINER_GITCONFIG':'1'},
+                    {'PI_MOUNT_GITCONFIG':'1','PI_CONTAINER_GITCONFIG':'true'},
+                    {'PI_MOUNT_GITCONFIG':'1','PI_CONTAINER_GITCONFIG':''}):
+            with self.subTest(env=env):
+                result=self.run_wrapper(**env)
+                self.assert_rejected(result)
+                self.assertIn('PI_MOUNT_GITCONFIG and PI_CONTAINER_GITCONFIG conflict',result.stderr)
+                self.assertEqual(self.calls(),[])
+        for value in ('2','yes',''):
+            with self.subTest(value=value):
+                result=self.run_wrapper(PI_MOUNT_GITCONFIG=value)
+                self.assert_rejected(result)
+                self.assertEqual(self.calls(),[])
+
+    def test_suite_leaves_no_scratch_directories(self):
+        # The wrapper suite keeps scratch space in its own temporary directory.
+        self.assertTrue(self.base.name.startswith('pi-wrapper-'))
+        self.assertFalse(self.base.is_relative_to(ROOT))
+        self.assertEqual(sorted(p.name for p in ROOT.glob('.wrapper-test-*')),[])
+        probe=tempfile.TemporaryDirectory(prefix='pi-wrapper-')
+        path=Path(probe.name)
+        probe.cleanup()
+        self.assertFalse(path.exists())
 
 if __name__ == '__main__':
     unittest.main()

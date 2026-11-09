@@ -286,6 +286,18 @@ NODE
         if os.environ.get('PI_TEST_BUN') == '1':
             self.assert_success(self.shell('set -e\nbun --version\nprintf \'console.log("bun-ok")\\n\' > bun-test.js\nbun bun-test.js', PI_ENABLE_BUN='1'))
 
+    def test_gitconfig_only_on_opt_in(self):
+        (self.home/'.gitconfig').write_text('[user]\n\tname = Runtime Test\n')
+        result=self.shell('test ! -e "$HOME/.gitconfig" && echo GITCONFIG_ABSENT')
+        self.assert_success(result)
+        self.assertIn('GITCONFIG_ABSENT',result.stdout)
+        result=self.shell('test "$(git config --global user.name)" = "Runtime Test" && '
+                          '{ if printf x >> "$HOME/.gitconfig" 2>/dev/null; then echo WRITABLE; else echo GITCONFIG_READONLY; fi; }',
+                          PI_CONTAINER_GITCONFIG='1')
+        self.assert_success(result)
+        self.assertIn('GITCONFIG_READONLY',result.stdout)
+        self.assertEqual((self.home/'.gitconfig').read_text(),'[user]\n\tname = Runtime Test\n')
+
     def test_private_state_and_readonly_mode(self):
         for state in (self.state, self.home / '.agents'):
             state.chmod(0o755)

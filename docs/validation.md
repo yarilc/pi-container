@@ -94,3 +94,39 @@ The OpenSpec capabilities were renamed to the scheme shared by the five wrappers
 | `container-filesystem` | `container-isolation` |
 
 `openspec validate --specs` passed: 4 specs, 0 failures.
+
+## Narrowed exposed state (A07, A09): 2026-11-09
+
+Change `narrow-exposed-state` (Wave 2). Host: rootless Podman 4.9.3 server.
+Image `pi-container` (`d2c47c167ea5`), unchanged by this change. No credentials,
+Pi login or model requests were used.
+
+Behavior changes:
+
+- `~/.gitconfig` is no longer mounted by default. Exact
+  `PI_CONTAINER_GITCONFIG=1` mounts it read-only at `$HOME/.gitconfig` from its
+  physical file. The opt-in fails before any engine query when the path is not
+  a regular file.
+- `PI_MOUNT_GITCONFIG` is a deprecated alias that prints a warning: `1` mounts
+  and `0` does not. Other values, and conflicts with `PI_CONTAINER_GITCONFIG`,
+  are errors.
+- While `~/.gitconfig` exists and neither variable is set, one notice explains
+  the change; `PI_CONTAINER_GITCONFIG=0` silences it.
+- The three `.wrapper-test-*` directories from 2026-07-02 were removed. They
+  held only a fake `podman` and empty `home` and `project` directories from the
+  shell suite replaced in `651c9bc`. `.test-state/` is now ignored.
+
+| Check | Result |
+| --- | --- |
+| Unit discovery in a runner container (wrapper tests; runtime tests skipped without opt-in) | 62 tests, OK (11 skipped) |
+| New wrapper cases | default without mount and with notice; exact opt-in from a symlink's physical target; non-exact values; missing and directory paths; alias in both directions; conflicts; invalid alias values; help; no scratch directories |
+| `bash tests/run-runtime.sh` (real rootless engine) | 11 tests, OK |
+| New real-engine case | `~/.gitconfig` absent by default; with the opt-in, readable through `git config --global` and not writable; host file unchanged |
+| `bash -n`, ShellCheck (`pi-container.sh`, `test.sh`, `test-wrapper.sh`, `tests/run-runtime.sh`), `git diff --check` | Passed |
+| Markdownlint (README, SECURITY, CHANGELOG, validation evidence, change Markdown) | 0 errors |
+
+Initial failures and reruns: the change Markdown first failed markdownlint
+(missing blank lines and no top-level heading in the delta specs). It was
+reformatted to the repository's `# Spec Delta` convention and rerun. The two
+pre-existing `project-with-spaces-0/1` containers from 2026-11-03 were present
+before and after the runs and were left untouched.
