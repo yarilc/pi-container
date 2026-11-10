@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "revision": "pi-2026-11-10-v1",
+  "source_date": "2026-11-10",
+  "sources": [
+    "https://github.com/earendil-works/pi-coding-agent/blob/main/docs/providers.md"
+  ],
+  "tested": {
+    "cli": "0.80.8 (version query; static endpoint inventory and logging-proxy runs 2026-11-10)",
+    "node": "22 (image base)",
+    "authentication": "unverified: operator API-key requests for the four profiles not yet run"
+  },
+  "profiles": {
+    "anthropic-api": {"authentication": "anthropic", "disable_optional_traffic": true,
+      "destinations": [{"host": "api.anthropic.com", "port": 443}]},
+    "openai-api": {"authentication": "openai", "disable_optional_traffic": true,
+      "destinations": [{"host": "api.openai.com", "port": 443}]},
+    "gemini-api": {"authentication": "gemini", "disable_optional_traffic": true,
+      "destinations": [{"host": "generativelanguage.googleapis.com", "port": 443}]},
+    "openrouter-api": {"authentication": "openrouter", "disable_optional_traffic": true,
+      "destinations": [{"host": "openrouter.ai", "port": 443}]}
+  }
+}

@@ -10,8 +10,24 @@ English. Communicate with the user in the language and style the user asks for.
   hardening and budgets, environment forwarding, naming and owned cleanup.
 - `Containerfile` and `.containerignore` define the Pi image (digest-pinned
   base, common toolset with the Podman client, Pi from `.version`, pinned
-  OpenSpec and optional pinned Bun) and its three-file build context.
-- `tests/test_image_pins.py` rejects floating image inputs.
+  OpenSpec and optional pinned Bun) and its five-file build context
+  (including `network/relay.py` and `network/mux.py`).
+- `tests/test_image_pins.py` rejects floating image inputs and a `.version`
+  that differs from the policy's `tested.cli`.
+- `agent/profile.json` and `agent/policies/default.json` hold every Pi-specific
+  value used by the shared network code (identity, images, state layout and the
+  four provider profiles). Restricted preparation, proxy lifecycle and restricted
+  container arguments come from `network/session.py` (`prepare`, `start`,
+  `agent-args`, `stop`); never re-implement them inline.
+- `network/`, `setup/diagnostics.py` and the shared tests (`sandbox_profile.py`,
+  `test_agent_profile.py`, `test_network_policy.py`, `test_mux.py`,
+  `test_tls_client_hello.py`, `test_tls_proxy.py`, `test_platform.py`,
+  `test_qualification.py`, `test_guard.py`, `test_session.py`,
+  `test_network_feasibility.py` and their fixtures) are copied unchanged from
+  `claude-container` at tag `sandbox-ref-6`. Never edit them here, and never
+  add a profile identifier (`pi-container`, `anthropic`, `openai`, `gemini`,
+  `openrouter`) to them; fix a defect in `claude-container` first, then copy the
+  files again and update `tests/test_reference_copy.py`.
 - `README.md` documents setup, usage and security; `SECURITY.md`,
   `CONTRIBUTING.md` and `CHANGELOG.md` complement it.
 - `openspec/specs/` contains current behavior contracts; `openspec/changes/`
@@ -26,9 +42,11 @@ English. Communicate with the user in the language and style the user asks for.
 Run from the repository root:
 
 ```bash
-./pi-container.sh --container-build --version   # build the image, then print Pi's version
+export PI_CONTAINER_NETWORK=unrestricted        # every launch needs a mode
+PI_CONTAINER_MAINTENANCE=1 ./pi-container.sh --container-build --version   # build, then print Pi's version
 ./test-wrapper.sh                               # synthetic wrapper suite
 bash tests/run-runtime.sh                       # real rootless checks with native Linux state
+bash tests/run-runtime.sh --network             # restricted modes (also --wrapper, --shared, --guard, ...)
 ./test.sh                                       # disposable image build plus real checks
 bash -n pi-container.sh test-wrapper.sh test.sh tests/run-runtime.sh
 ```
@@ -39,7 +57,8 @@ Lint through containers when the tools are not installed:
 podman run --rm -v "$PWD:$PWD:ro" -w "$PWD" docker.io/koalaman/shellcheck:stable \
   pi-container.sh test.sh test-wrapper.sh tests/run-runtime.sh
 podman run --rm -v "$PWD:$PWD:ro" -w "$PWD" docker.io/hadolint/hadolint:latest-alpine \
-  hadolint --config .hadolint.yaml Containerfile tests/Containerfile.runner
+  hadolint --config .hadolint.yaml Containerfile tests/Containerfile.runner \
+  network/Containerfile network/guard-build.Containerfile
 podman run --rm -v "$PWD:$PWD:ro" -w "$PWD" docker.io/davidanson/markdownlint-cli2:latest \
   README.md SECURITY.md CONTRIBUTING.md CHANGELOG.md AGENTS.md docs/validation.md
 ```
@@ -91,16 +110,23 @@ changes.
   Trivy. Never add capabilities, `--privileged` or SELinux relabeling.
 - Validate `PI_CONTAINER_MEMORY_LIMIT` (4g), `PI_CONTAINER_CPU_LIMIT` (2),
   `PI_CONTAINER_PIDS_LIMIT` (512) and `PI_CONTAINER_RUN_TIMEOUT` before engine
-  queries with the claude-container `sandbox-ref-2` rules; start a session only
+  queries with the claude-container `sandbox-ref-5` rules; start a session only
   when the created container carries the selected budgets.
 - Refuse a workspace or worktree parent that physically is `/`, a system
   directory, `/tmp`, the physical home or a `/mnt/<letter>` drive root, unless
   exactly `PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1`.
-- Delegate the host Podman socket only with exact `PI_CONTAINER_PODMAN=1`, after
-  verifying the rootless service; never start services or fall back silently.
+- Require an explicit `PI_CONTAINER_NETWORK`; reject `PI_NETWORK`; never fall
+  back to unrestricted networking after a restricted failure. Restricted modes
+  forward no host proxy or CA variables, only the network profile's key, and set
+  `PI_OFFLINE=1`, `PI_SKIP_VERSION_CHECK=1` and `PI_TELEMETRY=0` after
+  forwarding.
+- Delegate the host Podman socket only with exact `PI_CONTAINER_PODMAN=1` in
+  unrestricted mode, after verifying the rootless service; never start services
+  or fall back silently.
 - Keep every image input pinned and the build policy explicit: build a
-  missing image automatically, stop on a stale `build-inputs-hash` until
-  `--container-build`, and never pipe remote install scripts to a shell.
+  missing image only under exact `PI_CONTAINER_MAINTENANCE=1`, stop on a stale
+  `build-inputs-hash` until `--container-build` under maintenance, and never pipe
+  remote install scripts to a shell.
 - Sessions use `HOME=/pi-home` (ephemeral noexec tmpfs, or the private
   `PI_CONTAINER_STATE_DIR` in writable mode) with `.pi`, `.agents`, the npm
   cache and the opted-in gitconfig below it; the workspace keeps its host path.

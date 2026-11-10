@@ -32,8 +32,19 @@ container. Its primary concerns are:
 
 # Real wrapper acceptance from disposable native Linux storage
 # Build your selected image first; optional Bun coverage is enabled by test.sh
-PI_CONTAINER_IMAGE=pi-container ./tests/run-runtime.sh
+PI_CONTAINER_IMAGE=localhost/pi-container ./tests/run-runtime.sh
+
+# Restricted-mode and shared sandbox suites
+bash tests/run-runtime.sh --wrapper    # wrapper contracts in the runner
+bash tests/run-runtime.sh --shared     # suites copied from claude-container
+bash tests/run-runtime.sh --network    # restricted modes with real rootless Podman
+bash tests/run-runtime.sh --guard      # guard fixtures (toolchain image required)
 ```
+
+`network/`, `setup/diagnostics.py` and the shared tests are copied unchanged
+from `claude-container` (tag `sandbox-ref-6`); never edit them here. Fix a
+defect in `claude-container` first, then copy the files again and update the
+manifest in `tests/test_reference_copy.py`.
 
 Run synthetic tests and credential-free real wrapper/image acceptance before a PR.
 The runner provisions Python/Podman test tooling in a disposable image and

@@ -1,0 +1,52 @@
+{
+  "schema": 1,
+  "name": "pi-container",
+  "display_name": "Pi",
+  "wrapper": "pi-container.sh",
+  "env_prefix": "PI_CONTAINER",
+  "label_namespace": "io.pi-container",
+  "identifiers": ["pi-container", "anthropic", "openai", "gemini", "openrouter"],
+  "images": {
+    "agent": "localhost/pi-container",
+    "proxy": "localhost/pi-egress",
+    "toolchain": "localhost/pi-guard-toolchain"
+  },
+  "install": {
+    "state_name": "pi-egress",
+    "files": [".version"]
+  },
+  "native": {
+    "home": "/pi-home",
+    "command": "pi",
+    "config_dir_env": "PI_CONTAINER_CONFIG_DIR",
+    "approval_bypass_env": "PI_CONTAINER_YOLO",
+    "config_home": ".pi",
+    "shared_dirs": [".agents"]
+  },
+  "auth": {
+    "anthropic": {
+      "description": "uses an Anthropic API key supplied at launch",
+      "policy_profile": "anthropic-api",
+      "hosts": ["api.anthropic.com"],
+      "credential_env": "ANTHROPIC_API_KEY"
+    },
+    "openai": {
+      "description": "uses an OpenAI API key supplied at launch",
+      "policy_profile": "openai-api",
+      "hosts": ["api.openai.com"],
+      "credential_env": "OPENAI_API_KEY"
+    },
+    "gemini": {
+      "description": "uses a Gemini API key supplied at launch",
+      "policy_profile": "gemini-api",
+      "hosts": ["generativelanguage.googleapis.com"],
+      "credential_env": "GEMINI_API_KEY"
+    },
+    "openrouter": {
+      "description": "uses an OpenRouter API key supplied at launch",
+      "policy_profile": "openrouter-api",
+      "hosts": ["openrouter.ai"],
+      "credential_env": "OPENROUTER_API_KEY"
+    }
+  }
+}

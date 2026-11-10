@@ -2,11 +2,45 @@
 # Execute credential-free acceptance from native Linux volume storage.
 set -Eeuo pipefail
 root=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-image=${PI_CONTAINER_IMAGE:-pi-container}
+image=${PI_CONTAINER_IMAGE:-localhost/pi-container}
 command -v podman >/dev/null || { printf 'Podman is required\n' >&2; exit 1; }
 info=$(podman info --format '{{.Host.Security.Rootless}} {{.Host.OS}}')
 [[ "$info" == 'true linux' ]] || { printf 'A Linux rootless Podman engine is required\n' >&2; exit 1; }
-podman image exists "$image" || { printf 'Build the Pi image first: PI_CONTAINER_IMAGE=%s ./pi-container.sh --container-build --version\n' "$image" >&2; exit 1; }
+podman image exists "$image" || { printf 'Build the Pi image first: PI_CONTAINER_NETWORK=unrestricted PI_CONTAINER_MAINTENANCE=1 PI_CONTAINER_IMAGE=%s ./pi-container.sh --container-build --version\n' "$image" >&2; exit 1; }
+# Mode selection: the default runs the unrestricted runtime suite.
+pattern=test_runtime.py
+selection_env=(--env PI_RUNTIME_TESTS=1 --env SANDBOX_RUNTIME_TESTS=1)
+guard_environment=()
+project_mode=ro
+shared=(test_reference_copy test_agent_profile test_network_policy test_mux test_tls_client_hello
+    test_tls_proxy test_platform test_qualification test_guard test_session test_network_feasibility)
+case "${1:-}" in
+    --wrapper) pattern=test_wrapper.py ;;
+    --shared) pattern='' ;;
+    --qualification) pattern=test_qualification.py ;;
+    --network-feasibility) pattern=test_network_feasibility.py ;;
+    --network) pattern=test_network_runtime.py; project_mode=rw ;;
+    --network-policy) pattern=test_network_policy.py ;;
+    --mux) pattern=test_mux.py ;;
+    --guard|--guard-idle)
+        pattern=test_guard.py
+        guard_toolchain=$(podman image inspect --format '{{.Id}}' \
+            "${SANDBOX_GUARD_TOOLCHAIN:-localhost/pi-guard-toolchain:development}")
+        guard_environment=(--env SANDBOX_GUARD_TESTS=1 --env "SANDBOX_GUARD_TOOLCHAIN=$guard_toolchain")
+        if [[ "$1" == --guard-idle ]]; then
+            guard_environment+=(--env SANDBOX_IDLE_TESTS=1)
+            set -- "$1" -k test_guarded_multiplex_idle_resume "${@:2}"
+        fi
+        ;;
+    *) set -- '' "$@" ;;
+esac
+shift
+if [[ -n "$pattern" ]]; then
+    selection=(discover -s tests -p "$pattern" -v)
+else
+    selection=(-v "${shared[@]/#/tests.}")
+    selection_env=()
+fi
 socket=${PI_CONTAINER_PODMAN_SOCKET:-}
 if [[ -z "$socket" && "${CONTAINER_HOST:-}" == unix:///?* ]]; then socket=${CONTAINER_HOST#unix://}; fi
 socket=${socket:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock}
@@ -35,9 +69,11 @@ runner_created=1
 volume=$(podman volume create)
 native_root=$(podman volume inspect --format '{{.Mountpoint}}' "$volume")
 podman run --rm --interactive --userns=keep-id --user "$(id -u):$(id -g)" \
-    --volume "$root:$root:ro" --volume "$native_root:$native_root:rw" \
+    --volume "$root:$root:$project_mode" --volume "$native_root:$native_root:rw" \
     --volume "$host_socket:/run/podman/podman.sock:rw" --workdir "$root" \
     --env CONTAINER_HOST=unix:///run/podman/podman.sock \
-    --env "PI_TEST_RUNNER_IMAGE=$runner" --env PI_RUNTIME_TESTS=1 --env "PI_TEST_ROOT=$native_root" \
+    --env "PI_TEST_RUNNER_IMAGE=$runner" "${selection_env[@]}" --env "PI_TEST_ROOT=$native_root" \
+    --env "SANDBOX_TEST_STATE_ROOT=$native_root" "${guard_environment[@]}" \
     --env "PI_CONTAINER_IMAGE=$image" --env "PI_TEST_BUN=${PI_TEST_BUN:-0}" \
-    --entrypoint python3 "$runner" -B -m unittest discover -s tests -p test_runtime.py -v "$@"
+    --tmpfs /tmp:rw,exec,nosuid,nodev,mode=1777 \
+    --entrypoint python3 "$runner" -B -m unittest "${selection[@]}" "$@"

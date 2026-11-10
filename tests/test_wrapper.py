@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import pty
 import signal
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -36,7 +37,8 @@ class WrapperTests(unittest.TestCase):
                     if not k.startswith(('PI_', 'CONTAINER_', 'FAKE_'))
                     and k not in ('ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GOOGLE_API_KEY')}
         self.env.update(PATH=str(self.bin) + ':' + self.env['PATH'], HOME=str(self.home),
-                        FAKE_LOG=str(self.log), FAKE_ROOT=str(ROOT))
+                        FAKE_LOG=str(self.log), FAKE_ROOT=str(ROOT),
+                        PI_CONTAINER_NETWORK='unrestricted', PI_CONTAINER_MAINTENANCE='1')
         self.sock = socket.socket(socket.AF_UNIX)
         self.sock_path = self.base / 'service.sock'
         self.sock.bind(str(self.sock_path))
@@ -53,7 +55,7 @@ class WrapperTests(unittest.TestCase):
         self.assertEqual(result.stdout, 'true linux false\n\n')
     def run_wrapper(self, *args, **env):
         self.log.unlink(missing_ok=True)
-        return subprocess.run(['bash', str(WRAPPER), *args], cwd=self.project,
+        return subprocess.run(['bash', str(getattr(self, 'wrapper', WRAPPER)), *args], cwd=self.project,
                               env=self.env | env, text=True, capture_output=True,
                               timeout=10, umask=0o022)
 
@@ -73,7 +75,7 @@ class WrapperTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         for needle in ('Container options:', 'Environment:', 'Deprecated names',
                        'PI_CONTAINER_GITCONFIG exactly 1 mounts ~/.gitconfig read-only',
-                       'PI_CONTAINER_IMAGE     image name (default: pi-container)',
+                       'PI_CONTAINER_IMAGE     image name (default: localhost/pi-container)',
                        'PI_CONTAINER_PODMAN    delegation', 'PI_CONTAINER_PODMAN_SOCKET',
                        'PI_CONTAINER_MEMORY_LIMIT', '(default: 4g)', 'PI_CONTAINER_CPU_LIMIT',
                        '(default: 2)', 'PI_CONTAINER_PIDS_LIMIT', '(default: 512)',
@@ -223,7 +225,7 @@ class WrapperTests(unittest.TestCase):
 
 
     def start_wrapper(self, *args, **env):
-        process = subprocess.Popen(['bash', str(WRAPPER), *args], cwd=self.project,
+        process = subprocess.Popen(['bash', str(getattr(self, 'wrapper', WRAPPER)), *args], cwd=self.project,
                                    env=self.env | env, stdin=subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    text=True, start_new_session=True)
@@ -734,7 +736,7 @@ reap_client
     def test_workspace_parent_identity_tmpfs_and_controls(self):
         for flags,mount in (([],self.project),(['--container-git-worktree'],self.project.parent)):
             result=self.run_wrapper('--container-shell',*flags,PI_CONTAINER_RUN_TIMEOUT='12',PI_NPM_CACHE_SIZE='512M',
-                PI_CONTAINER_MEMORY_LIMIT='8g',PI_CONTAINER_CPU_LIMIT='3',PI_CONTAINER_PIDS_LIMIT='100',PI_NETWORK='none',
+                PI_CONTAINER_MEMORY_LIMIT='8g',PI_CONTAINER_CPU_LIMIT='3',PI_CONTAINER_PIDS_LIMIT='100',
                 FAKE_AGENT_BUDGETS='8589934592 3000000000 100')
             self.assertEqual(result.returncode,0,result.stderr)
             args=self.run_args()
@@ -747,7 +749,7 @@ reap_client
             self.assertIn('--security-opt=no-new-privileges',args)
             for value in ('--memory=8589934592','--cpus=3','--pids-limit=100','--read-only-tmpfs=false'):
                 self.assertIn(value,args)
-            self.assertLess(args.index('--timeout'),args.index('pi-container'))
+            self.assertLess(args.index('--timeout'),args.index('localhost/pi-container'))
             self.assertEqual(args[args.index('--timeout')+1],'12')
             mounts=[args[j+1] for j,a in enumerate(args[:-1]) if a=='--tmpfs']
             self.assertEqual(len(mounts),5)
@@ -842,13 +844,22 @@ reap_client
         self.assertNotEqual(result.returncode,0)
         self.assertFalse(missing.exists())
         shared=self.base/'shared'; shared.mkdir(mode=0o755)
-        for value in ('relative/state','',str(shared),str(self.project),str(self.project/'state'),
+        for value in ('relative/state',str(shared),str(self.project),str(self.project/'state'),
                       str(self.project.parent),'/bad:colon'):
             with self.subTest(value=value):
+                self.log.unlink(missing_ok=True)
                 result=self.run_wrapper(PI_CONTAINER_STATE_DIR=value)
                 self.assertEqual(result.returncode,1,result.stderr)
                 self.assertIn('PI_CONTAINER_STATE_DIR',result.stderr)
-                self.assertEqual(self.calls(),[])
+                # Lexical checks precede the engine; privacy is checked after it.
+                if value==str(shared):
+                    self.assertFalse(any(c[0] in ('image','build','create') for c in self.calls()))
+                else:
+                    self.assertEqual(self.calls(),[])
+        # An empty value selects shared state, like an unset one.
+        self.log.unlink(missing_ok=True)
+        result=self.run_wrapper(PI_CONTAINER_STATE_DIR='')
+        self.assertEqual(result.returncode,0,result.stderr)
         self.assertFalse((self.project/'state').exists())
         self.assertEqual(shared.stat().st_mode & 0o777,0o755)
 
@@ -1046,7 +1057,9 @@ reap_client
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('PI_CONTAINER_YOLO has no effect; Pi has no tool-approval layer', result.stderr)
         self.assertEqual(len(self.run_args()), len(baseline))
-        self.assertEqual([a for a in self.run_args() if 'cid' not in a], [a for a in baseline if 'cid' not in a])
+        varying = ('cid', 'io.pi-container.session=')
+        self.assertEqual([a for a in self.run_args() if not any(v in a for v in varying)],
+                         [a for a in baseline if not any(v in a for v in varying)])
 
     def test_budget_validation(self):
         result = self.run_wrapper()
@@ -1132,6 +1145,301 @@ reap_client
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn('WARNING: sensitive workspace explicitly exposed read/write', result.stderr)
         self.assertEqual(launch(child).returncode, 0)
+
+    # Restricted modes. Argument and lifecycle instrumentation only: the real
+    # guard, platform and protected-path acceptance live in the runtime suites.
+    def restricted_fixture(self):
+        install = self.base / 'install'
+        (install / 'network/bin').mkdir(parents=True)
+        self.wrapper = install / 'pi-container.sh'
+        shutil.copyfile(WRAPPER, self.wrapper)
+        for name in ('.version', 'Containerfile', '.containerignore', 'network/relay.py', 'network/mux.py'):
+            (install / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / name, install / name)
+        guard = install / 'network/bin/sandbox-egress-guard'
+        guard.write_text('#!/bin/sh\nexit 0\n')
+        guard.chmod(0o700)
+        (guard.parent / 'sandbox-egress-guard.sha256').write_text('c' * 64 + '  sandbox-egress-guard\n')
+        for name in ('network/session.py', 'network/agent_profile.py', 'network/policy.py', 'network/revisions.py',
+                     'network/platform_check.py', 'network/proxy_hardening.py', 'agent/profile.json'):
+            (install / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / name, install / name)
+        record = ("import json,os,pathlib,sys\n"
+                  "pathlib.Path(os.environ['FAKE_LOG']).open('a').write(json.dumps([pathlib.Path(sys.argv[0]).name,"
+                  " *sys.argv[1:], os.environ.get('PI_CONTAINER_IMAGE', '')]) + '\\n')\n")
+        (install / 'network/qualify.py').write_text(record + (
+            "if os.environ.get('FAKE_QUALIFY_STALL'):\n"
+            " import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            " pathlib.Path(os.environ['FAKE_LOG'] + '.stalled-qualify').touch()\n"
+            " time.sleep(60)\n"
+            "sys.exit(int(os.environ.get('FAKE_QUALIFY_STATUS', '0')))\n"))
+        (install / 'network/control.py').write_text(record + (
+            "sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))\n"
+            "import socket\nfrom revisions import TLS_ENFORCEMENT\nargs=sys.argv[1:]\n"
+            "if args[0]=='preflight' and os.environ.get('FAKE_PREFLIGHT_FAILURE'):\n"
+            " print('pi-container: network policy preflight failed: synthetic invalid policy', file=sys.stderr); sys.exit(1)\n"
+            "if args[0]=='snapshot':\n"
+            " p=pathlib.Path(args[args.index('--session')+1]); (p/'transport').mkdir(); (p/'config').mkdir(); (p/'logs').mkdir()\n"
+            " s=socket.socket(socket.AF_UNIX); s.bind(str(p/'transport/proxy.sock')); s.close()\n"
+            " (p/'transport/ready').write_text('fixture-policy guard='+'c'*64+' mux=1 tls='+TLS_ENFORCEMENT+'\\n')\n"
+            " print('fixture-policy')\n"))
+        runtime = self.base / 'runtime'
+        runtime.mkdir(mode=0o700, exist_ok=True)
+        return dict(FAKE_INFO='true linux true', CONTAINER_HOST='unix:///run/service.sock', FAKE_ROOT=str(install),
+                    PI_CONTAINER_NETWORK_POLICY=str(install / 'policy.json'),
+                    PI_CONTAINER_NETWORK_PROFILE='openai-api',
+                    PI_CONTAINER_NETWORK_RUNTIME_DIR=str(runtime),
+                    PI_CONTAINER_EGRESS_IMAGE='e' * 64, FAKE_EGRESS_IMAGE='e' * 64)
+
+    def names(self):
+        return [Path(c[0]).name if c[0].endswith('.py') else c[0] for c in self.calls()]
+
+    @staticmethod
+    def env_values(create):
+        return [create[i + 1] for i, a in enumerate(create[:-1]) if a == '--env']
+
+    def test_missing_mode_and_removed_network_stop_before_engine(self):
+        for mode in (None, ''):
+            env = self.env | {'PI_CONTAINER_PODMAN': '1', 'CONTAINER_HOST': 'invalid', 'PATH': ''}
+            env.pop('PI_CONTAINER_NETWORK')
+            if mode is not None:
+                env['PI_CONTAINER_NETWORK'] = mode
+            for flags in ((), ('--container-shell', '--container-build', '--container-git-worktree')):
+                with self.subTest(mode=mode, flags=flags):
+                    result = subprocess.run(['/bin/bash', str(WRAPPER), *flags, '-p', 'x'], cwd=self.project,
+                                            env=env, text=True, capture_output=True, timeout=10)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertIn('PI_CONTAINER_NETWORK is required', result.stderr)
+                    self.assertIn('unrestricted keeps the previous networking behavior', result.stderr)
+                    self.assertFalse(self.log.exists())
+                    self.assertFalse(self.state.exists())
+        for value, message in (('none', 'use PI_CONTAINER_NETWORK=offline instead of PI_NETWORK=none'),
+                               ('host', 'use PI_CONTAINER_NETWORK=unrestricted'), ('slirp4netns', 'no longer supported')):
+            for mode in ('offline', 'unrestricted'):
+                with self.subTest(pi_network=value, mode=mode):
+                    result = self.run_wrapper(PI_NETWORK=value, PI_CONTAINER_NETWORK=mode)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertIn(message, result.stderr)
+                    self.assertEqual(self.calls(), [])
+
+    def test_mode_and_delegation_rejections_precede_engine(self):
+        cases = (({'PI_CONTAINER_NETWORK': 'invalid'}, 'must be offline, provider, or unrestricted'),
+                 ({'PI_CONTAINER_NETWORK': 'provider'}, 'requires PI_CONTAINER_NETWORK_PROFILE'),
+                 ({'PI_CONTAINER_NETWORK': 'offline', 'PI_CONTAINER_PODMAN': '1'}, 'rejects PI_CONTAINER_PODMAN=1'),
+                 ({'PI_CONTAINER_NETWORK': 'offline', 'PI_ENABLE_PODMAN': '1'}, 'rejects PI_CONTAINER_PODMAN=1'),
+                 ({'PI_CONTAINER_STATE_DIR': str(self.base / 'isolated'), 'PI_CONTAINER_CONFIG_DIR': str(self.base / 'c')},
+                  'PI_CONTAINER_STATE_DIR conflicts with PI_CONTAINER_CONFIG_DIR'),
+                 ({'PI_CONTAINER_CONFIG_DIR': 'relative'}, 'PI_CONTAINER_CONFIG_DIR must be an absolute path'),
+                 ({'PI_CONTAINER_TRUST_HOST_CA': 'maybe'}, 'PI_CONTAINER_TRUST_HOST_CA must be 0, 1, true, false, yes, or no'))
+        for values, message in cases:
+            for flags in ((), ('--container-shell',)):
+                with self.subTest(values=values, flags=flags):
+                    result = self.run_wrapper(*flags, **values)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertIn(message, result.stderr)
+                    self.assertEqual(self.calls(), [])
+                    self.assertFalse((self.base / 'isolated').exists())
+        fixture = self.restricted_fixture()
+        for values in ({'FAKE_BACKEND': 'cni'}, {'FAKE_SERVER_VERSION': '4.8.0'}):
+            with self.subTest(values=values):
+                result = self.run_wrapper(**(fixture | values | {'PI_CONTAINER_NETWORK': 'offline'}))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('ineligible restricted platform', result.stderr)
+                self.assertFalse(any(c[0] in ('build', 'create') for c in self.calls()))
+
+    def test_help_documents_modes_migration_and_provider_limits(self):
+        result = self.run_wrapper('--container-help', PI_CONTAINER_NETWORK='')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for text in ('--container-qualify', 'PI_CONTAINER_NETWORK ', 'PI_CONTAINER_NETWORK_PROFILE',
+                     'PI_CONTAINER_MAINTENANCE', 'PI_CONTAINER_CONFIG_DIR', 'PI_CONTAINER_TRUST_HOST_CA',
+                     'PI_CONTAINER_CA_BUNDLE', 'PI_NETWORK is no longer supported',
+                     'anthropic-api: api.anthropic.com', 'gemini-api: generativelanguage.googleapis.com',
+                     'openrouter-api: openrouter.ai', 'Only offline removes this', 'outside this boundary'):
+            self.assertIn(text, result.stdout)
+        self.assertNotIn('PI_NETWORK             optional network selection', result.stdout)
+        self.assertEqual(self.calls(), [])
+
+    def test_maintenance_gates_every_build(self):
+        for maintenance in ('', '0', 'true', ' 1'):
+            for explicit, status in ((True, '0'), (False, '1')):
+                with self.subTest(maintenance=maintenance, explicit=explicit):
+                    result = self.run_wrapper(*(['--container-build'] if explicit else []),
+                                              PI_CONTAINER_MAINTENANCE=maintenance, FAKE_IMAGE_STATUS=status)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertIn('PI_CONTAINER_MAINTENANCE=1', result.stderr)
+                    self.assertFalse(any(c[0] in ('build', 'pull', 'create') for c in self.calls()))
+        result = self.run_wrapper(PI_CONTAINER_MAINTENANCE='', FAKE_LABEL_HASH='stale')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('--container-build and PI_CONTAINER_MAINTENANCE=1', result.stderr)
+        result = self.run_wrapper(PI_CONTAINER_MAINTENANCE='')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(any(c[0] == 'build' for c in self.calls()))
+        fixture = self.restricted_fixture()
+        for mode in ('offline', 'provider'):
+            with self.subTest(mode=mode, preflight='invalid policy'):
+                result = self.run_wrapper('--container-build', **(fixture | {
+                    'PI_CONTAINER_NETWORK': mode, 'FAKE_PREFLIGHT_FAILURE': '1'}))
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn('network policy preflight failed', result.stderr)
+                self.assertFalse(any(c[0] in ('build', 'pull', 'create') for c in self.calls()))
+
+    def test_proxy_image_acquisition_requires_maintenance_and_digest(self):
+        fixture = self.restricted_fixture() | {'PI_CONTAINER_NETWORK': 'provider', 'FAKE_EGRESS_STATUS': '1'}
+        digest = 'localhost/pi-egress@sha256:' + 'e' * 64
+        for maintenance, image in (('', digest), ('1', 'e' * 64), ('1', 'localhost/pi-egress:local')):
+            with self.subTest(maintenance=maintenance, image=image):
+                result = self.run_wrapper(**(fixture | {'PI_CONTAINER_MAINTENANCE': maintenance,
+                                                       'PI_CONTAINER_EGRESS_IMAGE': image, 'FAKE_EGRESS_IMAGE': image}))
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn('proxy image is absent', result.stderr)
+                self.assertFalse(any(c[0] in ('pull', 'create') for c in self.calls()))
+        result = self.run_wrapper(**(fixture | {'PI_CONTAINER_EGRESS_IMAGE': digest, 'FAKE_EGRESS_IMAGE': digest}))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(['pull', digest], self.calls())
+
+    def test_config_override_session_value_and_host_ca(self):
+        override = self.base / 'pi-config'
+        result = self.run_wrapper(PI_CONTAINER_CONFIG_DIR=str(override), PI_ENV_VARS='PI_CONTAINER_CONFIG_DIR')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = self.run_args()
+        self.assertIn(f'{override}:/pi-home/.pi:rw', args)
+        self.assertEqual(override.stat().st_mode & 0o777, 0o700)
+        self.assertFalse(self.state.exists())
+        values = self.env_values(args)
+        self.assertIn('PI_CONTAINER_CONFIG_DIR=/pi-home/.pi', values)
+        self.assertNotIn('PI_CONTAINER_CONFIG_DIR', values)
+        bundle = self.base / 'bundle.pem'
+        bundle.write_text('synthetic certificate bundle')
+        for isolated in ('', str(self.base / 'isolated')):
+            for trust in ('', 'no', '1', 'TrUe'):
+                with self.subTest(isolated=isolated, trust=trust):
+                    state = {'PI_CONTAINER_STATE_DIR': isolated} if isolated else {}
+                    result = self.run_wrapper(PI_CONTAINER_TRUST_HOST_CA=trust, PI_CONTAINER_CA_BUNDLE=str(bundle), **state)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    args = self.run_args()
+                    enabled = trust.lower() in ('1', 'true')
+                    self.assertEqual(f'{bundle}:/pi-home/ca/bundle.pem:ro' in args, enabled)
+                    for variable in ('SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS'):
+                        self.assertEqual(f'{variable}=/pi-home/ca/bundle.pem' in args, enabled)
+                    if isolated and enabled:
+                        self.assertEqual((Path(isolated) / 'ca').stat().st_mode & 0o777, 0o700)
+        result = self.run_wrapper(PI_CONTAINER_TRUST_HOST_CA='1', PI_CONTAINER_CA_BUNDLE='/missing/bundle.pem')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('PI_CONTAINER_CA_BUNDLE is not a file', result.stderr)
+        self.assertFalse(any(c[0] in ('build', 'create') for c in self.calls()))
+        missing = self.base / 'not-created'
+        result = self.run_wrapper(PI_CONTAINER_STATE_DIR=str(missing), FAKE_INFO_STATUS='19')
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse(missing.exists())
+
+    def test_offline_order_arguments_and_forwarding(self):
+        host = {'OPENAI_API_KEY': 'synthetic', 'HTTPS_PROXY': 'http://host-proxy:3128', 'no_proxy': '*',
+                'PI_OFFLINE': '0', 'GH_TOKEN': 'synthetic'}
+        fixture = self.restricted_fixture() | {'PI_CONTAINER_NETWORK': 'offline'} | host
+        for flags, tail in (((), ['/usr/local/bin/pi', '-p', 'hello world']), (('--container-shell',), ['/bin/bash'])):
+            with self.subTest(flags=flags):
+                result = self.run_wrapper(*flags, '-p', 'hello world', FAKE_EXIT='7',
+                                          PI_ENV_VARS='HTTPS_PROXY no_proxy PI_OFFLINE GH_TOKEN', **fixture)
+                self.assertEqual(result.returncode, 7, result.stderr)
+                self.assertIn('network mode=offline', result.stderr)
+                order = [n for n in self.names() if n in ('control.py', 'qualify.py', 'ps', 'create', 'start')]
+                self.assertEqual(order, ['control.py', 'qualify.py', 'ps', 'create', 'start'])
+                self.assertIn(['qualify.py', 'check', 'd' * 64], [c[:3] for c in self.calls()])
+                # HTTPS_PROXY is skipped silently in every mode; the others only here.
+                for name in ('no_proxy', 'PI_OFFLINE'):
+                    self.assertIn(f'skipping {name}, which restricted modes set themselves', result.stderr)
+                args = self.run_args()
+                values = self.env_values(args)
+                for name in ('OPENAI_API_KEY', 'HTTPS_PROXY', 'no_proxy', 'PI_OFFLINE'):
+                    self.assertNotIn(name, values)
+                self.assertIn('GH_TOKEN', values)
+                for value in ('PI_OFFLINE=1', 'PI_SKIP_VERSION_CHECK=1', 'PI_TELEMETRY=0'):
+                    self.assertIn(value, values)
+                self.assertIn('--network=none', args)
+                self.assertEqual(args[args.index('--entrypoint', args.index('--network=none')) + 1], '/opt/sandbox-egress/guard')
+                self.assertNotIn('/bin/bash', args[:args.index('d' * 64)])
+                self.assertEqual(args[args.index('d' * 64) + 1:], ['--offline', '--', *tail])
+                self.assertFalse(any(c[0] in ('build', 'pull') for c in self.calls()))
+
+    def test_provider_order_and_profile_credentials(self):
+        keys = {'ANTHROPIC_API_KEY': 'k1', 'OPENAI_API_KEY': 'k2', 'GEMINI_API_KEY': 'k3', 'OPENROUTER_API_KEY': 'k4',
+                'GOOGLE_API_KEY': 'k5', 'HTTPS_PROXY': 'http://host-proxy:3128'}
+        fixture = self.restricted_fixture() | {'PI_CONTAINER_NETWORK': 'provider'} | keys
+        relay = ['/usr/bin/python3', '-I', '/opt/sandbox-egress/relay.py']
+        for profile, credential in (('anthropic-api', 'ANTHROPIC_API_KEY'), ('openai-api', 'OPENAI_API_KEY'),
+                                    ('gemini-api', 'GEMINI_API_KEY'), ('openrouter-api', 'OPENROUTER_API_KEY'),
+                                    ('custom-api', None)):
+            with self.subTest(profile=profile):
+                result = self.run_wrapper('-p', 'x', **(fixture | {'FAKE_EXIT': '5', 'PI_CONTAINER_NETWORK_PROFILE': profile}))
+                self.assertEqual(result.returncode, 5, result.stderr)
+                self.assertIn(f'network profile={profile} policy=fixture-policy', result.stderr)
+                order = [n for n in self.names() if n in ('qualify.py', 'create', 'exec', 'start', 'rm')]
+                self.assertEqual(order, ['qualify.py', 'create', 'start', 'exec', 'create', 'start', 'rm', 'rm'])
+                agent = self.creates()[1]
+                values = self.env_values(agent)
+                self.assertIn('HTTPS_PROXY=http://127.0.0.1:18080', values)
+                self.assertIn('no_proxy=localhost,127.0.0.1,::1', values)
+                for name in keys:
+                    self.assertEqual(name in values, name == credential)
+                self.assertEqual(agent[agent.index('d' * 64) + 1:], ['--provider', '--', *relay, '/usr/local/bin/pi', '-p', 'x'])
+                self.assertEqual([c[-1] for c in self.calls() if c[0] == 'rm'], ['a' * 64, 'b' * 64])
+
+    def test_unrestricted_keeps_forwarding(self):
+        keys = {'ANTHROPIC_API_KEY': 'k1', 'OPENAI_API_KEY': 'k2', 'GOOGLE_API_KEY': 'k5', 'HTTPS_PROXY': 'p'}
+        result = self.run_wrapper(**keys)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        values = self.env_values(self.run_args())
+        for name in keys:
+            self.assertIn(name, values)
+        for value in ('PI_OFFLINE=1', 'PI_SKIP_VERSION_CHECK=1'):
+            self.assertNotIn(value, values)
+        self.assertFalse(any(a.startswith('--network') for a in self.run_args()))
+
+    def test_failed_qualification_and_interrupted_helpers_clean_up(self):
+        for mode in ('offline', 'provider'):
+            with self.subTest(mode=mode):
+                result = self.run_wrapper(FAKE_QUALIFY_STATUS='3', **(self.restricted_fixture() | {'PI_CONTAINER_NETWORK': mode}))
+                self.assertEqual(result.returncode, 3, result.stderr)
+                self.assertFalse(any(c[0] == 'create' for c in self.calls()))
+                self.assertEqual(list((self.base / 'runtime').iterdir()), [])
+                shutil.rmtree(self.base / 'install')
+        fixture = self.restricted_fixture() | {'PI_CONTAINER_NETWORK': 'provider'}
+        for stall, marker in (('exec', '.stalled-exec'), ('qualify', '.stalled-qualify')):
+            with self.subTest(stall=stall):
+                self.log.unlink(missing_ok=True)
+                values = fixture | ({'FAKE_STALL': 'exec'} if stall == 'exec' else {'FAKE_QUALIFY_STALL': '1'})
+                process = self.start_wrapper(**values)
+                self.wait_path(Path(str(self.log) + marker), process, timeout=10)
+                started = time.monotonic()
+                process.terminate()
+                stdout, stderr = process.communicate(timeout=25)
+                self.assertEqual(process.returncode, 143, stdout + stderr)
+                self.assertLess(time.monotonic() - started, 21)
+                self.assertEqual([c[-1] for c in self.calls() if c[0] == 'rm'], ['b' * 64] if stall == 'exec' else [])
+                self.assertEqual(list((self.base / 'runtime').iterdir()), [])
+
+    def test_qualification_entry_points(self):
+        for args in (('--container-qualify', '--container-shell'), ('-p', 'x', '--container-qualify')):
+            result = self.run_wrapper(*args)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('--container-qualify must be used alone', result.stderr)
+            self.assertEqual(self.calls(), [])
+        fixture = self.restricted_fixture()
+        result = self.run_wrapper('--container-qualify', **fixture)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([c[:2] for c in self.calls()], [['qualify.py', 'qualify']])
+        result = self.run_wrapper('--container-qualify-probe', '-p', 'x', **fixture)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('fixed qualification probe must be used alone', result.stderr)
+        result = self.run_wrapper('--container-qualify-probe', **fixture)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('qualification probes require restricted networking', result.stderr)
+
+    def test_restricted_credentials_match_the_agent_profile(self):
+        profile = json.loads((ROOT / 'agent/profile.json').read_text())
+        text = WRAPPER.read_text()
+        for item in profile['auth'].values():
+            self.assertIn(f"{item['policy_profile']}) profile_credential={item['credential_env']} ;;", text)
 
 if __name__ == '__main__':
     unittest.main()

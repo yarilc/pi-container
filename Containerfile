@@ -80,4 +80,8 @@ RUN npm install --global --omit=dev \
     && rm -rf /root/.npm /root/.cache /pi-home \
     && mkdir -m 1777 /pi-home
 
+# Agent-side relay for restricted sessions; the guard is mounted from the
+# protected installation at launch, never baked into this image.
+COPY network/relay.py network/mux.py /opt/sandbox-egress/
+
 ENTRYPOINT ["pi"]

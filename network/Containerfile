@@ -1,0 +1,6 @@
+FROM docker.io/library/python@sha256:061c190f3d5815b341a18dfe8a45771f8ba68c15a607ea56997fde3009ac4eec
+
+# Standard library only; no dependency installation at agent startup.
+COPY policy.py proxy.py mux.py tls_client_hello.py revisions.py /opt/sandbox-egress/
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+ENTRYPOINT ["python3", "/opt/sandbox-egress/proxy.py"]

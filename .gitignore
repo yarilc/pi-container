@@ -9,6 +9,8 @@ Thumbs.db
 *.log
 .containerfile-hash
 node_modules/
+__pycache__/
+network/bin/
 package.json
 package-lock.json
 

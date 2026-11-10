@@ -17,7 +17,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 WRAPPER = ROOT / 'pi-container.sh'
-IMAGE = os.environ.get('PI_CONTAINER_IMAGE', 'pi-container')
+IMAGE = os.environ.get('PI_CONTAINER_IMAGE', 'localhost/pi-container')
 ENABLED = os.environ.get('PI_RUNTIME_TESTS') == '1'
 
 
@@ -99,7 +99,8 @@ class RuntimeTests(unittest.TestCase):
                          'Select a native Linux PI_TEST_ROOT or use tests/run-runtime.sh')
         self.env = {k: v for k, v in os.environ.items()
                     if not k.startswith('PI_') and k not in ('CONTAINER_CONNECTION', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GOOGLE_API_KEY', 'GITHUB_TOKEN')}
-        self.env.update(HOME=str(self.home), PI_CONTAINER_IMAGE=IMAGE, PI_CONTAINER_PODMAN='0')
+        self.env.update(HOME=str(self.home), PI_CONTAINER_IMAGE=IMAGE, PI_CONTAINER_PODMAN='0',
+                        PI_CONTAINER_NETWORK='unrestricted', PI_CONTAINER_MAINTENANCE='1')
         self.socket = os.environ.get('PI_CONTAINER_PODMAN_SOCKET', '')
         if not self.socket:
             connection = self.env.get('CONTAINER_HOST', '')
@@ -417,7 +418,7 @@ setTimeout(()=>{ kids.forEach(k=>{ try{k.kill()}catch(e){} }); console.log(refus
                    '--volume',f'{ROOT}:{ROOT}:ro','--volume',f'{self.base}:{self.base}:rw',
                    '--volume',f'{host.stdout.strip()}:{visible}:rw','--workdir',str(self.project),
                    '--env','CONTAINER_HOST=unix://'+visible,'--env','HOME='+str(self.home),
-                   '--env','PI_CONTAINER_IMAGE='+IMAGE,'--env','PI_CONTAINER_PODMAN=1',
+                   '--env','PI_CONTAINER_IMAGE='+IMAGE,'--env','PI_CONTAINER_PODMAN=1','--env','PI_CONTAINER_NETWORK=unrestricted',
                    '--entrypoint','/bin/bash',runner_image,str(WRAPPER),'--container-shell']
         self.assert_success(terminal_shell(command, 'set -e\nfor d in /var/lib/containers /run/containers; do test ! -e "$d/sentinel"; done\npodman info >/dev/null\nprintf nested > nested-file', self.env, self.project, timeout=360))
         self.assertEqual((self.project / 'nested-file').stat().st_uid, os.getuid())
@@ -428,11 +429,13 @@ setTimeout(()=>{ kids.forEach(k=>{ try{k.kill()}catch(e){} }); console.log(refus
         shutil.copyfile(ROOT / '.containerignore', context / '.containerignore')
         (context / '.version').write_text('dummy')
         (context / '.gitignore').write_text('dummy')
-        for name in ('.pi/agent/auth.json','.env','unknown','tests/sentinel','nested/Containerfile'):
+        for name in ('.pi/agent/auth.json','.env','unknown','tests/sentinel','nested/Containerfile',
+                     'network/relay.py','network/mux.py','network/proxy.py','network/bin/sandbox-egress-guard',
+                     'nested/network/relay.py'):
             path=context/name
             path.parent.mkdir(parents=True,exist_ok=True)
             path.write_text('DUMMY-NOT-A-CREDENTIAL')
-        (context/'Containerfile').write_text('FROM '+IMAGE+'\nCOPY . /context\nRUN test ! -e /context/.env && test ! -e /context/.pi && test ! -e /context/unknown && test ! -e /context/tests && test ! -e /context/nested && test ! -e /context/.gitignore && test "$(find /context -type f | wc -l)" = 3 && test -f /context/Containerfile && test -f /context/.containerignore && test -f /context/.version\n')
+        (context/'Containerfile').write_text('FROM '+IMAGE+'\nCOPY . /context\nRUN test ! -e /context/.env && test ! -e /context/.pi && test ! -e /context/unknown && test ! -e /context/tests && test ! -e /context/nested && test ! -e /context/.gitignore && test "$(find /context -type f | wc -l)" = 5 && test -f /context/Containerfile && test -f /context/.containerignore && test -f /context/.version && test -f /context/network/relay.py && test -f /context/network/mux.py && test ! -e /context/network/proxy.py && test ! -e /context/network/bin\n')
         iid=self.base/'image-id'
         def remove():
             if iid.exists(): self.engine('rmi','--force',iid.read_text().strip())
