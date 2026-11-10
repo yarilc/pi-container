@@ -19,12 +19,13 @@ English. Communicate with the user in the language and style the user asks for.
   four provider profiles). Restricted preparation, proxy lifecycle and restricted
   container arguments come from `network/session.py` (`prepare`, `start`,
   `agent-args`, `stop`); never re-implement them inline.
-- `network/`, `setup/diagnostics.py` and the shared tests (`sandbox_profile.py`,
+- `network/`, `setup/` and the shared tests (`sandbox_profile.py`,
+  `test_alignment.py`, `test_setup.py`,
   `test_agent_profile.py`, `test_network_policy.py`, `test_mux.py`,
   `test_tls_client_hello.py`, `test_tls_proxy.py`, `test_platform.py`,
   `test_qualification.py`, `test_guard.py`, `test_session.py`,
   `test_network_feasibility.py` and their fixtures) are copied unchanged from
-  `claude-container` at tag `sandbox-ref-6`. Never edit them here, and never
+  `claude-container` at tag `sandbox-ref-8`. Never edit them here, and never
   add a profile identifier (`pi-container`, `anthropic`, `openai`, `gemini`,
   `openrouter`) to them; fix a defect in `claude-container` first, then copy the
   files again and update `tests/test_reference_copy.py`.
@@ -42,11 +43,12 @@ English. Communicate with the user in the language and style the user asks for.
 Run from the repository root:
 
 ```bash
-export PI_CONTAINER_NETWORK=unrestricted        # every launch needs a mode
+bash ./pi-container.sh --container-setup       # guided setup (interactive, alone)
+export PI_CONTAINER_NETWORK=unrestricted        # direct launches need a mode
 PI_CONTAINER_MAINTENANCE=1 ./pi-container.sh --container-build --version   # build, then print Pi's version
 ./test-wrapper.sh                               # synthetic wrapper suite
 bash tests/run-runtime.sh                       # real rootless checks with native Linux state
-bash tests/run-runtime.sh --network             # restricted modes (also --wrapper, --shared, --guard, ...)
+bash tests/run-runtime.sh --network             # restricted modes (also --wrapper, --shared, --setup, ...)
 ./test.sh                                       # disposable image build plus real checks
 bash -n pi-container.sh test-wrapper.sh test.sh tests/run-runtime.sh
 ```
@@ -103,8 +105,9 @@ changes.
 ## Security & Configuration
 
 - Pi runs its tools without approval prompts: the container is the only
-  boundary. Do not add a YOLO switch; `--approve` only trusts project-local
-  files.
+  boundary. `PI_CONTAINER_YOLO` is a validated boolean for setup and future Pi
+  releases; an enabled value only warns and must never change engine
+  arguments. `--approve` only trusts project-local files.
 - Keep `--cap-drop=ALL`, `no-new-privileges`, the read-only root filesystem,
   noexec temporary storage, the pinned Pi version, and CI with hadolint and
   Trivy. Never add capabilities, `--privileged` or SELinux relabeling.

@@ -161,7 +161,8 @@ original workdir. Always use a suitably narrow project directory.
 ### No Tool-Approval Layer
 
 Pi runs its tools without approval prompts, so the container is the only
-boundary around them and this wrapper offers no YOLO switch. Pi's `--approve`
+boundary around them. `PI_CONTAINER_YOLO` exists for setup and future Pi
+releases; enabling it changes nothing and prints a warning. Pi's `--approve`
 option trusts project-local files for a run; it does not approve tools.
 Combine `PI_CONTAINER_NETWORK=offline`, `PI_READONLY_CONFIG=1` and narrow
 workspaces for untrusted tasks.

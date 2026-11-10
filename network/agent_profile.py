@@ -75,6 +75,7 @@ class Profile:
         self.state_name = value['install']['state_name']
         # Agent-specific installation inputs read by the wrapper (for example a version file).
         self.install_files = tuple(value['install'].get('files', ()))
+        self.runtime_build = value['install'].get('runtime_build', 'recipe')
         native = value['native']
         self.home = native['home']
         self.command = native['command']
@@ -136,7 +137,9 @@ def validate(value):
     images = [string(item, IMAGE, 'images.' + key) for key, item in value['images'].items()]
     if len(set(images)) != len(images):
         fail('images must be distinct')
-    fields(value['install'], ('state_name',), ('files',), where='install')
+    fields(value['install'], ('state_name',), ('files', 'runtime_build'), where='install')
+    if value['install'].get('runtime_build', 'recipe') not in ('recipe', 'wrapper'):
+        fail('install.runtime_build must be recipe or wrapper')
     string(value['install']['state_name'], NAME, 'install.state_name')
     files = strings(value['install'].get('files', []), RELATIVE, 'install.files', minimum=0, maximum=8)
     if len(set(files)) != len(files) or any(

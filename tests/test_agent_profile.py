@@ -76,6 +76,9 @@ class ProfileSchemaTests(unittest.TestCase):
             lambda v: v['auth'].update(duplicate=dict(v['auth'][method])),
             lambda v: v['install'].update(files='.version'),
             lambda v: v['install'].update(files=['../escape']),
+            lambda v: v['install'].update(runtime_build='podman'),
+            lambda v: v['install'].update(runtime_build=['wrapper']),
+            lambda v: v['install'].update(runtime_build=''),
             lambda v: v['install'].update(files=['/absolute']),
             lambda v: v['install'].update(files=['network/relay.py']),
             lambda v: v['install'].update(files=['agent/profile.json']),
@@ -94,6 +97,14 @@ class ProfileSchemaTests(unittest.TestCase):
         value = copy.deepcopy(self.value)
         value['install']['files'] = ['.version', 'docs/agent-version']
         self.assertEqual(agent_profile.validate(value).install_files, ('.version', 'docs/agent-version'))
+
+    def test_optional_runtime_build(self):
+        self.assertEqual(agent_profile.validate(self.value).runtime_build,
+                         self.value['install'].get('runtime_build', 'recipe'))
+        for mode in ('recipe', 'wrapper'):
+            value = copy.deepcopy(self.value)
+            value['install']['runtime_build'] = mode
+            self.assertEqual(agent_profile.validate(value).runtime_build, mode)
 
     def test_malformed_duplicate_oversized_and_missing_files(self):
         with tempfile.TemporaryDirectory() as directory:

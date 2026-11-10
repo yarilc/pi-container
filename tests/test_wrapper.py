@@ -118,7 +118,7 @@ class WrapperTests(unittest.TestCase):
         for shell, build, access, info in itertools.product(
                 (False, True), (False, True), ('0', '1'), infos):
             with self.subTest(shell=shell, build=build, access=access, info=info):
-                args = (['--container-shell'] if shell else []) + (['--container-build'] if build else [])
+                args = (['--container-shell'] if shell else []) + (['--container-build', '--version'] if build else [])
                 result = self.run_wrapper(*args, FAKE_INFO=info,
                                           PI_CONTAINER_PODMAN=access)
                 self.assert_rejected(result)
@@ -149,7 +149,7 @@ class WrapperTests(unittest.TestCase):
         endpoints = ('unix://', 'unix:///', 'unix:////', 'unix:////////', 'unix://relative')
         for shell, build, endpoint in itertools.product((False, True), (False, True), endpoints):
             with self.subTest(shell=shell, build=build, endpoint=endpoint):
-                options = (['--container-shell'] if shell else []) + (['--container-build'] if build else [])
+                options = (['--container-shell'] if shell else []) + (['--container-build', '--version'] if build else [])
                 self.assert_rejected(self.run_wrapper(*options, CONTAINER_HOST=endpoint))
                 self.assertEqual(self.calls(), [])
                 self.assertFalse(self.state.exists())
@@ -161,7 +161,7 @@ class WrapperTests(unittest.TestCase):
     def test_verification_normal_terminators_and_socket_spaces(self):
         for shell, build, launch_end, socket_end in itertools.product((False, True), (False, True), ('', '\n'), ('', '\n')):
             with self.subTest(shell=shell, build=build, launch_end=launch_end, socket_end=socket_end):
-                options = (['--container-shell'] if shell else []) + (['--container-build'] if build else [])
+                options = (['--container-shell'] if shell else []) + (['--container-build', '--version'] if build else [])
                 result = self.run_wrapper(*options, PI_CONTAINER_PODMAN='1',
                                           PI_CONTAINER_PODMAN_SOCKET=str(self.sock_path),
                                           FAKE_INFO_RAW='true linux false' + launch_end,
@@ -177,7 +177,7 @@ class WrapperTests(unittest.TestCase):
                    'true linux false extra\n', '\n', '']
         for shell, build, access, response in itertools.product((False, True), (False, True), ('0', '1'), invalid):
             with self.subTest(shell=shell, build=build, access=access, response=response):
-                options = (['--container-shell'] if shell else []) + (['--container-build'] if build else [])
+                options = (['--container-shell'] if shell else []) + (['--container-build', '--version'] if build else [])
                 self.assert_rejected(self.run_wrapper(*options, PI_CONTAINER_PODMAN=access,
                                                       FAKE_INFO_RAW=response))
                 self.assertFalse(any(c[0] == '--remote' for c in self.calls()))
@@ -191,7 +191,7 @@ class WrapperTests(unittest.TestCase):
                    'true\n', 'true\nrelative\n', 'false\n/host/podman.sock\n', '']
         for shell, build, response in itertools.product((False, True), (False, True), invalid):
             with self.subTest(shell=shell, build=build, response=response):
-                options = (['--container-shell'] if shell else []) + (['--container-build'] if build else [])
+                options = (['--container-shell'] if shell else []) + (['--container-build', '--version'] if build else [])
                 self.assert_rejected(self.run_wrapper(*options, PI_CONTAINER_PODMAN='1',
                                                       PI_CONTAINER_PODMAN_SOCKET=str(self.sock_path),
                                                       FAKE_SOCKET_INFO_RAW=response))
@@ -201,7 +201,7 @@ class WrapperTests(unittest.TestCase):
     def test_failed_queries_with_valid_looking_raw_output(self):
         for shell, build, endpoint in itertools.product((False, True), (False, True), ('launch', 'delegation')):
             with self.subTest(shell=shell, build=build, endpoint=endpoint):
-                options = (['--container-shell'] if shell else []) + (['--container-build'] if build else [])
+                options = (['--container-shell'] if shell else []) + (['--container-build', '--version'] if build else [])
                 response = {'FAKE_INFO_RAW': 'true linux false\n', 'FAKE_INFO_STATUS': '125'} if endpoint == 'launch' else {
                     'FAKE_SOCKET_INFO_RAW': 'true\n/host/podman.sock\n', 'FAKE_SOCKET_STATUS': '125'}
                 self.assert_rejected(self.run_wrapper(*options, PI_CONTAINER_PODMAN='1',
@@ -516,10 +516,10 @@ reap_client
                 self.assertEqual(result.returncode, image if image not in (0, 1) else 0, result.stderr)
                 self.assertEqual(any(c[0] == 'build' for c in self.calls()), image == 1)
                 self.assertEqual(bool(self.creates()), image in (0, 1))
-        result = self.run_wrapper('--container-build', FAKE_IMAGE_STATUS='125')
+        result = self.run_wrapper('--container-build', '--version', FAKE_IMAGE_STATUS='125')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(any(c[0] == 'image' for c in self.calls()))
-        for options in ([], ['--container-build']):
+        for options in ([], ['--container-build', '--version']):
             result = self.run_wrapper(*options, FAKE_IMAGE_STATUS='1', FAKE_BUILD_STATUS='42')
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(self.creates(), [])
@@ -538,7 +538,7 @@ reap_client
         for mode in (0o755, 0o770, 0o707):
             self.state.mkdir(exist_ok=True)
             self.state.chmod(mode)
-            result = self.run_wrapper('--container-build')
+            result = self.run_wrapper('--container-build', '--version')
             self.assert_rejected(result)
             self.assertEqual(self.state.stat().st_mode & 0o777, mode)
         self.state.rmdir()
@@ -660,7 +660,7 @@ reap_client
                  '', 'maybe\n/host/socket', 'true\n/host/socket\nextra']
         for shell, build, info in itertools.product((False, True), (False, True), infos):
             with self.subTest(shell=shell, build=build, info=info):
-                args = (['--container-shell'] if shell else []) + (['--container-build'] if build else [])
+                args = (['--container-shell'] if shell else []) + (['--container-build', '--version'] if build else [])
                 self.assert_rejected(self.run_wrapper(
                     *args, PI_CONTAINER_PODMAN='1',
                     PI_CONTAINER_PODMAN_SOCKET=str(self.sock_path), FAKE_SOCKET_INFO=info))
@@ -784,7 +784,7 @@ reap_client
         self.assertTrue(any(c[0]=='build' for c in self.calls()))
         hashes=[]
         for bun in ('','1'):
-            result=self.run_wrapper('--container-build',PI_ENABLE_BUN=bun,PI_BUN_VERSION='bun-v1.2.0',PI_PULL_ALWAYS='1')
+            result=self.run_wrapper('--container-build','--version',PI_ENABLE_BUN=bun,PI_BUN_VERSION='bun-v1.2.0',PI_PULL_ALWAYS='1')
             self.assertEqual(result.returncode,0,result.stderr)
             for name in ('PI_BUN_VERSION','PI_PULL_ALWAYS'):
                 self.assertEqual(result.stderr.count(f'{name} is ignored; image inputs are pinned in Containerfile'),1)
@@ -1053,13 +1053,24 @@ reap_client
     def test_yolo_has_no_effect(self):
         self.run_wrapper()
         baseline = self.run_args()
-        result = self.run_wrapper(PI_CONTAINER_YOLO='1')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('PI_CONTAINER_YOLO has no effect; Pi has no tool-approval layer', result.stderr)
-        self.assertEqual(len(self.run_args()), len(baseline))
         varying = ('cid', 'io.pi-container.session=')
-        self.assertEqual([a for a in self.run_args() if not any(v in a for v in varying)],
-                         [a for a in baseline if not any(v in a for v in varying)])
+        stable = lambda args: [a for a in args if not any(v in a for v in varying)]
+        warning = 'PI_CONTAINER_YOLO has no effect yet: Pi 0.80.8 has no tool-approval layer'
+        for value, warns in (('1', True), ('true', True), ('YES', True),
+                             ('0', False), ('false', False), ('no', False), ('', False)):
+            with self.subTest(value=value):
+                result = self.run_wrapper(PI_CONTAINER_YOLO=value)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stderr.count(warning), 1 if warns else 0)
+                self.assertNotIn('PI_CONTAINER_YOLO', result.stderr if not warns else '')
+                self.assertEqual(stable(self.run_args()), stable(baseline))
+        for value in ('2', 'on', ' 1'):
+            with self.subTest(value=value):
+                fresh = self.base / 'yolo-home'
+                fresh.mkdir(exist_ok=True)
+                result = self.run_wrapper(HOME=str(fresh), PI_CONTAINER_YOLO=value)
+                self.assert_refused_early(result, 'PI_CONTAINER_YOLO must be 0, 1, true, false, yes, or no')
+                self.assertEqual(list(fresh.iterdir()), [])
 
     def test_budget_validation(self):
         result = self.run_wrapper()
@@ -1198,9 +1209,52 @@ reap_client
     def env_values(create):
         return [create[i + 1] for i, a in enumerate(create[:-1]) if a == '--env']
 
+    def test_setup_entry_point_is_dedicated_and_help_takes_precedence(self):
+        for args, message in ((('--container-setup',), 'requires an interactive terminal'),
+                              (('--container-setup', '--container-shell'), 'must be used alone'),
+                              (('-p', 'x', '--container-setup'), 'must be used alone')):
+            with self.subTest(args=args):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(*args, PI_CONTAINER_NETWORK='')
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('--container-setup ' + message, result.stderr)
+                self.assertEqual(self.calls(), [])
+                self.assertFalse(self.state.exists())
+        for args in (('--container-setup', '--container-help'), ('--container-help', '--container-setup')):
+            result = self.run_wrapper(*args, PI_CONTAINER_NETWORK='')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('--container-setup', result.stdout)
+            self.assertIn('New users must first run', result.stdout)
+            self.assertEqual(self.calls(), [])
+
+    def test_client_stderr_passes_through_the_diagnostics_filter(self):
+        restart = 'time="2026-11-09T21:38:10Z" level=error msg="Should restart: false"\n'
+        for status in ('0', '3'):
+            with self.subTest(status=status):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(FAKE_EXIT=status, FAKE_START_STDERR=restart + 'Error: real failure\n')
+                self.assertEqual(result.returncode, int(status), result.stderr)
+                self.assertIn('level=info msg="Should restart: false"', result.stderr)
+                self.assertNotIn('level=error msg="Should restart', result.stderr)
+                self.assertIn('Error: real failure', result.stderr)
+        # Without the shared filter the client stderr is passed unchanged.
+        install = self.base / 'no-filter'
+        install.mkdir()
+        self.wrapper = install / 'pi-container.sh'
+        shutil.copyfile(WRAPPER, self.wrapper)
+        for name in ('.version', 'Containerfile', '.containerignore', 'network/relay.py', 'network/mux.py'):
+            (install / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / name, install / name)
+        result = self.run_wrapper(FAKE_START_STDERR=restart)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('level=error msg="Should restart: false"', result.stderr)
+
     def test_missing_mode_and_removed_network_stop_before_engine(self):
         for mode in (None, ''):
-            env = self.env | {'PI_CONTAINER_PODMAN': '1', 'CONTAINER_HOST': 'invalid', 'PATH': ''}
+            env = self.env | {'PI_CONTAINER_PODMAN': '1', 'CONTAINER_HOST': 'invalid', 'PATH': '',
+                              'PI_CONTAINER_YOLO': 'invalid', 'PI_CONTAINER_TRUST_HOST_CA': 'invalid',
+                              'PI_CONTAINER_STATE_DIR': str(self.base / 'isolated'),
+                              'PI_CONTAINER_MEMORY_LIMIT': 'invalid', 'PI_CONTAINER_MAINTENANCE': '1'}
             env.pop('PI_CONTAINER_NETWORK')
             if mode is not None:
                 env['PI_CONTAINER_NETWORK'] = mode
@@ -1209,10 +1263,13 @@ reap_client
                     result = subprocess.run(['/bin/bash', str(WRAPPER), *flags, '-p', 'x'], cwd=self.project,
                                             env=env, text=True, capture_output=True, timeout=10)
                     self.assertEqual(result.returncode, 1, result.stderr)
-                    self.assertIn('PI_CONTAINER_NETWORK is required', result.stderr)
+                    self.assertIn(f'setup required: run bash {WRAPPER} --container-setup', result.stderr)
+                    self.assertIn('explicitly set PI_CONTAINER_NETWORK', result.stderr)
+                    self.assertIn('offline, provider, or unrestricted', result.stderr)
                     self.assertIn('unrestricted keeps the previous networking behavior', result.stderr)
                     self.assertFalse(self.log.exists())
                     self.assertFalse(self.state.exists())
+                    self.assertFalse((self.base / 'isolated').exists())
         for value, message in (('none', 'use PI_CONTAINER_NETWORK=offline instead of PI_NETWORK=none'),
                                ('host', 'use PI_CONTAINER_NETWORK=unrestricted'), ('slirp4netns', 'no longer supported')):
             for mode in ('offline', 'unrestricted'):
@@ -1277,11 +1334,55 @@ reap_client
         fixture = self.restricted_fixture()
         for mode in ('offline', 'provider'):
             with self.subTest(mode=mode, preflight='invalid policy'):
-                result = self.run_wrapper('--container-build', **(fixture | {
+                result = self.run_wrapper('--container-build', '--version', **(fixture | {
                     'PI_CONTAINER_NETWORK': mode, 'FAKE_PREFLIGHT_FAILURE': '1'}))
                 self.assertEqual(result.returncode, 1, result.stderr)
                 self.assertIn('network policy preflight failed', result.stderr)
                 self.assertFalse(any(c[0] in ('build', 'pull', 'create') for c in self.calls()))
+
+    def test_build_only_refresh(self):
+        fixture = self.restricted_fixture()
+        for mode in ('unrestricted', 'offline', 'provider'):
+            for bun in ('', '1'):
+                with self.subTest(mode=mode, bun=bun):
+                    env = {'PI_CONTAINER_NETWORK': mode, 'PI_CONTAINER_MAINTENANCE': '1',
+                           'PI_CONTAINER_IMAGE': 'localhost/pi-container:setup-x', 'PI_ENABLE_BUN': bun}
+                    if mode != 'unrestricted':
+                        env = fixture | env
+                    result = self.run_wrapper('--container-build', **env)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    calls = self.calls()
+                    build = next(c for c in calls if c[0] == 'build')
+                    self.assertIn('localhost/pi-container:setup-x', build)
+                    build_args = [build[i + 1] for i, a in enumerate(build) if a == '--build-arg']
+                    self.assertIn('PI_VERSION=' + (ROOT / '.version').read_text().strip(), build_args)
+                    self.assertIn('INSTALL_BUN=' + ('1' if bun else '0'), build_args)
+                    label = build[build.index('--label') + 1]
+                    self.assertRegex(label, '^build-inputs-hash=[0-9a-f]{64}$')
+                    self.assertFalse(any(c[0] in ('create', 'start', 'run', 'pull') for c in calls))
+                    self.assertFalse(any(c[0] == 'image' for c in calls))
+        # The label equals the one a launch would require for the same inputs.
+        self.run_wrapper('--container-build', '--version', PI_CONTAINER_MAINTENANCE='1')
+        launch_build = next(c for c in self.calls() if c[0] == 'build')
+        self.run_wrapper('--container-build', PI_CONTAINER_MAINTENANCE='1')
+        only_build = next(c for c in self.calls() if c[0] == 'build')
+        self.assertEqual(launch_build[launch_build.index('--label') + 1], only_build[only_build.index('--label') + 1])
+        for maintenance in ('', '0', 'true'):
+            with self.subTest(maintenance=maintenance):
+                result = self.run_wrapper('--container-build', PI_CONTAINER_MAINTENANCE=maintenance)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn('PI_CONTAINER_MAINTENANCE=1', result.stderr)
+                self.assertFalse(any(c[0] in ('build', 'pull', 'create') for c in self.calls()))
+        home = self.base / 'build-home'
+        home.mkdir()
+        result = subprocess.run(['bash', str(WRAPPER), '--container-build'], cwd=home,
+                                env=self.env | {'HOME': str(home), 'PI_CONTAINER_MAINTENANCE': '1'},
+                                text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(list(home.iterdir()), [])
+        result = self.run_wrapper('--container-build', PI_CONTAINER_MAINTENANCE='1', FAKE_BUILD_STATUS='42')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('Image build failed', result.stderr)
 
     def test_proxy_image_acquisition_requires_maintenance_and_digest(self):
         fixture = self.restricted_fixture() | {'PI_CONTAINER_NETWORK': 'provider', 'FAKE_EGRESS_STATUS': '1'}

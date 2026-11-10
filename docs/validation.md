@@ -378,3 +378,64 @@ the runs; the pre-existing containers were untouched.
 Operator-run authenticated checks (real keys for `anthropic-api`,
 `openai-api`, `gemini-api` and `openrouter-api`) are unavailable here and
 remain pending.
+
+## Guided setup (`add-container-setup`): 2026-11-10
+
+Target as in the network egress port (WSL2 kernel 6.6.87.2, Landlock ABI 3,
+Podman client 4.3.1 and server 4.9.3, Netavark). Shared files at
+`claude-container` `sandbox-ref-8` (commit `12cffab`). Images:
+`localhost/pi-container:latest` `099873e2a000…`, `localhost/pi-egress:local`
+`13adbfafd7bd…`, toolchain `0b69ba43c894…`.
+
+Two reference tags were created during this change:
+
+- `sandbox-ref-7` adds the optional profile field `install.runtime_build`. Pi
+  declares `wrapper`, so setup builds the runtime image through
+  `pi-container.sh --container-build` with the `PI_VERSION` and `INSTALL_BUN`
+  build arguments and the `build-inputs-hash` label. A plain `podman build`
+  would produce an image the staleness check refuses.
+- `sandbox-ref-8` fixes the shared `tests/test_setup.py`: one test patched
+  `build_image`, which `prepare_artifacts` reaches only on the default `recipe`
+  path. It now patches `build_runtime`. No setup code changed.
+
+Codex and OpenCode adopted both tags before this copy, with `--shared`,
+`--setup` and `--qualification` passing.
+
+### Guided setup in provider mode with the `gemini` method
+
+Recorded by `tests/test_setup_runtime.py`
+(`test_provider_gemini_transcript`) under a pseudo-terminal, with a disposable
+`HOME`, no API key set and no systemd changes:
+
+- The residual exfiltration notice listed `api.anthropic.com`,
+  `api.openai.com`, `generativelanguage.googleapis.com` and `openrouter.ai`,
+  and required an explicit acknowledgement.
+- The method `gemini` saved the protected profile `gemini-api`.
+- The maintenance review asked for authorization before any image or guard
+  preparation.
+- The guard reported `abi3-seccomp-mux-v1`, followed by
+  `Sandbox qualification: locally-qualified` and `Sandbox: ready`.
+- Setup ended with `Authentication pending. Supply GEMINI_API_KEY`.
+- The managed `--version` launch printed `0.80.8` with no
+  `PI_CONTAINER_YOLO` warning (the saved value was `0`).
+
+### Final verification
+
+| Check | Result |
+| --- | --- |
+| `bash -n`, ShellCheck | Passed, no findings |
+| `--wrapper` | Passed: 74 tests |
+| `--shared` (includes `test_reference_copy.py` and `test_alignment.py`) | Passed: 144 tests, 27 skipped (run by the modes) |
+| `--setup` (shared `test_setup.py`, unchanged) | Passed: 64 tests |
+| `--setup-runtime` (offline, provider, unrestricted, wrapper-built runtime image, Gemini transcript) | Passed: 4 tests |
+| `--qualification` | Passed: 18 tests |
+| `--network` | Passed: 21 tests |
+| default (unrestricted runtime suite) | Passed: 15 tests |
+| `test.sh` | Passed: 15 tests |
+| `test-wrapper.sh` | Not runnable on this host, as before; `--wrapper` runs the same `test_wrapper.py` |
+| `openspec validate add-container-setup --strict`, `git diff --check` | Valid, clean |
+
+No container, volume or network for `io.pi-container` remained after the runs.
+Pre-existing containers and images were untouched.
+
+Operator-run authenticated checks for the four profiles remain pending.

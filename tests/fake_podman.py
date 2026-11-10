@@ -114,6 +114,8 @@ elif args[0] in ('run', 'start'):
     pathlib.Path(os.environ['FAKE_LOG'] + '.env').write_text(json.dumps(dict(os.environ)))
     if os.environ.get('FAKE_ECHO_INPUT'):
         sys.stdout.write(sys.stdin.read())
+    if os.environ.get('FAKE_START_STDERR'):
+        sys.stderr.write(os.environ['FAKE_START_STDERR']); sys.stderr.flush()
     if os.environ.get('FAKE_SESSION'):
         session = pathlib.Path(os.environ['FAKE_SESSION'])
         session.with_suffix('.ready').touch()

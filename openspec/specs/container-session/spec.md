@@ -103,15 +103,21 @@ Interrupted creation SHALL allow at most 5s for completion, then bounded client 
 - **THEN** the wrapper exits with status 1 and names the variable before any engine query or state creation
 
 ### Requirement: Explicit network mode admission
-Ordinary Pi and shell launches SHALL require a nonempty `PI_CONTAINER_NETWORK`. An unset or empty mode SHALL stop before engine queries, state creation or image operations, with a message naming the variable and its values. Wrapper help and `--container-qualify` SHALL keep their own checks. The check SHALL apply equally to Pi, shell, build, worktree and YOLO invocations.
+Ordinary Pi and shell launches SHALL require a nonempty effective `PI_CONTAINER_NETWORK`, explicit or from the managed launcher. An unset or empty mode SHALL exit with status 1 and a `setup required:` message naming `--container-setup` and the explicit-mode alternative, before runtime prerequisite checks, engine queries, state creation or image operations. It SHALL NOT prompt, run setup or start an application; help, setup and `--container-qualify` keep their own checks.
 
 #### Scenario: Existing invocation without a mode
-- **WHEN** a user runs `pi-container.sh` with no `PI_CONTAINER_NETWORK`
-- **THEN** it exits nonzero before any engine call, naming `offline`, `provider` and `unrestricted` and stating that `unrestricted` keeps the previous behavior
+- **WHEN** a user runs `pi-container.sh` with no `PI_CONTAINER_NETWORK`, interactively or with redirected input
+- **THEN** it exits with status 1 and the setup-required message before any engine call, without application output, state or runtime resources
+- **AND** the message names `bash <wrapper> --container-setup` and states that an operator can set `PI_CONTAINER_NETWORK` explicitly
 
 #### Scenario: Help without a mode
 - **WHEN** `--container-help` runs with no mode
 - **THEN** help succeeds without engine calls or state side effects
+
+#### Scenario: Options and other settings do not imply setup
+- **WHEN** an unconfigured launch uses shell, build, worktree or YOLO, `PI_CONTAINER_MAINTENANCE=1`, or state, image, endpoint, policy or delegation settings
+- **THEN** it receives the same setup-required refusal before validating those settings
+- **AND** files in the current directory never admit the launch
 
 ### Requirement: Restricted launches require current local qualification
 Before ordinary offline or provider execution, the wrapper SHALL validate a protected successful qualification report matching the current host, engine and enforcement inputs. Missing or mismatched evidence SHALL stop startup with requalification guidance. A report SHALL NOT replace per-launch engine, protected-path, guard, policy or readiness checks. Unrestricted launches and help SHALL NOT require it.
@@ -148,3 +154,16 @@ The qualification identity of a restricted installation SHALL include the agent 
 #### Scenario: Matching settings
 - **WHEN** the operator qualifies and launches with the same budgets and lifetime
 - **THEN** the qualification check accepts the report
+
+### Requirement: First-user setup and migration guidance
+README, wrapper help and setup guidance SHALL name `--container-setup` as the first step for new users, explain the managed launcher and the explicit operator alternative, state that offline sessions cannot reach any model provider, and give the migration path for direct invocations from versions without network modes.
+
+#### Scenario: User follows first-run guidance
+- **WHEN** a new user reads the help or the README
+- **THEN** they find how to run setup and then use its managed launcher
+- **AND** they learn that offline cannot reach any model provider and that no unrestricted fallback is automatic
+
+#### Scenario: Operator migrates an existing direct invocation
+- **WHEN** an operator reads the migration guidance
+- **THEN** it explains that earlier versions needed no network mode, that `PI_CONTAINER_NETWORK=unrestricted` keeps the previous networking, and that builds need `PI_CONTAINER_MAINTENANCE=1`
+- **AND** it does not imply that selecting a mode proves restricted readiness
