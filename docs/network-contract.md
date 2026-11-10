@@ -133,7 +133,7 @@ The same Pi row appears in `claude-container`, `codex-container` and
 | --- | --- | --- | --- | --- |
 | Claude | Reference (`sandbox-ref-9`) | Mandatory bootstrap, multiplexed proxy and guided setup integrated | See the Claude validation record | Account login, reuse and refresh passed; real-key API unavailable |
 | Codex | Ported from `sandbox-ref-9`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-09) | Pending operator device-code login, refresh and API-key checks; synthetic Responses API streaming and tool call passed |
-| Antigravity | Pending (profile-based port planned) | Not assessed | Not assessed | Not assessed |
+| Antigravity | Ported from `sandbox-ref-9`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated; keyring removed | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Pending operator Google account sign-in, refresh and Gemini API-key checks; synthetic Gemini streaming and tool call passed |
 | OpenCode | Ported from `sandbox-ref-9`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Pending operator API-key checks for the four profiles; synthetic Chat Completions streaming and tool call passed |
 | Pi | Ported from `sandbox-ref-9`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Pending operator API-key checks for the four profiles; synthetic Chat Completions streaming and tool call passed |
 
