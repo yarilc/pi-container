@@ -1170,7 +1170,7 @@ printf 'APP_TTY=%s ARGS=%s\\n' "$terminal" "$*"
         for failure in ((None, common.SetupError('login failed'), KeyboardInterrupt()) if LOGIN_METHOD else ()):
             with patch.dict(os.environ, self.env, clear=True), patch.object(setup, 'yes', return_value=True), patch.object(setup, 'run', side_effect=failure) as run, patch('builtins.print'):
                 status = setup.authenticate(self.value | {'auth': LOGIN_METHOD}, release)
-                self.assertEqual(run.call_args.args[0][-len(LOGIN_ARGS):], LOGIN_ARGS)
+                self.assertEqual(run.call_args.args[0][2:], LOGIN_ARGS)
                 self.assertNotIn('capture', run.call_args.kwargs)
                 self.assertNotIn(CREDENTIAL, run.call_args.args[1])
                 self.assertIn('verified' if failure is None else 'pending', status)
@@ -1180,6 +1180,46 @@ printf 'APP_TTY=%s ARGS=%s\\n' "$terminal" "$*"
                 value = self.value | {'network': mode, 'auth': auth}
                 self.assertEqual(setup.authenticate(value, release), expected)
                 run.assert_not_called()
+
+    def test_empty_login_arguments_start_the_interactive_agent(self):
+        # A profile whose agent has no login command declares empty login_args:
+        # setup offers a sign-in session through the installed wrapper itself.
+        _, release = self.release()
+        method = next(iter(PROFILE.auth))
+        item = {'description': 'signs in interactively', 'policy_profile': 'interactive-test',
+                'hosts': ['login.example.com'], 'login_args': []}
+        value = self.value | {'network': 'provider', 'auth': method}
+        with patch.dict(setup.PROFILE.auth, {method: item}):
+            for failure in (None, common.SetupError('session failed'), KeyboardInterrupt()):
+                with self.subTest(failure=failure), patch.dict(os.environ, self.env, clear=True), \
+                        patch.object(setup, 'yes', return_value=True) as ask, \
+                        patch.object(setup, 'run', side_effect=failure) as run, patch('builtins.print') as output:
+                    status = setup.authenticate(value, release)
+                    self.assertIn('interactively', ask.call_args.args[0])
+                    self.assertEqual(run.call_args.args[0], ['bash', release / PROFILE.wrapper])
+                    self.assertTrue(run.call_args.kwargs['terminal'])
+                    self.assertIsNone(run.call_args.kwargs['timeout'])
+                    self.assertNotIn('capture', run.call_args.kwargs)
+                    printed = ' '.join(str(call) for call in output.call_args_list)
+                    if failure is None:
+                        self.assertIn('interactive sign-in session exited successfully', status)
+                        self.assertNotIn('Next authentication action', printed)
+                    else:
+                        self.assertEqual(status, 'pending')
+                        self.assertIn('sign in inside the interactive session', printed)
+            with patch.object(setup, 'yes', return_value=False), patch.object(setup, 'run') as run, \
+                    patch('builtins.print') as output:
+                self.assertEqual(setup.authenticate(value, release), 'pending')
+                run.assert_not_called()
+                printed = ' '.join(str(call) for call in output.call_args_list)
+                self.assertIn('Next authentication action: ' + shlex.quote(value['command'])
+                              + ' (sign in inside the interactive session', printed)
+            with patch.object(setup, 'yes', return_value=True), patch.object(setup, 'run') as run, \
+                    patch('builtins.print'):
+                run.call_args = None
+                worktree = value | {'worktree': True}
+                setup.authenticate(worktree, release)
+                self.assertEqual(run.call_args.args[0], ['bash', release / PROFILE.wrapper, '--container-git-worktree'])
 
     def test_existing_shared_openspec_permissions_are_preserved(self):
         config = self.home / CONFIG_HOME
