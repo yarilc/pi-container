@@ -649,8 +649,13 @@ def authenticate(value, release):
     item = PROFILE.auth[method]
     if 'login_args' in item:
         login = item['login_args']
+        # Empty login arguments: the agent has no login command, so sign-in
+        # happens in its own interactive session.
+        interactive = not login
         print('Existing shared account credentials may already be usable. Login is optional and runs inside the selected sandbox.')
-        if yes('Run ' + NAME + ' ' + method + ' login now?'):
+        question = ('Run ' + NAME + ' ' + method + ' sign-in now? It opens ' + NAME + ' interactively; exit it when signed in.'
+                    if interactive else 'Run ' + NAME + ' ' + method + ' login now?')
+        if yes(question):
             try:
                 # Inherit the terminal directly. Do not capture/log login output.
                 args = ['bash', release / PROFILE.wrapper]
@@ -659,12 +664,17 @@ def authenticate(value, release):
                 with scratch_workspace() as workspace:
                     run([*args, *login], runtime_environment(value, release, overrides=False),
                         timeout=None, terminal=True, cwd=workspace)
-                status = 'verified (' + NAME + ' ' + method + ' login succeeded; no model request tested)'
+                status = ('verified (' + NAME + ' ' + method + ' interactive sign-in session exited successfully; no model request tested)'
+                          if interactive else 'verified (' + NAME + ' ' + method + ' login succeeded; no model request tested)')
             except (SetupError, KeyboardInterrupt):
                 print('Login did not complete; the installed sandbox is still ready.')
         if status == 'pending':
-            print('Next authentication action: ' + command + ' ' + ' '.join(map(shlex.quote, login))
-                  + ' (or reuse your selected existing account state).')
+            if interactive:
+                print('Next authentication action: ' + command
+                      + ' (sign in inside the interactive session, or reuse your selected existing account state).')
+            else:
+                print('Next authentication action: ' + command + ' ' + ' '.join(map(shlex.quote, login))
+                      + ' (or reuse your selected existing account state).')
     if 'credential_env' in item:
         print('Authentication pending. Supply ' + item['credential_env']
               + ' using the existing runtime environment mechanism; no key is stored by setup.')

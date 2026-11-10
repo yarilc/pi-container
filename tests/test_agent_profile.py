@@ -106,6 +106,17 @@ class ProfileSchemaTests(unittest.TestCase):
             value['install']['runtime_build'] = mode
             self.assertEqual(agent_profile.validate(value).runtime_build, mode)
 
+    def test_login_arguments_may_be_empty(self):
+        # An empty list selects sign-in inside the interactive agent.
+        value = copy.deepcopy(self.value)
+        method = next(iter(value['auth']))
+        value['auth'][method]['login_args'] = []
+        self.assertEqual(agent_profile.validate(value).auth[method]['login_args'], [])
+        for arguments in ([str(index) for index in range(9)], ['login', 'login'], 'login'):
+            value['auth'][method]['login_args'] = arguments
+            with self.subTest(arguments=arguments), self.assertRaises(agent_profile.ProfileError):
+                agent_profile.validate(value)
+
     def test_malformed_duplicate_oversized_and_missing_files(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'profile.json'

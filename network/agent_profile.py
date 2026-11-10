@@ -182,7 +182,8 @@ def validate(value):
         if hosts != item['hosts'] or len(set(hosts)) != len(hosts):
             fail('auth.' + method + '.hosts must be unique normalized hostnames')
         if 'login_args' in item:
-            strings(item['login_args'], ARGUMENT, 'auth.' + method + '.login_args', maximum=8)
+            # An empty list means sign-in happens inside the interactive agent.
+            strings(item['login_args'], ARGUMENT, 'auth.' + method + '.login_args', minimum=0, maximum=8)
         if 'credential_env' in item:
             string(item['credential_env'], ENV, 'auth.' + method + '.credential_env')
     derived = {value['env_prefix'] + '_' + suffix for suffix in SUFFIXES}
