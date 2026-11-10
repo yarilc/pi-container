@@ -17,10 +17,28 @@ current project directory, with predictable host file ownership.
 
 ## Quick start
 
+New users start with guided setup. It prepares a protected installation, the
+images and guard under reviewed maintenance consent, qualification, and a
+managed launcher that remembers the network mode:
+
 ```bash
 git clone https://github.com/yarilc/pi-container.git
 cd pi-container
+bash ./pi-container.sh --container-setup   # interactive; must be used alone
 
+cd /path/to/your/project
+~/.local/bin/pi-container                   # the managed launcher printed by setup
+```
+
+See [docs/setup.md](docs/setup.md). An ordinary launch with an unset or empty
+`PI_CONTAINER_NETWORK` stops with `setup required:` guidance; setup is never
+started automatically. Offline sessions cannot reach any model provider.
+
+### Direct operator launches
+
+Operators can keep invoking the wrapper directly with an explicit mode:
+
+```bash
 # Every launch selects a network mode; unrestricted is the previous behavior
 export PI_CONTAINER_NETWORK=unrestricted
 
@@ -97,7 +115,9 @@ Pi permission controls.
 
 ```bash
 pic --container-help                 # also --wrapper-help; no prerequisites
+pic --container-setup                # guided setup and managed launcher; alone
 pic --container-build --version      # force refresh, then start Pi
+pic --container-build                # refresh the image only, then exit
 pic --container-shell                # Bash with the same sandbox and cleanup
 pic --container-git-worktree         # expose the entire immediate parent
 ```
@@ -314,7 +334,7 @@ networking. `PI_NETWORK` is rejected with migration guidance.
 | `unrestricted` | Ordinary runtime networking, the previous behavior | Exact `PI_CONTAINER_PODMAN=1` |
 
 The restricted implementation is shared with `claude-container` and copied
-unchanged from its tag `sandbox-ref-6`; see
+unchanged from its tag `sandbox-ref-8`; see
 [docs/network-contract.md](docs/network-contract.md) and
 [network/README.md](network/README.md).
 
@@ -574,11 +594,14 @@ warning; it relaxes no other check.
 ### Permissions
 
 Pi runs its tools (read, bash, edit, write and extension tools) without
-approval prompts. There is no approval layer to bypass, so this wrapper has no
-YOLO switch: the container is the only boundary around Pi's tools. Pi's
-`--approve`/`--no-approve` options decide whether project-local files are
-trusted for a run; they do not approve tool use. Setting `PI_CONTAINER_YOLO`
-only prints a warning that it has no effect.
+approval prompts, so the container is the only boundary around Pi's tools.
+`PI_CONTAINER_YOLO` is accepted like the other wrappers' permission-bypass
+switch (`0`, `1`, `true`, `false`, `yes` or `no`; other values fail) so that
+setup and the managed launcher can save it. Pi 0.80.8 has no approval layer to
+bypass: an enabled value only prints a warning that it has no effect yet, and a
+disabled value is silent. Pi's `--approve`/`--no-approve` options decide
+whether project-local files are trusted for a run; they do not approve tool
+use.
 
 ## Included Tools
 
@@ -627,13 +650,16 @@ bun test         # Run tests via Bun's test runner
 ### Image build policy
 
 The script computes a SHA-256 hash of `Containerfile`, `.containerignore`,
-`.version` and the Bun selection, and stores it as the `build-inputs-hash`
-label on the built image. The build context contains only those three files.
+`.version`, `network/relay.py`, `network/mux.py` and the Bun selection, and
+stores it as the `build-inputs-hash` label on the built image. The build
+context contains only those five files.
 
-- A missing image is built automatically.
+- A missing image is built only under exact `PI_CONTAINER_MAINTENANCE=1`.
 - A stale image (the label differs from the current inputs) stops the launch
   with a message naming `--container-build`; it is never rebuilt silently.
-- `--container-build` always rebuilds from the pinned inputs.
+- `--container-build` always rebuilds from the pinned inputs. Used alone, it
+  only rebuilds and exits; guided setup uses this form to build its candidate
+  runtime image with the same build arguments and label.
 
 `PI_PULL_ALWAYS` is ignored with a warning: the base image is pinned by digest.
 Weekly CI scans monitor the built image for CVEs.
@@ -718,6 +744,8 @@ bash tests/run-runtime.sh --wrapper    # wrapper tests in the runner (executable
 bash tests/run-runtime.sh --shared     # shared sandbox suites from claude-container
 bash tests/run-runtime.sh --network    # restricted modes with real rootless Podman
 bash tests/run-runtime.sh --guard      # guard fixtures (needs the toolchain image)
+bash tests/run-runtime.sh --setup      # shared setup tests from claude-container
+bash tests/run-runtime.sh --setup-runtime  # real setup acceptance, no credentials
 ./test.sh                              # builds a disposable image, then runs the real checks
 ```
 
@@ -755,6 +783,16 @@ Network egress port (`add-network-egress`):
   `PI_CONTAINER_MAINTENANCE=1`.
 - The default image name is `localhost/pi-container`, the same local image.
 - An empty `PI_CONTAINER_STATE_DIR` now selects shared state.
+
+Guided setup (`add-container-setup`):
+
+- New users run `bash ./pi-container.sh --container-setup` once and then use
+  the managed launcher. A direct launch without `PI_CONTAINER_NETWORK` now
+  stops with `setup required:` guidance instead of only naming the variable.
+- `--container-build` used alone now rebuilds the image and exits; add Pi
+  arguments, such as `--version`, to rebuild and then start a session.
+- `PI_CONTAINER_YOLO` accepts only `0`, `1`, `true`, `false`, `yes` or `no`;
+  other values fail. Disabled values no longer print a warning.
 
 Behavior changes:
 

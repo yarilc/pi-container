@@ -1,12 +1,12 @@
 # Network policy contract
 
-Status: ported by the `add-network-egress` change.
+Status: ported by the `add-network-egress` and `add-container-setup` changes.
 
 - Restricted modes are implemented and verified with synthetic and real
   rootless runtime suites.
+- Guided setup and the managed launcher are described in [setup](setup.md).
 - The authenticated provider checks are operator-run and recorded separately in
   [the validation record](validation.md).
-- Guided setup and the managed launcher follow in `add-container-setup`.
 
 The durable contract is [network-egress](../openspec/specs/network-egress/spec.md),
 with [host-ca-trust](../openspec/specs/host-ca-trust/spec.md) and the session,
@@ -15,13 +15,21 @@ isolation, delegation, launcher and image specifications in `openspec/specs/`.
 ## Reference and intentional differences
 
 The shared components are copied unchanged from `claude-container` at tag
-`sandbox-ref-6` (commit `3150bfe7b08396e3c0dda65d75fe2535b84fbbd5`):
+`sandbox-ref-8` (commit `12cffab0d248ec48a95f3b1840c573fcebdbb427`):
 
 - `network/` (except the build output `network/bin/`);
-- `setup/diagnostics.py`;
-- the shared tests listed in that tag's `tests/test_alignment.py`, except
-  `test_alignment.py` and `test_setup.py`, which arrive with
-  `add-container-setup`.
+- `setup/`;
+- the shared tests listed in that tag's `tests/test_alignment.py`.
+
+The Pi port added three reference fixes:
+
+- the optional profile field `install.files` (`sandbox-ref-6`), so setup and
+  qualification install `.version`;
+- the optional profile field `install.runtime_build` (`sandbox-ref-7`), so setup
+  builds the runtime image through the wrapper's build-only `--container-build`
+  with Pi's build arguments and staleness label;
+- the shared setup test patching the runtime build dispatch point
+  (`sandbox-ref-8`).
 
 `tests/test_reference_copy.py` holds the SHA-256 of every copied file. It fails
 on a changed, missing or extra file, or on a profile identifier
@@ -35,9 +43,9 @@ Intentional differences are limited to per-agent files:
 
 | File | Pi value or behavior |
 | --- | --- |
-| `agent/profile.json` | Identity: `pi-container`, prefix `PI_CONTAINER`, labels `io.pi-container.*`. Images: `localhost/pi-container`, `localhost/pi-egress`, `localhost/pi-guard-toolchain`. Runtime: home `/pi-home`, command `pi`. State: configuration `.pi` with override `PI_CONTAINER_CONFIG_DIR`, shared `.agents`. Approval variable `PI_CONTAINER_YOLO` (Pi has no approval layer). Four API-key methods. Installation file `.version` (`install.files`) |
+| `agent/profile.json` | Identity: `pi-container`, prefix `PI_CONTAINER`, labels `io.pi-container.*`. Images: `localhost/pi-container`, `localhost/pi-egress`, `localhost/pi-guard-toolchain`. Runtime: home `/pi-home`, command `pi`. State: configuration `.pi` with override `PI_CONTAINER_CONFIG_DIR`, shared `.agents`. Approval variable `PI_CONTAINER_YOLO` (validated; warns when enabled, because Pi has no approval layer). Four API-key methods. Installation file `.version` (`install.files`); runtime built through the wrapper (`install.runtime_build`) |
 | `agent/policies/default.json` | `anthropic-api`, `openai-api`, `gemini-api` and `openrouter-api`, revision `pi-2026-11-10-v1` |
-| `pi-container.sh` | Pi arguments, shared or isolated state, noexec `/pi-home` with the npm cache tmpfs, read-only state mode, removed `PI_NETWORK`, protected `PI_OFFLINE`, `PI_SKIP_VERSION_CHECK` and `PI_TELEMETRY` values, profile-selected key, no host proxy or CA variables in restricted modes, missing-mode message without setup |
+| `pi-container.sh` | Pi arguments, shared or isolated state, noexec `/pi-home` with the npm cache tmpfs, read-only state mode, removed `PI_NETWORK`, protected `PI_OFFLINE`, `PI_SKIP_VERSION_CHECK` and `PI_TELEMETRY` values, profile-selected key, no host proxy or CA variables in restricted modes, build-only `--container-build`, `--container-setup` and the `setup required:` message, diagnostics filter |
 | `Containerfile`, `.containerignore` | Pi image with optional Bun; copies `network/relay.py` and `network/mux.py`, which the staleness hash also covers |
 | `tests/test_wrapper.py`, `fake_podman.py`, `test_runtime.py`, `test_network_runtime.py`, `network_tls_fixture.py`, `run-runtime.sh`, `Containerfile.runner`, `test_image_pins.py`, `test_reference_copy.py` | Pi names, synthetic OpenAI-compatible Chat Completions fixture, provider host inventories |
 
@@ -116,12 +124,26 @@ during maintenance.
 - Qualification reports are local (`locally-qualified`); the release
   acceptance inventory is empty.
 
+## Five-wrapper parity
+
+The same Pi row appears in `claude-container`, `codex-container` and
+`opencode-container`.
+
+| Wrapper | Contract adoption | Implementation | Real enforcement | Auth compatibility |
+| --- | --- | --- | --- | --- |
+| Claude | Reference (`sandbox-ref-8`) | Mandatory bootstrap, multiplexed proxy and guided setup integrated | See the Claude validation record | Account login, reuse and refresh passed; real-key API unavailable |
+| Codex | Ported from `sandbox-ref-8`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-09) | Pending operator device-code login, refresh and API-key checks; synthetic Responses API streaming and tool call passed |
+| Antigravity | Pending (profile-based port planned) | Not assessed | Not assessed | Not assessed |
+| OpenCode | Ported from `sandbox-ref-8`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Pending operator API-key checks for the four profiles; synthetic Chat Completions streaming and tool call passed |
+| Pi | Ported from `sandbox-ref-8`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Pending operator API-key checks for the four profiles; synthetic Chat Completions streaming and tool call passed |
+
 ## Port status
 
 | Item | Status |
 | --- | --- |
 | Shared copy and identifier scan | Done (`tests/test_reference_copy.py`) |
 | Shared suites, guard, mux, policy, feasibility, qualification | Passed in the runner; see [validation](validation.md) |
-| Wrapper integration and restricted runtime acceptance | See [validation](validation.md) |
+| Wrapper integration and restricted runtime acceptance | Passed; see [validation](validation.md) |
 | Authenticated provider checks | Operator-run, pending |
-| `test_alignment.py`, `test_setup.py`, guided setup, parity row | `add-container-setup` |
+| Shared setup suite and alignment | Passed (`tests/test_setup.py`, `tests/test_alignment.py`) |
+| Guided setup acceptance | Passed; see [validation](validation.md) |

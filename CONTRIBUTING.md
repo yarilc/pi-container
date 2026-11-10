@@ -41,8 +41,8 @@ bash tests/run-runtime.sh --network    # restricted modes with real rootless Pod
 bash tests/run-runtime.sh --guard      # guard fixtures (toolchain image required)
 ```
 
-`network/`, `setup/diagnostics.py` and the shared tests are copied unchanged
-from `claude-container` (tag `sandbox-ref-6`); never edit them here. Fix a
+`network/`, `setup/` and the shared tests are copied unchanged
+from `claude-container` (tag `sandbox-ref-8`); never edit them here. Fix a
 defect in `claude-container` first, then copy the files again and update the
 manifest in `tests/test_reference_copy.py`.
 

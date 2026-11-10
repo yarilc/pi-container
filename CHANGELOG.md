@@ -10,8 +10,63 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
 
 ## [Unreleased]
 
+### Added
+
+- Guided setup: `--container-setup` (interactive, used alone) prepares a
+  protected installation, images and guard under reviewed maintenance consent,
+  qualification and a managed launcher at `~/.local/bin/pi-container`. Setup
+  builds the runtime image through the wrapper (`install.runtime_build`) and
+  installs `.version` (`install.files`); the shared code is at
+  `claude-container` tag `sandbox-ref-8`.
+- Podman's successful `Should restart: false` stderr line is reclassified as
+  informational through the shared diagnostics filter.
+- Network modes: `PI_CONTAINER_NETWORK=offline|provider|unrestricted`, enforced
+  in offline and provider modes by the native guard and the external egress
+  proxy shared with `claude-container` (tag `sandbox-ref-8`), with
+  `--container-qualify`, opt-in host CA trust (`PI_CONTAINER_TRUST_HOST_CA`,
+  `PI_CONTAINER_CA_BUNDLE`) and `PI_CONTAINER_CONFIG_DIR`.
+- Provider profiles `anthropic-api`, `openai-api`, `gemini-api` and
+  `openrouter-api`; each forwards only its key in provider mode.
+
+- `PI_CONTAINER_STATE_DIR` keeps `.pi` and `.agents` in a private directory
+  separate from the host's everyday state.
+- `tests/test_image_pins.py` checks that every image input is pinned.
+
+- Wrapper build, shell, explicit parent/worktree, and prerequisite-free help modes.
+- `PI_PODMAN_SOCKET` for verified remapped same-host service access.
+- Synthetic protocol/lifecycle regressions and credential-free real rootless
+  acceptance with a disposable tooling runner and native Linux state.
+- Containers are now automatically named `<basename>-<N>` (e.g. `pi-container-0`,
+  `pi-container-1`). Reservation uses atomic create above the highest bounded
+  decimal suffix across running and stopped containers, with at most 20
+  collision attempts and no replacement.
+- `PI_ENABLE_BUN=1`: bake the [Bun](https://bun.sh/) runtime into the image
+  (opt-in, off by default). Bun is installed as a single dependency-free
+  binary in `/usr/local/bin/bun` (on `PATH`, no writes to `$HOME` at runtime
+  — compatible with the read-only rootfs). Toggling `PI_ENABLE_BUN`
+  rebuilds the image via the `INSTALL_BUN` build arg (folded into the
+  stale-image hash, same pattern as `PI_ENABLE_PODMAN`).
+- `PI_BUN_VERSION`: override the Bun release tag to install (default:
+  `bun-v1.3.14`); changing it triggers a rebuild.
+- `PI_ENV_VARS`: space-separated list of extra environment variable **names**
+  to forward to the container, for skill/extension/tool secrets the wrapper
+  does not hardcode (e.g. `GITHUB_TOKEN`, `DATABASE_URL`). Variables are
+  forwarded by name only (`-e NAME`, never `NAME=value`), so secret values
+  never appear on the process command line; unset/empty variables are skipped
+  silently. Names already handled explicitly by the wrapper are skipped to
+  avoid duplicate forwarding.
+
 ### Changed
 
+- **Breaking:** `--container-build` used alone now rebuilds the image and
+  exits; add Pi arguments (for example `--version`) to rebuild and start.
+- **Breaking:** `PI_CONTAINER_YOLO` accepts only `0`, `1`, `true`, `false`,
+  `yes` or `no`; an enabled value warns that it has no effect yet, and a
+  disabled value is silent.
+- A launch without `PI_CONTAINER_NETWORK` now stops with `setup required:`
+  guidance naming `--container-setup`.
+- The engine-query failure message uses the shared wording
+  (`cannot query Podman or invalid engine response`).
 - **Breaking:** every launch needs `PI_CONTAINER_NETWORK`; set `unrestricted`
   for the previous networking.
 - **Breaking:** `PI_NETWORK` is removed (`none` becomes
@@ -69,44 +124,6 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
   use the `PI_CONTAINER_*` names; each prints a warning.
 - `PI_MOUNT_GITCONFIG`: use `PI_CONTAINER_GITCONFIG=1`. `1` still mounts and
   `0` does not, with a warning; conflicting values are errors.
-
-### Added
-
-- Network modes: `PI_CONTAINER_NETWORK=offline|provider|unrestricted`, enforced
-  in offline and provider modes by the native guard and the external egress
-  proxy shared with `claude-container` (tag `sandbox-ref-6`), with
-  `--container-qualify`, opt-in host CA trust (`PI_CONTAINER_TRUST_HOST_CA`,
-  `PI_CONTAINER_CA_BUNDLE`) and `PI_CONTAINER_CONFIG_DIR`.
-- Provider profiles `anthropic-api`, `openai-api`, `gemini-api` and
-  `openrouter-api`; each forwards only its key in provider mode.
-
-- `PI_CONTAINER_STATE_DIR` keeps `.pi` and `.agents` in a private directory
-  separate from the host's everyday state.
-- `tests/test_image_pins.py` checks that every image input is pinned.
-
-- Wrapper build, shell, explicit parent/worktree, and prerequisite-free help modes.
-- `PI_PODMAN_SOCKET` for verified remapped same-host service access.
-- Synthetic protocol/lifecycle regressions and credential-free real rootless
-  acceptance with a disposable tooling runner and native Linux state.
-- Containers are now automatically named `<basename>-<N>` (e.g. `pi-container-0`,
-  `pi-container-1`). Reservation uses atomic create above the highest bounded
-  decimal suffix across running and stopped containers, with at most 20
-  collision attempts and no replacement.
-- `PI_ENABLE_BUN=1`: bake the [Bun](https://bun.sh/) runtime into the image
-  (opt-in, off by default). Bun is installed as a single dependency-free
-  binary in `/usr/local/bin/bun` (on `PATH`, no writes to `$HOME` at runtime
-  — compatible with the read-only rootfs). Toggling `PI_ENABLE_BUN`
-  rebuilds the image via the `INSTALL_BUN` build arg (folded into the
-  stale-image hash, same pattern as `PI_ENABLE_PODMAN`).
-- `PI_BUN_VERSION`: override the Bun release tag to install (default:
-  `bun-v1.3.14`); changing it triggers a rebuild.
-- `PI_ENV_VARS`: space-separated list of extra environment variable **names**
-  to forward to the container, for skill/extension/tool secrets the wrapper
-  does not hardcode (e.g. `GITHUB_TOKEN`, `DATABASE_URL`). Variables are
-  forwarded by name only (`-e NAME`, never `NAME=value`), so secret values
-  never appear on the process command line; unset/empty variables are skipped
-  silently. Names already handled explicitly by the wrapper are skipped to
-  avoid duplicate forwarding.
 
 ## [0.1.0] - 2026-06-30
 

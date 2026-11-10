@@ -9,10 +9,13 @@ usage() {
 Usage: pi-container.sh [container options] [Pi arguments...]
 
 Container options:
+  --container-setup      interactively prepare a complete user installation and
+                         its managed launcher; must be used alone
   --container-qualify    verify a prepared restricted installation with fixed
                          local controls; must be used alone
-  --container-build      force image refresh, then start the selected session
-                         (requires PI_CONTAINER_MAINTENANCE=1)
+  --container-build      force image refresh, then start the selected session;
+                         used alone, refresh the image and exit without a
+                         session (requires PI_CONTAINER_MAINTENANCE=1)
   --container-shell      start Bash instead of Pi (discard Pi arguments)
   --container-git-worktree expose the physical workspace's immediate parent
                          read/write; retain the original working directory
@@ -70,6 +73,9 @@ Environment:
   PI_CONTAINER_CA_BUNDLE CA bundle file to trust (default: first of
                          /etc/ssl/certs/ca-certificates.crt and
                          /etc/pki/tls/certs/ca-bundle.crt)
+  PI_CONTAINER_YOLO      permission bypass: 0, 1, true, false, yes, or no
+                         (default: disabled); Pi 0.80.8 has no tool-approval
+                         layer, so an enabled value only prints a warning
   PI_ENABLE_BUN          nonempty builds the image with the pinned Bun runtime;
                          changing it requires --container-build
   PI_NPM_CACHE_SIZE      default: 256M
@@ -94,8 +100,9 @@ the npm cache and an opted-in ~/.gitconfig mounted below it; other files
 written in /pi-home do not survive the session.
 
 Pi has no tool-approval layer: its tools run without prompts, so the container
-is the only boundary and there is no YOLO switch. Pi's --approve trusts
-project-local files; it does not approve tools.
+is the only boundary. PI_CONTAINER_YOLO is accepted for setup and future Pi
+releases but has no effect yet. Pi's --approve trusts project-local files; it
+does not approve tools.
 Launch requires a verified Linux rootless engine, without a rootful override.
 Use local Podman or an explicit same-host absolute Unix CONTAINER_HOST.
 Named connections, TCP/SSH, implicit remote contexts, and slash-only paths fail.
@@ -125,7 +132,14 @@ Delegation grants the service user's host authority, including further mounts.
 Worktree mode exposes siblings in the whole immediate parent read/write.
 Bun and native Pi permissions are independent of delegation.
 
-Migration: every launch now needs an explicit PI_CONTAINER_NETWORK, and
+New users must first run: bash ./pi-container.sh --container-setup
+Then use the managed launch command printed by setup (by default
+~/.local/bin/pi-container) from your workspace. An ordinary launch with an
+unset or empty PI_CONTAINER_NETWORK stops with setup guidance before runtime
+checks or state creation. Direct operator launches remain available with an
+explicit mode.
+
+Migration: every direct launch now needs an explicit PI_CONTAINER_NETWORK, and
 PI_NETWORK is no longer supported (none becomes PI_CONTAINER_NETWORK=offline;
 other values become unrestricted). Set PI_CONTAINER_NETWORK=unrestricted to keep
 the previous networking, and add PI_CONTAINER_MAINTENANCE=1 to commands that
@@ -174,6 +188,16 @@ for arg in "$@"; do
     fi
 done
 
+for arg in "$@"; do
+    if [[ "$arg" == --container-setup ]]; then
+        [[ $# == 1 ]] || die '--container-setup must be used alone'
+        [[ -t 0 && -t 1 ]] || die '--container-setup requires an interactive terminal'
+        command -v python3 >/dev/null || die 'host Python 3 is required for interactive setup'
+        setup_script=$(readlink -f -- "${BASH_SOURCE[0]}")
+        exec python3 -I "$(dirname -- "$setup_script")/setup/setup.py"
+    fi
+done
+
 build_image=0
 qualification_probe=0
 shell_mode=0
@@ -190,11 +214,17 @@ for arg in "$@"; do
         *) args+=("$arg") ;;
     esac
 done
+# --container-build alone refreshes the image and exits; guided setup uses it.
+build_only=0
+[[ $# != 1 || "$build_image" != 1 ]] || build_only=1
 
 # An explicit mode precedes every other check, engine query and state operation.
-# add-container-setup replaces this message with guided setup.
-[[ -n "${PI_CONTAINER_NETWORK:-}" ]] \
-    || die 'PI_CONTAINER_NETWORK is required: set offline, provider, or unrestricted (unrestricted keeps the previous networking behavior)'
+if [[ -z "${PI_CONTAINER_NETWORK:-}" ]]; then
+    setup_wrapper=${BASH_SOURCE[0]}
+    [[ "$setup_wrapper" == /* ]] || setup_wrapper="$PWD/$setup_wrapper"
+    printf -v setup_command 'bash %q --container-setup' "$setup_wrapper"
+    die "setup required: run $setup_command; use the managed launcher afterward or explicitly set PI_CONTAINER_NETWORK for an operator workflow (offline, provider, or unrestricted; unrestricted keeps the previous networking behavior)"
+fi
 network_mode=$PI_CONTAINER_NETWORK
 case "$network_mode" in
     offline|provider|unrestricted) ;;
@@ -288,9 +318,13 @@ for variable_name in PI_BUN_VERSION PI_PULL_ALWAYS; do
         printf 'pi-container: %s is ignored; image inputs are pinned in Containerfile\n' "$variable_name" >&2
     fi
 done
-if [[ -n "${PI_CONTAINER_YOLO:-}" ]]; then
-    printf 'pi-container: PI_CONTAINER_YOLO has no effect; Pi has no tool-approval layer and the container is the only boundary\n' >&2
-fi
+# Validated like the other wrappers' approval switches; setup saves 0 or 1.
+case "${PI_CONTAINER_YOLO:-}" in
+    [Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|1)
+        printf 'pi-container: PI_CONTAINER_YOLO has no effect yet: Pi 0.80.8 has no tool-approval layer and the container is the only boundary\n' >&2 ;;
+    ''|0|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]) ;;
+    *) die 'PI_CONTAINER_YOLO must be 0, 1, true, false, yes, or no' ;;
+esac
 
 # Session budgets and lifetime, validated before any engine or state operation.
 # Same rules and messages as the claude-container reference (sandbox-ref-2).
@@ -345,6 +379,8 @@ case "$workspace_mount" in
         unsafe_workspace=1 ;;
 esac
 [[ "$workspace_mount" != "$physical_home" && ! "$workspace_mount" =~ ^/mnt/[A-Za-z]$ ]] || unsafe_workspace=1
+# A build-only refresh mounts no workspace.
+((build_only == 0)) || unsafe_workspace=0
 if ((unsafe_workspace)); then
     [[ "$unsafe_setting" == 1 ]] \
         || die "refusing sensitive workspace $workspace_mount; launch from a project subdirectory or set exact PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1"
@@ -415,7 +451,7 @@ capture_engine_info() {
     engine_response=${engine_response%$'\n'}
     [[ "$engine_response" != *$'\r'* ]]
 }
-capture_engine_info info --format '{{.Host.Security.Rootless}} {{.Host.OS}} {{.Host.ServiceIsRemote}}' || die 'Cannot query launch engine or invalid response; check the Linux rootless service'
+capture_engine_info info --format '{{.Host.Security.Rootless}} {{.Host.OS}} {{.Host.ServiceIsRemote}}' || die 'cannot query Podman or invalid engine response; check local rootless Podman or the same-host Unix service'
 read -r rootless runtime_os service_remote extra <<< "$engine_response"
 [[ "$rootless" == true && "$runtime_os" == linux && -z "$extra" && "$engine_response" != *$'\n'* ]] || die 'The launch engine must report complete Linux rootless operation'
 case "$service_remote" in
@@ -424,6 +460,25 @@ case "$service_remote" in
     *) die 'Cannot verify launch engine ServiceIsRemote (expected true or false)' ;;
 esac
 runtime_info=$engine_response
+
+# Build inputs and the staleness label shared by launches and build-only refreshes.
+install_bun=0
+[[ -z "${PI_ENABLE_BUN:-}" ]] || install_bun=1
+build_hash=$({ cat "$script_dir/Containerfile" "$script_dir/.containerignore" "$version_file" "$script_dir/network/relay.py" "$script_dir/network/mux.py"; printf 'INSTALL_BUN=%s\n' "$install_bun"; } | sha256sum)
+build_hash=${build_hash%% *}
+build_runtime_image() {
+    local build_args=(--tag "$image" --file "$script_dir/Containerfile" --format docker
+        --build-arg "PI_VERSION=$pi_version" --build-arg "INSTALL_BUN=$install_bun"
+        --label "build-inputs-hash=$build_hash")
+    printf 'Building Pi v%s image...\n' "$pi_version" >&2
+    timeout --kill-after=1s 300s podman build "${build_args[@]}" "$script_dir" </dev/null || die 'Image build failed or timed out (300s); check build output and network'
+}
+if ((build_only)); then
+    [[ "${PI_CONTAINER_MAINTENANCE:-}" == 1 ]] \
+        || die "image $image build requires exact PI_CONTAINER_MAINTENANCE=1 (host pulls and build RUN steps are outside runtime filtering)"
+    build_runtime_image
+    exit 0
+fi
 if ((restricted)); then
     command -v python3 >/dev/null || die 'host Python 3 is required for restricted network policy validation'
     [[ "$service_remote" == true ]] \
@@ -552,10 +607,6 @@ if ((restricted)); then
     fi
 fi
 
-install_bun=0
-[[ -z "${PI_ENABLE_BUN:-}" ]] || install_bun=1
-build_hash=$({ cat "$script_dir/Containerfile" "$script_dir/.containerignore" "$version_file" "$script_dir/network/relay.py" "$script_dir/network/mux.py"; printf 'INSTALL_BUN=%s\n' "$install_bun"; } | sha256sum)
-build_hash=${build_hash%% *}
 needs_build=$build_image
 # Every build, including the automatic build of a missing image, is maintenance.
 maintenance=0
@@ -573,11 +624,7 @@ if ((build_image == 0)); then
 fi
 if ((needs_build)); then
     ((maintenance)) || die "image $image needs a build; prepare it with exact PI_CONTAINER_MAINTENANCE=1 (host pulls and build RUN steps are outside runtime filtering)"
-    build_args=(--tag "$image" --file "$script_dir/Containerfile" --format docker
-        --build-arg "PI_VERSION=$pi_version" --build-arg "INSTALL_BUN=$install_bun"
-        --label "build-inputs-hash=$build_hash")
-    printf 'Building Pi v%s image...\n' "$pi_version" >&2
-    timeout --kill-after=1s 300s podman build "${build_args[@]}" "$script_dir" </dev/null || die 'Image build failed or timed out (300s); check build output and network'
+    build_runtime_image
 fi
 
 if [[ "$network_mode" == provider ]]; then
@@ -697,6 +744,8 @@ attached=0
 creating=0
 qualification_check_pid=''
 session_start_pid=''
+diagnostics_pid=''
+diagnostics_fd=''
 
 # shellcheck disable=SC2329 # Invoked through signal/EXIT cleanup.
 record_signal() {
@@ -844,6 +893,17 @@ cleanup() {
         fi
     fi
     reap_client
+    if [[ -n "$diagnostics_fd" ]]; then
+        exec {diagnostics_fd}>&-
+        diagnostics_fd=''
+    fi
+    if [[ -n "$diagnostics_pid" ]]; then
+        # Drain the final client output before reaping the stderr filter.
+        drain_until=$((SECONDS + 1))
+        while child_running "$diagnostics_pid" && ((SECONDS < drain_until)); do sleep 0.01; done
+        reap_helper "$diagnostics_pid" 1
+        diagnostics_pid=''
+    fi
     if [[ "$network_mode" == provider && -n "$session_tmp" ]]; then
         # Owned proxy recovery/removal and diagnostics share the remaining budget.
         "${session_helper[@]}" stop --session "$session_tmp" --deadline "$((shutdown_deadline - SECONDS))" \
@@ -954,8 +1014,21 @@ configured_budgets=$(timeout --kill-after=1s 10s podman inspect --type container
 # Explicit redirection retains redirected stdin for the background client.
 attached=1
 started_at=$SECONDS
-podman start --attach --interactive --sig-proxy=false "$container_id" <&0 &
-client_pid=$!
+if [[ -f "$script_dir/setup/diagnostics.py" ]] && command -v python3 >/dev/null; then
+    # Optional for unrestricted installs without host Python. Only the exact
+    # successful Podman 4.3 restart-check line changes level; errors pass.
+    mkfifo -- "$session_tmp/diagnostics.pipe"
+    python3 -I "$script_dir/setup/diagnostics.py" <"$session_tmp/diagnostics.pipe" >&2 &
+    diagnostics_pid=$!
+    exec {diagnostics_fd}>"$session_tmp/diagnostics.pipe"
+    podman start --attach --interactive --sig-proxy=false "$container_id" <&0 2>&"$diagnostics_fd" {diagnostics_fd}>&- &
+    client_pid=$!
+    exec {diagnostics_fd}>&-
+    diagnostics_fd=''
+else
+    podman start --attach --interactive --sig-proxy=false "$container_id" <&0 &
+    client_pid=$!
+fi
 if ((pending_status)); then
     exit "$pending_status"
 fi
