@@ -9,7 +9,10 @@ usage() {
 Usage: pi-container.sh [container options] [Pi arguments...]
 
 Container options:
+  --container-qualify    verify a prepared restricted installation with fixed
+                         local controls; must be used alone
   --container-build      force image refresh, then start the selected session
+                         (requires PI_CONTAINER_MAINTENANCE=1)
   --container-shell      start Bash instead of Pi (discard Pi arguments)
   --container-git-worktree expose the physical workspace's immediate parent
                          read/write; retain the original working directory
@@ -30,9 +33,19 @@ Names use a sanitized directory prefix and highest existing decimal suffix+1;
 create reserves atomically with at most 20 attempts, without replacement.
 
 Environment:
-  PI_CONTAINER_IMAGE     image name (default: pi-container)
+  PI_CONTAINER_NETWORK   offline, provider, or unrestricted; required for every
+                         launch (unrestricted is the previous behavior)
+  PI_CONTAINER_NETWORK_PROFILE protected provider policy profile name
+                         (anthropic-api, openai-api, gemini-api or openrouter-api)
+  PI_CONTAINER_NETWORK_POLICY absolute operator policy JSON path
+  PI_CONTAINER_NETWORK_RUNTIME_DIR private native directory at its host path
+  PI_CONTAINER_EGRESS_IMAGE immutable proxy image ID or registry digest
+  PI_CONTAINER_MAINTENANCE authorize image builds and proxy pulls only with
+                         exact value 1, including the build of a missing image
+  PI_CONTAINER_IMAGE     image name (default: localhost/pi-container)
   PI_CONTAINER_PODMAN    delegation/client enabled only for exact 1
-                         (default: disabled; other values also disable it)
+                         (default: disabled; other values also disable it);
+                         rejected in offline and provider modes
   PI_CONTAINER_PODMAN_SOCKET absolute socket override; then Unix CONTAINER_HOST;
                          then ${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock
   PI_CONTAINER_MEMORY_LIMIT session memory, integer with k/m/g unit (default: 4g)
@@ -48,11 +61,18 @@ Environment:
                          mounted; it may hold credential helpers or tokens)
   PI_CONTAINER_STATE_DIR private host directory holding .pi and .agents instead
                          of ~/.pi and ~/.agents; writable mode makes it the
-                         persistent /pi-home (default: unset, shared host state)
+                         persistent /pi-home (default: unset or empty, shared
+                         host state); conflicts with PI_CONTAINER_CONFIG_DIR
+  PI_CONTAINER_CONFIG_DIR private host directory replacing only ~/.pi; inside
+                         the session it is always /pi-home/.pi
+  PI_CONTAINER_TRUST_HOST_CA trust a host CA bundle: 1, true, or yes
+                         (default: disabled)
+  PI_CONTAINER_CA_BUNDLE CA bundle file to trust (default: first of
+                         /etc/ssl/certs/ca-certificates.crt and
+                         /etc/pki/tls/certs/ca-bundle.crt)
   PI_ENABLE_BUN          nonempty builds the image with the pinned Bun runtime;
                          changing it requires --container-build
   PI_NPM_CACHE_SIZE      default: 256M
-  PI_NETWORK             optional network selection, e.g. none (default: full)
   PI_READONLY_CONFIG     nonempty mounts existing state read-only
   PI_ENV_VARS            space-separated extra variable names; never values
   PI_DEBUG               nonempty enables debug output without secret values
@@ -65,9 +85,10 @@ Deprecated names (warned; conflicting old and new values are errors):
   PI_BUN_VERSION and PI_PULL_ALWAYS are ignored: image inputs (base digest,
   Pi from .version, OpenSpec and Bun) are pinned in Containerfile.
 
-A missing image is built automatically. A stale image (Containerfile,
-.containerignore, .version or PI_ENABLE_BUN changed) stops the launch until
---container-build is run explicitly.
+A missing image is built only with exact PI_CONTAINER_MAINTENANCE=1. A stale
+image (Containerfile, .containerignore, .version, network/relay.py,
+network/mux.py or PI_ENABLE_BUN changed) stops the launch until
+--container-build is run explicitly under maintenance.
 Sessions use HOME=/pi-home, an ephemeral noexec tmpfs, with ~/.pi, ~/.agents,
 the npm cache and an opted-in ~/.gitconfig mounted below it; other files
 written in /pi-home do not survive the session.
@@ -94,7 +115,8 @@ The writable workspace (or worktree parent) must not physically be /, /home,
 /root, /etc, /usr, /var, /bin, /sbin, /lib, /lib64, /boot, /opt, /srv, /mnt,
 /media, /proc, /sys, /dev, /run, /tmp, the caller's home or a /mnt/<letter>
 drive root; descendants such as /mnt/d/project are allowed.
-API keys and proxy variables are forwarded by name only when nonempty.
+In unrestricted mode, ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY and
+proxy variables are forwarded by name only when nonempty.
 Delegation verifies the selected rootless service and binds its reported
 host-side socket to /run/podman/podman.sock; it never starts a service.
 Without delegation session CONTAINER_HOST is explicitly unset, even if listed
@@ -102,22 +124,113 @@ in PI_ENV_VARS. Connection settings cannot override the selected session URI.
 Delegation grants the service user's host authority, including further mounts.
 Worktree mode exposes siblings in the whole immediate parent read/write.
 Bun and native Pi permissions are independent of delegation.
+
+Migration: every launch now needs an explicit PI_CONTAINER_NETWORK, and
+PI_NETWORK is no longer supported (none becomes PI_CONTAINER_NETWORK=offline;
+other values become unrestricted). Set PI_CONTAINER_NETWORK=unrestricted to keep
+the previous networking, and add PI_CONTAINER_MAINTENANCE=1 to commands that
+build the image, e.g.:
+  PI_CONTAINER_NETWORK=unrestricted PI_CONTAINER_MAINTENANCE=1 bash ./pi-container.sh --container-build --version
+Offline sessions cannot reach any model provider. Restricted failures never
+retry unrestricted networking.
+
+Restricted modes (offline, provider) require host Python 3, a same-host Unix
+rootless Netavark service with Podman >= 4.9, standard OCI seccomp, usable
+Landlock ABI >= 3, a protected installation outside writable workspace/state
+trees, a static guard and SHA-256 manifest in network/bin, and a current local
+qualification report (run --container-qualify alone after preparation or
+relevant updates). Changed boot, engine/backend/security, code/images,
+policy/profile, CA trust or hardening invalidates the report; an unidentifiable
+active LSM policy requires the gate on each launch. Locally-qualified
+installations are distinguished from release-measured acceptance records.
+Restricted sessions receive no host proxy or CA variables; provider mode
+forwards only the key of the selected profile (ANTHROPIC_API_KEY,
+OPENAI_API_KEY, GEMINI_API_KEY or OPENROUTER_API_KEY) and offline forwards none.
+PI_OFFLINE=1, PI_SKIP_VERSION_CHECK=1 and PI_TELEMETRY=0 are set after
+forwarding. Runtime npm or Bun installs and named Unix sockets are unavailable.
+Provider mode uses an external CONNECT proxy that binds the TLS server name
+(initial and retried ClientHello) to the CONNECT host before forwarding; it
+does not prove exclusive communication with your provider account. Allowed
+services can receive data: an injected agent can send workspace data to an
+allowed host (anthropic-api: api.anthropic.com; openai-api: api.openai.com;
+gemini-api: generativelanguage.googleapis.com; openrouter-api: openrouter.ai)
+with an attacker's key or account. Only offline removes this. Provider-hosted
+tools such as web search run at the provider, outside this boundary.
+Subscription and browser-callback logins are unsupported; use API keys. See
+network/README.md and docs/network-contract.md.
 HELP
 }
 
+# Help takes precedence regardless of option order and never needs Podman.
+for arg in "$@"; do
+    case "$arg" in --container-help|--wrapper-help) usage; exit 0 ;; esac
+done
+for arg in "$@"; do
+    if [[ "$arg" == --container-qualify ]]; then
+        [[ $# == 1 ]] || die '--container-qualify must be used alone'
+        command -v python3 >/dev/null || die 'host Python 3 is required for qualification'
+        qualify_dir=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
+        exec python3 -I "$qualify_dir/network/qualify.py" qualify
+    fi
+done
+
 build_image=0
+qualification_probe=0
 shell_mode=0
 git_worktree=0
 args=()
 for arg in "$@"; do
     case "$arg" in
-        --container-help|--wrapper-help) usage; exit 0 ;;
+        --container-qualify-probe)
+            [[ $# == 1 ]] || die 'the fixed qualification probe must be used alone'
+            qualification_probe=1 ;;
         --container-build) build_image=1 ;;
         --container-shell) shell_mode=1 ;;
         --container-git-worktree) git_worktree=1 ;;
         *) args+=("$arg") ;;
     esac
 done
+
+# An explicit mode precedes every other check, engine query and state operation.
+# add-container-setup replaces this message with guided setup.
+[[ -n "${PI_CONTAINER_NETWORK:-}" ]] \
+    || die 'PI_CONTAINER_NETWORK is required: set offline, provider, or unrestricted (unrestricted keeps the previous networking behavior)'
+network_mode=$PI_CONTAINER_NETWORK
+case "$network_mode" in
+    offline|provider|unrestricted) ;;
+    *) die 'PI_CONTAINER_NETWORK must be offline, provider, or unrestricted' ;;
+esac
+if [[ -n "${PI_NETWORK:-}" ]]; then
+    case "$PI_NETWORK" in
+        none) die 'PI_NETWORK is no longer supported; use PI_CONTAINER_NETWORK=offline instead of PI_NETWORK=none' ;;
+        *) die "PI_NETWORK is no longer supported; unset it and use PI_CONTAINER_NETWORK=unrestricted for ordinary networking (PI_NETWORK=$PI_NETWORK selected a raw Podman network)" ;;
+    esac
+fi
+restricted=0
+[[ "$network_mode" == unrestricted ]] || restricted=1
+trust_host_ca=0
+case "${PI_CONTAINER_TRUST_HOST_CA:-}" in
+    [Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|1) trust_host_ca=1 ;;
+    ''|0|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]) ;;
+    *) die 'PI_CONTAINER_TRUST_HOST_CA must be 0, 1, true, false, yes, or no' ;;
+esac
+config_override=${PI_CONTAINER_CONFIG_DIR:-}
+if [[ -n "$config_override" ]]; then
+    [[ -z "${PI_CONTAINER_STATE_DIR:-}" ]] \
+        || die 'PI_CONTAINER_STATE_DIR conflicts with PI_CONTAINER_CONFIG_DIR; unset PI_CONTAINER_CONFIG_DIR to isolate state, or unset PI_CONTAINER_STATE_DIR to keep shared state'
+    [[ "$config_override" == /* && "$config_override" != *:* && "$config_override" != *$'\n'* && "$config_override" != *$'\r'* ]] \
+        || die "PI_CONTAINER_CONFIG_DIR must be an absolute path without colon, CR or LF: $config_override"
+fi
+# The provider credential follows the selected profile (agent/profile.json).
+profile_credential=''
+if [[ "$network_mode" == provider ]]; then
+    case "${PI_CONTAINER_NETWORK_PROFILE:-}" in
+        anthropic-api) profile_credential=ANTHROPIC_API_KEY ;;
+        openai-api) profile_credential=OPENAI_API_KEY ;;
+        gemini-api) profile_credential=GEMINI_API_KEY ;;
+        openrouter-api) profile_credential=OPENROUTER_API_KEY ;;
+    esac
+fi
 
 # Common PI_CONTAINER_* names; earlier names remain deprecated aliases.
 # select_setting NEW OLD [switch] sets setting_value and setting_set.
@@ -152,6 +265,15 @@ select_setting() {
 }
 select_setting PI_CONTAINER_IMAGE PI_IMAGE_NAME; image_setting=$setting_value
 select_setting PI_CONTAINER_PODMAN PI_ENABLE_PODMAN switch; podman_setting=$setting_value
+if ((restricted)) && [[ "$podman_setting" == 1 ]]; then
+    die 'restricted networking rejects PI_CONTAINER_PODMAN=1: the host API bypasses egress enforcement; select explicit unrestricted mode for delegation'
+fi
+if [[ "$network_mode" == provider ]]; then
+    [[ -n "${PI_CONTAINER_NETWORK_PROFILE:-}" && -n "${PI_CONTAINER_NETWORK_POLICY:-}" ]] \
+        || die 'provider mode requires PI_CONTAINER_NETWORK_PROFILE and PI_CONTAINER_NETWORK_POLICY'
+    [[ -n "${PI_CONTAINER_NETWORK_RUNTIME_DIR:-}" && -n "${PI_CONTAINER_EGRESS_IMAGE:-}" ]] \
+        || die 'provider mode requires a private host-path PI_CONTAINER_NETWORK_RUNTIME_DIR and immutable PI_CONTAINER_EGRESS_IMAGE'
+fi
 select_setting PI_CONTAINER_PODMAN_SOCKET PI_PODMAN_SOCKET; socket_setting=$setting_value
 select_setting PI_CONTAINER_MEMORY_LIMIT PI_MEMORY_LIMIT
 memory_text=4g; ((setting_set == 0)) || memory_text=$setting_value
@@ -208,7 +330,7 @@ version_file=$script_dir/.version
 [[ -s "$version_file" ]] || die '.version is missing or empty'
 pi_version=$(head -1 "$version_file" | tr -d '[:space:]')
 [[ -n "$pi_version" ]] || die '.version is missing or empty'
-image=${image_setting:-pi-container}
+image=${image_setting:-localhost/pi-container}
 caller_uid=$(id -u)
 caller_gid=$(id -g)
 [[ "${HOME:-}" == /* ]] || die 'HOME must be an absolute directory path'
@@ -234,7 +356,8 @@ state_mode=rw
 # Isolated state replaces ~/.pi and ~/.agents; it is validated before engine use.
 state_root=$HOME
 isolated_home=''
-if [[ -n "${PI_CONTAINER_STATE_DIR+x}" ]]; then
+# An empty value selects shared state, like an unset one (as in the other wrappers).
+if [[ -n "${PI_CONTAINER_STATE_DIR:-}" ]]; then
     state_request=$PI_CONTAINER_STATE_DIR
     [[ "$state_request" == /* && "$state_request" != *:* && "$state_request" != *$'\n'* && "$state_request" != *$'\r'* ]] \
         || die "PI_CONTAINER_STATE_DIR must be an absolute path without colon, CR or LF: $state_request"
@@ -247,20 +370,6 @@ if [[ -n "${PI_CONTAINER_STATE_DIR+x}" ]]; then
     state_physical=${state_physical%/}
     [[ "$state_physical/" != "$workspace_mount/"* && "$workspace_mount/" != "$state_physical/"* ]] \
         || die "PI_CONTAINER_STATE_DIR must not overlap the workspace: $state_request"
-    if [[ "$state_mode" == rw ]]; then
-        if [[ ! -e "$state_request" && ! -L "$state_request" ]]; then
-            (umask 077; mkdir -p -- "$state_request") || die "Cannot create PI_CONTAINER_STATE_DIR: $state_request"
-        fi
-        [[ -d "$state_request" ]] || die "PI_CONTAINER_STATE_DIR is not a directory: $state_request"
-        isolated_home=$(CDPATH='' cd -- "$state_request" && pwd -P) || die "Cannot resolve PI_CONTAINER_STATE_DIR: $state_request"
-        [[ -r "$isolated_home" && -w "$isolated_home" && -x "$isolated_home" ]] || die "PI_CONTAINER_STATE_DIR is not accessible: $state_request"
-        state_owner=$(stat -c '%u' -- "$isolated_home") || die "Cannot inspect PI_CONTAINER_STATE_DIR owner: $state_request"
-        state_perm=$(stat -c '%a' -- "$isolated_home") || die "Cannot inspect PI_CONTAINER_STATE_DIR permissions: $state_request"
-        [[ "$state_owner" == "$caller_uid" ]] || die "PI_CONTAINER_STATE_DIR must belong to the calling user: $state_request"
-        # shellcheck disable=SC2015 # die must run when either test fails.
-        [[ "$state_perm" =~ ^[0-7]{3,4}$ ]] && (( (8#$state_perm & 077) == 0 )) \
-            || die "PI_CONTAINER_STATE_DIR must be private: $state_request (explicitly repair it or use a filesystem that enforces Unix permissions)"
-    fi
     state_root=$state_physical
 fi
 
@@ -314,6 +423,20 @@ case "$service_remote" in
     true) [[ "${CONTAINER_HOST:-}" == unix:///?* ]] || die 'A remote launch engine requires an explicit same-host Unix CONTAINER_HOST' ;;
     *) die 'Cannot verify launch engine ServiceIsRemote (expected true or false)' ;;
 esac
+runtime_info=$engine_response
+if ((restricted)); then
+    command -v python3 >/dev/null || die 'host Python 3 is required for restricted network policy validation'
+    [[ "$service_remote" == true ]] \
+        || die 'restricted networking currently requires the tested same-host Unix service; local-engine enforcement is unverified'
+    capture_engine_info info --format '{{.Host.NetworkBackend}}' || die 'cannot verify restricted network backend'
+    network_backend=$engine_response
+    capture_engine_info version --format '{{.Server.Version}}' || die 'cannot verify restricted network server version'
+    network_version=$engine_response
+    capture_engine_info info --format '{{json .Host}}' || die 'cannot verify restricted platform security policy'
+    network_platform=$engine_response
+elif ((qualification_probe)); then
+    die 'qualification probes require restricted networking'
+fi
 
 install_podman=0
 if [[ "$podman_setting" == 1 ]]; then
@@ -348,19 +471,100 @@ validate_state() {
         (( (8#$mode & 077) == 0 )) || die "State must be private: $path (explicitly repair it or use a filesystem that enforces Unix permissions)"
     fi
 }
-validate_state "$state_root/.pi"; pi_state=$state_path
+# Isolated state is created and validated after engine verification, as in the
+# reference order; only lexical checks precede the engine.
+if [[ -n "${PI_CONTAINER_STATE_DIR:-}" ]]; then
+    if [[ "$state_mode" == rw ]]; then
+        if [[ ! -e "$state_request" && ! -L "$state_request" ]]; then
+            (umask 077; mkdir -p -- "$state_request") || die "Cannot create PI_CONTAINER_STATE_DIR: $state_request"
+        fi
+        [[ -d "$state_request" ]] || die "PI_CONTAINER_STATE_DIR is not a directory: $state_request"
+        isolated_home=$(CDPATH='' cd -- "$state_request" && pwd -P) || die "Cannot resolve PI_CONTAINER_STATE_DIR: $state_request"
+        [[ -r "$isolated_home" && -w "$isolated_home" && -x "$isolated_home" ]] || die "PI_CONTAINER_STATE_DIR is not accessible: $state_request"
+        state_owner=$(stat -c '%u' -- "$isolated_home") || die "Cannot inspect PI_CONTAINER_STATE_DIR owner: $state_request"
+        state_perm=$(stat -c '%a' -- "$isolated_home") || die "Cannot inspect PI_CONTAINER_STATE_DIR permissions: $state_request"
+        [[ "$state_owner" == "$caller_uid" ]] || die "PI_CONTAINER_STATE_DIR must belong to the calling user: $state_request"
+        # shellcheck disable=SC2015 # die must run when either test fails.
+        [[ "$state_perm" =~ ^[0-7]{3,4}$ ]] && (( (8#$state_perm & 077) == 0 )) \
+            || die "PI_CONTAINER_STATE_DIR must be private: $state_request (explicitly repair it or use a filesystem that enforces Unix permissions)"
+    fi
+fi
+validate_state "${config_override:-$state_root/.pi}"; pi_state=$state_path
 validate_state "$state_root/.agents"; agents_state=$state_path
+ca_bundle=''
+if ((trust_host_ca)); then
+    if [[ -n "${PI_CONTAINER_CA_BUNDLE:-}" ]]; then
+        [[ -f "$PI_CONTAINER_CA_BUNDLE" ]] || die "PI_CONTAINER_CA_BUNDLE is not a file: $PI_CONTAINER_CA_BUNDLE"
+        ca_bundle=$(readlink -f -- "$PI_CONTAINER_CA_BUNDLE")
+    else
+        for candidate in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
+            if [[ -f "$candidate" ]]; then
+                ca_bundle=$candidate
+                break
+            fi
+        done
+        [[ -n "$ca_bundle" ]] || die 'no default CA bundle found; set PI_CONTAINER_CA_BUNDLE to a bundle file'
+    fi
+    [[ "$ca_bundle" != *[:$'\n'$'\r']* ]] || die "CA bundle path must not contain colon, CR or LF: $ca_bundle"
+    if [[ -n "$isolated_home" ]]; then
+        # Resolve first so an existing symlink cannot move the CA mount parent.
+        ca_parent=$(readlink -m -- "$isolated_home/ca")
+        [[ "$ca_parent" == "$isolated_home/ca" ]] || die "isolated CA mount parent escapes the state home: $isolated_home/ca"
+        if [[ ! -e "$ca_parent" ]]; then
+            (umask 077; mkdir -- "$ca_parent") || die "Cannot create private state: $ca_parent"
+        fi
+        validate_state "$ca_parent"
+    fi
+fi
+
+# Restricted sessions use the shared helper; this wrapper keeps only the
+# agent-specific command, environment, state and credentials.
+session_helper=(python3 -I "$script_dir/network/session.py")
+network_inputs=()
+qualification_inputs=()
+guard_digest=''
+if ((restricted)); then
+    network_inputs=(--installation "$script_dir" --writable "$workspace_mount"
+        --mount-target "$workspace_mount" --mount-target "$CONTAINER_HOME")
+    if [[ -n "$isolated_home" ]]; then
+        network_inputs+=(--writable "$isolated_home")
+    elif [[ "$state_mode" == rw ]]; then
+        network_inputs+=(--writable "$pi_state" --writable "$agents_state")
+    fi
+    if [[ "$network_mode" == provider ]]; then
+        network_inputs+=(--policy "$PI_CONTAINER_NETWORK_POLICY"
+            --profile "$PI_CONTAINER_NETWORK_PROFILE" --proxy-image "$PI_CONTAINER_EGRESS_IMAGE"
+            --runtime "$PI_CONTAINER_NETWORK_RUNTIME_DIR")
+    fi
+    prepare_inputs=(--mode "$network_mode" --server-version "$network_version"
+        --backend "$network_backend" --endpoint "${CONTAINER_HOST:-}" --engine "$runtime_info")
+    if ((qualification_probe)); then
+        prepare_inputs+=(--probe --qualification-input "${PI_CONTAINER_QUALIFICATION_INPUT:-}"
+            --workspace "$workspace")
+    fi
+    prepared=$(printf '%s\n' "$network_platform" | "${session_helper[@]}" prepare "${network_inputs[@]}" "${prepare_inputs[@]}") \
+        || exit 1
+    read -r guard_digest qualification_token qualification_tls <<< "$prepared"
+    if ((qualification_probe)); then
+        qualification_inputs=(--probe --token "$qualification_token" --workspace "$workspace"
+            --qualification-input "${PI_CONTAINER_QUALIFICATION_INPUT:-}")
+        [[ "$qualification_tls" != 1 ]] || qualification_inputs+=(--tls)
+    fi
+fi
 
 install_bun=0
 [[ -z "${PI_ENABLE_BUN:-}" ]] || install_bun=1
-build_hash=$({ cat "$script_dir/Containerfile" "$script_dir/.containerignore" "$version_file"; printf 'INSTALL_BUN=%s\n' "$install_bun"; } | sha256sum)
+build_hash=$({ cat "$script_dir/Containerfile" "$script_dir/.containerignore" "$version_file" "$script_dir/network/relay.py" "$script_dir/network/mux.py"; printf 'INSTALL_BUN=%s\n' "$install_bun"; } | sha256sum)
 build_hash=${build_hash%% *}
 needs_build=$build_image
+# Every build, including the automatic build of a missing image, is maintenance.
+maintenance=0
+[[ "${PI_CONTAINER_MAINTENANCE:-}" != 1 ]] || maintenance=1
 if ((build_image == 0)); then
     if podman image exists "$image"; then
         label_hash=$(podman image inspect "$image" --format '{{index .Labels "build-inputs-hash"}}') || die "Cannot inspect staleness label for $image; check engine/storage"
         [[ "$label_hash" == "$build_hash" ]] \
-            || die "Image $image is stale for the current inputs (Containerfile, .containerignore, .version or PI_ENABLE_BUN); rebuild explicitly with --container-build"
+            || die "Image $image is stale for the current inputs (Containerfile, .containerignore, .version, network/relay.py, network/mux.py or PI_ENABLE_BUN); rebuild explicitly with --container-build and PI_CONTAINER_MAINTENANCE=1"
     else
         image_status=$?
         [[ "$image_status" == 1 ]] || { printf 'pi-container: Cannot inspect image %s (status %s)\n' "$image" "$image_status" >&2; exit "$image_status"; }
@@ -368,6 +572,7 @@ if ((build_image == 0)); then
     fi
 fi
 if ((needs_build)); then
+    ((maintenance)) || die "image $image needs a build; prepare it with exact PI_CONTAINER_MAINTENANCE=1 (host pulls and build RUN steps are outside runtime filtering)"
     build_args=(--tag "$image" --file "$script_dir/Containerfile" --format docker
         --build-arg "PI_VERSION=$pi_version" --build-arg "INSTALL_BUN=$install_bun"
         --label "build-inputs-hash=$build_hash")
@@ -375,7 +580,26 @@ if ((needs_build)); then
     timeout --kill-after=1s 300s podman build "${build_args[@]}" "$script_dir" </dev/null || die 'Image build failed or timed out (300s); check build output and network'
 fi
 
-podman_args=(--rm --interactive --init --read-only --read-only-tmpfs=false
+if [[ "$network_mode" == provider ]]; then
+    if podman image exists "$PI_CONTAINER_EGRESS_IMAGE"; then
+        :
+    else
+        image_status=$?
+        [[ "$image_status" == 1 ]] || die 'cannot inspect immutable egress proxy image'
+        ((maintenance)) && [[ "$PI_CONTAINER_EGRESS_IMAGE" == *@sha256:* ]] \
+            || die 'proxy image is absent; prepare the pinned artifact under explicit operator maintenance authorization (PI_CONTAINER_MAINTENANCE=1 and a registry digest)'
+        podman pull "$PI_CONTAINER_EGRESS_IMAGE"
+    fi
+fi
+# Restricted sessions and their qualification bind the immutable image ID.
+session_image=$image
+if ((restricted)); then
+    capture_engine_info image inspect --format '{{.Id}}' "$image" || die 'cannot resolve restricted runtime image identity'
+    [[ "$engine_response" =~ ^(sha256:)?[a-f0-9]{64}$ ]] || die 'invalid restricted runtime image identity'
+    session_image=$engine_response
+fi
+
+podman_args=(--rm --interactive --read-only --read-only-tmpfs=false
     --userns=keep-id --user "$caller_uid:$caller_gid"
     --cap-drop=ALL --security-opt=no-new-privileges
     "--memory=$memory_bytes" "--cpus=$cpu_text" "--pids-limit=$pids_limit"
@@ -399,10 +623,28 @@ if [[ -t 0 && -t 1 ]]; then
     [[ -z "${TERM:-}" ]] || podman_args+=(--env TERM)
 fi
 [[ -z "$gitconfig_source" ]] || podman_args+=(--volume "$gitconfig_source:$CONTAINER_HOME/.gitconfig:ro")
-[[ -z "${PI_NETWORK:-}" ]] || podman_args+=(--network "$PI_NETWORK")
+# --init bind-mounts catatonit below /run, which the guard rejects as a nested
+# private IPC mount; restricted sessions start the guard directly instead.
+((restricted)) || podman_args+=(--init)
+# The profile's configuration variable names the effective directory in the
+# session; the host value is never forwarded.
+podman_args+=(--env "PI_CONTAINER_CONFIG_DIR=$CONTAINER_HOME/.pi")
+if ((trust_host_ca)); then
+    podman_args+=(--volume "$ca_bundle:$CONTAINER_HOME/ca/bundle.pem:ro")
+    for variable in SSL_CERT_FILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE NODE_EXTRA_CA_CERTS; do
+        podman_args+=(--env "$variable=$CONTAINER_HOME/ca/bundle.pem")
+    done
+fi
 ((run_timeout == 0)) || podman_args+=(--timeout "$run_timeout")
 # Values for credentials remain in the creating client's environment, never argv.
-for variable in ANTHROPIC_API_KEY OPENAI_API_KEY GOOGLE_API_KEY HTTP_PROXY HTTPS_PROXY NO_PROXY; do
+# Restricted modes forward no host proxy or CA value and only the profile's key.
+if ((restricted)); then
+    forward_base=()
+    [[ -z "$profile_credential" ]] || forward_base=("$profile_credential")
+else
+    forward_base=(ANTHROPIC_API_KEY OPENAI_API_KEY GOOGLE_API_KEY HTTP_PROXY HTTPS_PROXY NO_PROXY)
+fi
+for variable in "${forward_base[@]}"; do
     [[ -z "${!variable:-}" ]] || podman_args+=(--env "$variable")
 done
 extra_vars=()
@@ -410,10 +652,20 @@ read -r -a extra_vars <<< "${PI_ENV_VARS:-}"
 for variable in "${extra_vars[@]}"; do
     [[ "$variable" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]] || die "Invalid environment variable name: $variable"
     case "$variable" in
-        HOME|TERM|EDITOR|VISUAL|CONTAINER_NAME|CONTAINER_HOST|CONTAINER_CONNECTION|ANTHROPIC_API_KEY|OPENAI_API_KEY|GOOGLE_API_KEY|HTTP_PROXY|HTTPS_PROXY|NO_PROXY) continue ;;
+        HOME|TERM|EDITOR|VISUAL|CONTAINER_NAME|CONTAINER_HOST|CONTAINER_CONNECTION|ANTHROPIC_API_KEY|OPENAI_API_KEY|GOOGLE_API_KEY|HTTP_PROXY|HTTPS_PROXY|NO_PROXY|PI_CONTAINER_CONFIG_DIR) continue ;;
     esac
+    if ((restricted)); then
+        case "$variable" in
+            HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|http_proxy|https_proxy|all_proxy|no_proxy|SSL_CERT_FILE|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE|NODE_EXTRA_CA_CERTS|PI_OFFLINE|PI_SKIP_VERSION_CHECK|PI_TELEMETRY)
+                printf 'pi-container: PI_ENV_VARS: skipping %s, which restricted modes set themselves\n' "$variable" >&2
+                continue ;;
+        esac
+    fi
     [[ -z "${!variable:-}" ]] || podman_args+=(--env "$variable")
 done
+# Protected literals follow forwarding; writable Pi settings cannot re-enable
+# startup network operations (measured on Pi 0.80.8, see docs/validation.md).
+((restricted == 0)) || podman_args+=(--env PI_OFFLINE=1 --env PI_SKIP_VERSION_CHECK=1 --env PI_TELEMETRY=0)
 # Last authoritative connection setting, independent of extra forwarding.
 podman_args+=(--unsetenv CONTAINER_CONNECTION)
 if ((install_podman)); then
@@ -424,7 +676,12 @@ if ((install_podman)); then
 else
     podman_args+=(--unsetenv CONTAINER_HOST)
 fi
-if ((shell_mode)); then podman_args+=(--entrypoint /bin/bash); args=(); fi
+if ((qualification_probe)); then
+    args=()  # The shared helper supplies the fixed probe command.
+elif ((shell_mode)); then
+    ((restricted)) || podman_args+=(--entrypoint /bin/bash)
+    args=()
+fi
 debug "Runtime option count: ${#podman_args[@]}; native argument count: ${#args[@]}"
 container_prefix=${workspace##*/}
 container_prefix=$(printf '%s' "$container_prefix" | LC_ALL=C sed -E 's/[^a-zA-Z0-9_.-]+/-/g; s/^[.-]+//; s/[.-]+$//')
@@ -438,6 +695,8 @@ pending_signal=''
 pending_status=0
 attached=0
 creating=0
+qualification_check_pid=''
+session_start_pid=''
 
 # shellcheck disable=SC2329 # Invoked through signal/EXIT cleanup.
 record_signal() {
@@ -445,8 +704,39 @@ record_signal() {
         pending_signal=$1
         pending_status=$2
     fi
-    if ((attached || creating)) && [[ -n "$client_pid" ]]; then
+    if { ((attached || creating)) && [[ -n "$client_pid" ]]; } \
+        || [[ -n "$qualification_check_pid" || -n "$session_start_pid" ]]; then
         exit "$pending_status"
+    fi
+}
+
+# Restricted helpers: TERM, a bounded grace period, then KILL and reap.
+# shellcheck disable=SC2329 # Invoked through signal/EXIT cleanup.
+child_running() {
+    local child=$1 running
+    [[ -n "$child" ]] || return 1
+    while IFS= read -r running; do
+        [[ "$running" != "$child" ]] || return 0
+    done < <(jobs -p)
+    return 1
+}
+# shellcheck disable=SC2329 # Invoked through signal/EXIT cleanup.
+reap_helper() {
+    local child=$1 grace=$2 until
+    child_running "$child" || { wait "$child" 2>/dev/null || true; return 0; }
+    kill -TERM "$child" 2>/dev/null || true
+    until=$((SECONDS + grace))
+    while child_running "$child" && ((SECONDS < until)); do sleep 0.05; done
+    if child_running "$child"; then
+        printf 'pi-container: restricted helper %s did not confirm cleanup before the deadline\n' "$child" >&2
+        kill -KILL "$child" 2>/dev/null || true
+    fi
+    until=$((SECONDS + 1))
+    while child_running "$child" && ((SECONDS < until)); do sleep 0.05; done
+    if child_running "$child"; then
+        printf 'pi-container: Cannot reap restricted helper %s within deadline; inspect it explicitly\n' "$child" >&2
+    else
+        wait "$child" 2>/dev/null || true
     fi
 }
 
@@ -511,9 +801,23 @@ recover_container_id() {
 
 # shellcheck disable=SC2329 # Invoked through signal/EXIT cleanup.
 cleanup() {
-    local status=$? control_status
+    local status=$? control_status shutdown_deadline
     trap '' TERM INT HUP
     ((pending_status == 0)) || status=$pending_status
+    shutdown_deadline=$((SECONDS + 20))
+    if [[ -n "$qualification_check_pid" ]]; then
+        reap_helper "$qualification_check_pid" 13
+        qualification_check_pid=''
+    fi
+    if [[ -n "$session_start_pid" ]]; then
+        # The session helper owns a separate process group. Reap the whole
+        # group before its leader, including an engine client that ignores TERM.
+        kill -TERM -- "-$session_start_pid" 2>/dev/null || true
+        sleep 0.1
+        kill -KILL -- "-$session_start_pid" 2>/dev/null || true
+        reap_helper "$session_start_pid" 1
+        session_start_pid=''
+    fi
     if ((creating)); then
         if [[ -n "$client_pid" ]]; then
             wait_for_client_until "$((SECONDS + 5))" || true
@@ -540,6 +844,11 @@ cleanup() {
         fi
     fi
     reap_client
+    if [[ "$network_mode" == provider && -n "$session_tmp" ]]; then
+        # Owned proxy recovery/removal and diagnostics share the remaining budget.
+        "${session_helper[@]}" stop --session "$session_tmp" --deadline "$((shutdown_deadline - SECONDS))" \
+            --container "${container_id:-unknown}" || true
+    fi
     [[ -z "$session_tmp" ]] || rm -rf -- "$session_tmp"
     return "$status"
 }
@@ -548,8 +857,48 @@ trap cleanup EXIT
 trap 'record_signal TERM 143' TERM
 trap 'record_signal INT 130' INT
 trap 'record_signal HUP 129' HUP
-session_tmp=$(umask 077; mktemp -d) || die "Cannot create private session bookkeeping directory"
+if [[ "$network_mode" == provider ]]; then
+    session_tmp=$(umask 077; mktemp -d -- "$PI_CONTAINER_NETWORK_RUNTIME_DIR/session.XXXXXXXXXXXX") \
+        || die "Cannot create private session directory in PI_CONTAINER_NETWORK_RUNTIME_DIR"
+else
+    session_tmp=$(umask 077; mktemp -d) || die "Cannot create private session bookkeeping directory"
+fi
 ((pending_status == 0)) || exit "$pending_status"
+printf 'pi-container: network mode=%s\n' "$network_mode" >&2
+if ((restricted && qualification_probe == 0)); then
+    PI_CONTAINER_IMAGE="$session_image" python3 -I "$script_dir/network/qualify.py" check &
+    qualification_check_pid=$!
+    qualification_status=0
+    wait "$qualification_check_pid" || qualification_status=$?
+    qualification_check_pid=''
+    ((pending_status == 0)) || exit "$pending_status"
+    ((qualification_status == 0)) || exit "$qualification_status"
+fi
+if [[ "$network_mode" == provider ]]; then
+    "${session_helper[@]}" start "${network_inputs[@]}" "${qualification_inputs[@]}" --session "$session_tmp" \
+        --guard-digest "$guard_digest" >"$session_tmp/policy.identity" &
+    session_start_pid=$!
+    start_status=0
+    wait "$session_start_pid" || start_status=$?
+    session_start_pid=''
+    ((pending_status == 0)) || exit "$pending_status"
+    ((start_status == 0)) || exit "$start_status"
+fi
+if ((restricted)); then
+    application=()
+    if ((shell_mode)); then
+        application=(/bin/bash)
+    elif ((qualification_probe == 0)); then
+        application=(/usr/local/bin/pi "${args[@]}")
+    fi
+    "${session_helper[@]}" agent-args --installation "$script_dir" --mode "$network_mode" \
+        --session "$session_tmp" --guard-digest "$guard_digest" "${qualification_inputs[@]}" \
+        -- "${application[@]}" >"$session_tmp/agent.args"
+    mapfile -d '' -t restricted_args <"$session_tmp/agent.args"
+    [[ "${restricted_args[0]:-}" =~ ^[0-9]+$ ]] || die 'invalid restricted session arguments'
+    podman_args+=("${restricted_args[@]:1:${restricted_args[0]}}")
+    args=("${restricted_args[@]:$((1 + restricted_args[0]))}")
+fi
 names=$(podman ps --all --format '{{.Names}}') || die "Cannot list Podman containers; check the launch engine"
 ((pending_status == 0)) || exit "$pending_status"
 next_index=0
@@ -566,7 +915,7 @@ for ((attempt=0; attempt<20; attempt++)); do
     name="$container_prefix-$next_index"
     rm -f -- "$session_tmp/cid"
     creating=1
-    podman create --name "$name" --cidfile "$session_tmp/cid" "${podman_args[@]}" --env "CONTAINER_NAME=$name" "$image" "${args[@]}" \
+    podman create --name "$name" --cidfile "$session_tmp/cid" --label "io.pi-container.session=${session_tmp##*/}" "${podman_args[@]}" --env "CONTAINER_NAME=$name" "$session_image" "${args[@]}" \
         </dev/null >"$session_tmp/output" 2>"$session_tmp/error" &
     client_pid=$!
     create_status=0

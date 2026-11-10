@@ -12,6 +12,16 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
 
 ### Changed
 
+- **Breaking:** every launch needs `PI_CONTAINER_NETWORK`; set `unrestricted`
+  for the previous networking.
+- **Breaking:** `PI_NETWORK` is removed (`none` becomes
+  `PI_CONTAINER_NETWORK=offline`).
+- **Breaking:** image builds, including the automatic build of a missing image,
+  require `PI_CONTAINER_MAINTENANCE=1`; the image also copies
+  `network/relay.py` and `network/mux.py`, so existing images are stale.
+- The default image name is `localhost/pi-container`; an empty
+  `PI_CONTAINER_STATE_DIR` selects shared state.
+
 - **Breaking:** the image is pinned: digest base, the toolset shared with the
   other wrappers (including the Podman client and OpenSpec 1.16.0), Pi from
   `.version`, and optional Bun installed from npm as `bun@1.3.14`. The
@@ -61,6 +71,14 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
   `0` does not, with a warning; conflicting values are errors.
 
 ### Added
+
+- Network modes: `PI_CONTAINER_NETWORK=offline|provider|unrestricted`, enforced
+  in offline and provider modes by the native guard and the external egress
+  proxy shared with `claude-container` (tag `sandbox-ref-6`), with
+  `--container-qualify`, opt-in host CA trust (`PI_CONTAINER_TRUST_HOST_CA`,
+  `PI_CONTAINER_CA_BUNDLE`) and `PI_CONTAINER_CONFIG_DIR`.
+- Provider profiles `anthropic-api`, `openai-api`, `gemini-api` and
+  `openrouter-api`; each forwards only its key in provider mode.
 
 - `PI_CONTAINER_STATE_DIR` keeps `.pi` and `.agents` in a private directory
   separate from the host's everyday state.

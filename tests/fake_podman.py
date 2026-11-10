@@ -3,7 +3,37 @@ import hashlib, json, os, pathlib, signal, sys, time
 args = sys.argv[1:]
 with open(os.environ['FAKE_LOG'], 'a') as log:
     log.write(json.dumps(args) + '\n')
-if args[0] == 'info':
+proxy = 'b' * 64
+if args[0] in os.environ.get('FAKE_STALL', '').split(','):
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    pathlib.Path(os.environ['FAKE_LOG'] + '.stalled-' + args[0]).write_text(str(os.getpid()))
+    while True: time.sleep(0.05)
+# Restricted-mode engine responses (platform, image identity, proxy image and container).
+if args[0] == 'info' and args[-1] == '{{json .Host}}':
+    print(json.dumps({'kernel': '6.6.87.2-microsoft-standard-WSL2', 'arch': 'amd64',
+        'security': {'seccompEnabled': True, 'selinuxEnabled': False, 'apparmorEnabled': False}}))
+elif args[0] == 'info' and args[-1] == '{{.Host.NetworkBackend}}':
+    print(os.environ.get('FAKE_BACKEND', 'netavark'))
+elif args[0] == 'version':
+    print(os.environ.get('FAKE_SERVER_VERSION', '4.9.3'))
+elif args[:2] == ['image', 'inspect'] and '{{.Id}}' in args:
+    print(os.environ.get('FAKE_IMAGE_ID', 'd' * 64))
+elif args[:2] == ['image', 'exists'] and args[-1] == os.environ.get('FAKE_EGRESS_IMAGE', '-'):
+    sys.exit(int(os.environ.get('FAKE_EGRESS_STATUS', '0')))
+elif args[0] == 'pull':
+    sys.exit(0)
+elif args[0] == 'create' and any(a.startswith('io.pi-container.egress=') for a in args):
+    pathlib.Path(args[args.index('--cidfile') + 1]).write_text(proxy + '\n')
+    print(proxy)
+elif args[0] == 'inspect' and args[-1] == proxy:
+    print(os.environ.get('FAKE_PROXY_CONFIG', '{"PidsLimit":128,"Memory":268435456}'))
+elif args[0] == 'exec' and args[1] == proxy:
+    print(os.environ.get('FAKE_PROXY_EFFECTIVE', '{"pids":128,"memory":268435456,"capabilities":[0,0,0,0,0],"no_new_privs":1,"seccomp":2}'))
+elif args[0] in ('start', 'rm') and args[-1] == proxy:
+    sys.exit(0)
+elif args[0] == 'ps' and '--filter' in args:
+    print('')
+elif args[0] == 'info':
     sys.stdout.write(os.environ['FAKE_INFO_RAW']) if 'FAKE_INFO_RAW' in os.environ else print(os.environ.get('FAKE_INFO', 'true linux false'))
     sys.exit(int(os.environ.get('FAKE_INFO_STATUS', '0')))
 elif args[:2] == ['--remote', '--url']:
@@ -16,7 +46,8 @@ elif args[:2] == ['image', 'exists']:
     sys.exit(int(os.environ.get('FAKE_IMAGE_STATUS', '0')))
 elif args[:2] == ['image', 'inspect']:
     root = pathlib.Path(os.environ['FAKE_ROOT'])
-    inputs = b''.join((root / name).read_bytes() for name in ('Containerfile', '.containerignore', '.version'))
+    inputs = b''.join((root / name).read_bytes() for name in ('Containerfile', '.containerignore', '.version',
+                                                                 'network/relay.py', 'network/mux.py'))
     inputs += ('INSTALL_BUN=' + ('1' if os.environ.get('PI_ENABLE_BUN') else '0') + '\n').encode()
     print(os.environ.get('FAKE_LABEL_HASH', hashlib.sha256(inputs).hexdigest()))
     sys.exit(int(os.environ.get('FAKE_INSPECT_STATUS', '0')))

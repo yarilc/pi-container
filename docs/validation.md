@@ -260,3 +260,121 @@ operator's existing `pi-container` image (`d2c47c167ea5`) was not rebuilt, so
 its next launch reports it as stale and asks for `--container-build`. The
 `localhost/pi-align-test:bun` image built during the investigation was
 removed. Containers present before the runs were left untouched.
+
+## Network egress port (`add-network-egress`): 2026-11-10
+
+Target: WSL2 kernel 6.6.87.2, Podman client 4.3.1 and server 4.9.3, Netavark.
+The runtime image `localhost/pi-container:latest` was rebuilt from the current
+recipe: ID `39082eebb4b7…`, Pi 0.80.8, Python 3.11.2, OpenSSL 3.0.22. The
+previous tag predated Wave 2 and had no `python3`.
+
+### Measured Pi endpoints and controls
+
+Method: a static scan of the installed `@earendil-works/pi-coding-agent` 0.80.8
+package, plus credential-free `pi -p` runs in `--network=none` containers.
+`HTTPS_PROXY` pointed at a loopback proxy that logged every request and
+answered 403. Every run used dummy keys.
+
+| Use | Host | Key variable read by Pi |
+| --- | --- | --- |
+| Anthropic | `api.anthropic.com` | `ANTHROPIC_API_KEY` |
+| OpenAI | `api.openai.com` | `OPENAI_API_KEY` |
+| Gemini (`--provider google`) | `generativelanguage.googleapis.com` | `GEMINI_API_KEY`. `GOOGLE_API_KEY`, which the wrapper used to forward, is not read: with only that variable Pi reports a missing key |
+| OpenRouter | `openrouter.ai` | `OPENROUTER_API_KEY` |
+| Version check and install telemetry | `pi.dev` (`/api/latest-version`; share viewer `pi.dev/session/`) | — |
+
+Optional-traffic controls:
+
+- **Version check and telemetry flags alone.** With `PI_SKIP_VERSION_CHECK=1`
+  and `PI_TELEMETRY=0`, a startup request to `pi.dev` remains.
+- **`PI_OFFLINE=1`** ("disable startup network operations") removes it and
+  still lets the model request through.
+- **Writable settings.** With `PI_OFFLINE=1`, a writable
+  `~/.pi/agent/settings.json` that enables install telemetry and update checks
+  causes no `pi.dev` request.
+- **Protected values.** Restricted sessions set `PI_OFFLINE=1`,
+  `PI_SKIP_VERSION_CHECK=1` and `PI_TELEMETRY=0`.
+
+Subscription and OAuth logins (`/login`) were not measured. They have no
+profile and remain unsupported in restricted modes.
+
+### Node client behavior
+
+Pi on Node 22 sends its HTTPS requests as CONNECT through `HTTPS_PROXY`.
+A fixture CA was tested with a `CA:FALSE`, `serverAuth` leaf certificate for
+`api.anthropic.com`, behind a CONNECT proxy:
+
+| CA setting | Result |
+| --- | --- |
+| No CA variable | Refused: the TLS handshake was closed by the client |
+| `NODE_EXTRA_CA_CERTS` | `POST /v1/messages` reached the fixture |
+| `SSL_CERT_FILE` alone | Refused; Node does not read it |
+
+The host CA contract sets all four variables, so `NODE_EXTRA_CA_CERTS` covers Pi.
+
+### Pi under the guard (offline)
+
+The guard was packaged from toolchain `localhost/pi-guard-toolchain:development`
+(`0b69ba43c894…`, the reference toolchain). Its SHA-256 is
+`0c647dfea75667a46a8cd4cc4dfea4ee3d10363752ea7ce5957162bacd6d7ec9`, identical
+to Claude, Codex and OpenCode. The proxy image `localhost/pi-egress:local` is
+`13adbfafd7bd…`, the same agent-neutral image. The runs used Pi's layout:
+
+- `--network=none`, private PID and IPC namespaces, a read-only root, no
+  capabilities and no-new-privileges;
+- noexec tmpfs mounts for `/tmp`, `/var/tmp`, `/run` and `/pi-home`;
+- the npm cache tmpfs, and `.pi` and `.agents` bind-mounted below the home.
+
+| Check | Result |
+| --- | --- |
+| Layout | The guard reported `enforced revision=abi3-seccomp-mux-v1 abi=3` with the noexec home, the npm cache tmpfs and the state binds |
+| `pi -p` against a loopback OpenAI-compatible stub (a `models.json` provider with `openai-completions` and base URL `http://127.0.0.1:18080/v1`) | The stub returned a `bash` tool call. The tool wrote the sentinel to the workspace, owned by the caller UID 1000, and the second turn returned `fixture-done` |
+| Pi TUI in a PTY | Rendered, then exited with status 0 after `/quit` or two Ctrl+C (about 13 seconds including startup). A first attempt hung only because the test harness sent no Enter and had no timeout |
+| `pi --version` | `0.80.8` |
+| `npm install` at runtime | Fails (exit status 1): no registry is reachable. Extensions must be preinstalled during maintenance |
+| Named Unix socket | Denied (`PermissionError`); `pi -p`, its tools and the TUI need none |
+| Bun 1.3.14 (image built with `INSTALL_BUN=1`) | `bun -e` ran under the guard and wrote a workspace file; listening on a Unix socket failed |
+| `bwrap` | Only the example extension `examples/extensions/sandbox` references it; Pi itself does not use it |
+
+Runtime images rebuilt from the updated recipe, which copies
+`network/relay.py` and `network/mux.py` to `/opt/sandbox-egress/` (both match
+by SHA-256):
+
+| Image | ID | Contents |
+| --- | --- | --- |
+| `localhost/pi-container:latest`, without Bun | `099873e2a000…` | Pi 0.80.8 |
+| Disposable Bun variant, removed after the check | `9ec891bf59a4…` | Pi 0.80.8, Bun 1.3.14 |
+
+### Final verification: 2026-11-10
+
+Target as above (WSL2 kernel 6.6.87.2, Landlock ABI 3, Podman client 4.3.1 and
+server 4.9.3, Netavark). Shared files at `claude-container` `sandbox-ref-6`
+(commit `3150bfe`). Images: `localhost/pi-container:latest` `099873e2a000…`,
+`localhost/pi-egress:local` `13adbfafd7bd…`, toolchain `0b69ba43c894…`; guard
+SHA-256 `0c647dfe…6d7ec9`.
+
+`sandbox-ref-6` was found during this apply. The wrapper reads `.version`, which
+the shared installation manifest of `sandbox-ref-5` did not include, so five
+shared qualification tests failed. The reference added the optional profile
+field `install.files`; Pi declares `.version`.
+
+| Check | Result |
+| --- | --- |
+| `bash -n`, ShellCheck | Passed, no findings |
+| `--wrapper` | Passed: 71 tests. One run had a `test_lifetime_notice` failure (the known whole-second timing granularity); two reruns of that test passed |
+| `--shared` (includes `test_reference_copy.py`) | Passed: 134 tests, 27 skipped (run by the modes) |
+| `--qualification` | Passed: 18 tests (before `sandbox-ref-6`: five failures from the missing `.version`) |
+| `--network-feasibility`, `--network-policy`, `--mux` | Passed: 1, 14 and 26 tests |
+| `--guard`, `--guard-idle` | Passed: 19 tests (1 skipped) and 1 test |
+| `--network` (offline, provider, TLS fixture, concurrency, cleanup, `pi -p` with a streamed tool call, TUI) | Passed: 21 tests |
+| default (unrestricted runtime suite) | Passed: 15 tests. One run had a `test_native_lifetime_timeout` failure (same timing granularity); two reruns passed |
+| `test.sh` | Passed: 15 tests |
+| `test-wrapper.sh` | Not runnable on this host: `/tmp` is noexec and `/mnt/d` cannot hold Unix sockets. It runs the same `test_wrapper.py` that `--wrapper` runs in the runner |
+| `openspec validate add-network-egress --strict`, `git diff --check` | Valid, clean |
+
+No container, volume or network labeled for `io.pi-container` remained after
+the runs; the pre-existing containers were untouched.
+
+Operator-run authenticated checks (real keys for `anthropic-api`,
+`openai-api`, `gemini-api` and `openrouter-api`) are unavailable here and
+remain pending.

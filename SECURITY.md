@@ -101,8 +101,8 @@ session files.
 
 ### Network Egress and Data Exfiltration (Primary Residual Risk)
 
-The container has **unrestricted outbound network access by default**, and
-mounts `~/.pi` (which contains `~/.pi/agent/auth.json` auth tokens) and the
+In `unrestricted` mode the container has **unrestricted outbound network
+access**, and it mounts `~/.pi` (which contains `~/.pi/agent/auth.json` auth tokens) and the
 current project directory read-write. The AI agent runs as the mapped caller with read access to all of this.
 
 This means a **prompt-injected or misbehaving agent could read auth tokens or
@@ -114,8 +114,12 @@ has read access and unrestricted egress.
 
 - Treat the agent as trusted with everything it can read and reach over the
   network. Do not run it on projects containing secrets you would not give it.
-- Use `PI_NETWORK=none` to block all egress for tasks that do not need network
-  access, or point `PI_NETWORK` at a restricted/proxied network.
+- Use `PI_CONTAINER_NETWORK=offline` to block all egress for tasks that do not
+  need network access, or `provider` with one exact provider profile. Both are
+  enforced by a native guard and an external proxy, not by client settings.
+- In provider mode the allowed host can still receive data sent with an
+  attacker's key or account (residual exfiltration); only offline removes this
+  channel. See [docs/network-contract.md](docs/network-contract.md).
 - Be cautious with untrusted project content or untrusted prompts.
 
 ### Host Git Config Exposure
@@ -138,7 +142,7 @@ exfiltrate any embedded credentials over the unrestricted default network.
   the host Git configuration.
 - Consider creating a minimal gitconfig with only `user.name` and `user.email`
   for use with the container.
-- Keep `PI_NETWORK=none` when working with untrusted content.
+- Keep `PI_CONTAINER_NETWORK=offline` when working with untrusted content.
 
 ### Sensitive Working Directories
 
@@ -159,8 +163,8 @@ original workdir. Always use a suitably narrow project directory.
 Pi runs its tools without approval prompts, so the container is the only
 boundary around them and this wrapper offers no YOLO switch. Pi's `--approve`
 option trusts project-local files for a run; it does not approve tools.
-Combine `PI_NETWORK=none`, `PI_READONLY_CONFIG=1` and narrow workspaces for
-untrusted tasks.
+Combine `PI_CONTAINER_NETWORK=offline`, `PI_READONLY_CONFIG=1` and narrow
+workspaces for untrusted tasks.
 
 ### Resource Budgets
 

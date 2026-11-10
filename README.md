@@ -21,6 +21,12 @@ current project directory, with predictable host file ownership.
 git clone https://github.com/yarilc/pi-container.git
 cd pi-container
 
+# Every launch selects a network mode; unrestricted is the previous behavior
+export PI_CONTAINER_NETWORK=unrestricted
+
+# Build the image once, under explicit maintenance authorization
+PI_CONTAINER_MAINTENANCE=1 ./pi-container.sh --container-build --version
+
 # Use it anywhere, exactly like the `pi` command
 cd /path/to/your/project
 /path/to/pi-container/pi-container.sh "List the files in this directory"
@@ -30,9 +36,11 @@ alias pic='/path/to/pi-container/pi-container.sh'
 pic --version
 ```
 
-On first run the script builds the container image automatically (~2 minutes).
-Subsequent runs start instantly. The image is rebuilt automatically whenever
-`Containerfile` **or** `.version` changes (detected via content hash).
+Building the image, including the first build, needs exact
+`PI_CONTAINER_MAINTENANCE=1`. When `Containerfile`, `.containerignore`,
+`.version`, `network/relay.py`, `network/mux.py` or the Bun choice changes, the
+image is stale: the launch stops until `--container-build` is run again under
+maintenance. For restricted networking, see [Network modes](#network-modes).
 
 ## Optional host Podman API access
 
@@ -206,14 +214,16 @@ PI_NPM_CACHE_SIZE=512M pic install npm:pi-web-access
 
 ### API keys
 
-The script forwards these environment variables to the container **only if
-they are set and non-empty**:
+In `unrestricted` mode, the script forwards these environment variables to the
+container **only if they are set and non-empty**. In `provider` mode only the
+key of the selected profile is forwarded, and `offline` forwards none (see
+[Provider mode](#provider-mode)):
 
 | Variable | Purpose |
 | --- | --- |
 | `ANTHROPIC_API_KEY` | Anthropic / Claude API key |
 | `OPENAI_API_KEY` | OpenAI API key |
-| `GOOGLE_API_KEY` | Google / Gemini API key |
+| `GOOGLE_API_KEY` | Forwarded in unrestricted mode; Pi 0.80.8 reads `GEMINI_API_KEY` for Gemini, so list it in `PI_ENV_VARS` or use the `gemini-api` profile |
 
 > ⚠️ **Security note:** API keys are passed as environment variables. They are
 > visible in `podman inspect` output and inside the container's `/proc`.
@@ -259,14 +269,19 @@ to avoid duplicate forwarding.
 
 ### Proxy support
 
-If `HTTP_PROXY`, `HTTPS_PROXY`, or `NO_PROXY` are set on the host, they are
-forwarded to the container automatically.
+In `unrestricted` mode, `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` set on the
+host are forwarded to the container automatically. Restricted modes never
+forward host proxy or CA variables.
 
 ### Other variables
 
 | Variable | Purpose |
 | --- | --- |
-| `PI_CONTAINER_IMAGE` | Override the container image name (default: `pi-container`) |
+| `PI_CONTAINER_NETWORK` | Required network mode: `offline`, `provider` or `unrestricted`; see [Network modes](#network-modes) |
+| `PI_CONTAINER_MAINTENANCE` | Exactly `1` authorizes image builds and proxy pulls |
+| `PI_CONTAINER_CONFIG_DIR` | Private host directory replacing only `~/.pi`; conflicts with `PI_CONTAINER_STATE_DIR`. Inside the session it is always `/pi-home/.pi` |
+| `PI_CONTAINER_TRUST_HOST_CA`, `PI_CONTAINER_CA_BUNDLE` | Opt-in host CA trust; see [Host CA trust](#host-ca-trust) |
+| `PI_CONTAINER_IMAGE` | Override the container image name (default: `localhost/pi-container`) |
 | `PI_DEBUG` | Set to any value to enable verbose debug output |
 | `PI_CONTAINER_PODMAN` | Only exact `1` enables the client and verified host socket; all other values disable delegation |
 | `PI_CONTAINER_PODMAN_SOCKET` | Absolute accessible socket override; then Unix `CONTAINER_HOST`, then `${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock` |
@@ -276,7 +291,6 @@ forwarded to the container automatically.
 | `PI_CONTAINER_CPU_LIMIT` | Container CPU limit (default: `2`) |
 | `PI_CONTAINER_PIDS_LIMIT` | Container PID limit (default: `512`) |
 | `PI_NPM_CACHE_SIZE` | Size of the ephemeral npm cache tmpfs at `/pi-home/.npm`, used by `pi install npm:<pkg>` (default: `256M`) |
-| `PI_NETWORK` | Container network mode, e.g. `none` to block all egress (default: full access) |
 | `PI_READONLY_CONFIG` | Set to `1` to mount `~/.pi` and `~/.agents` read-only (prevents persistence) |
 | `PI_CONTAINER_GITCONFIG` | Exactly `1` mounts `~/.gitconfig` read-only from its physical file (default: not mounted). The opt-in fails if `~/.gitconfig` is not a regular file |
 | `PI_MOUNT_GITCONFIG` | Deprecated alias with a warning: `1` mounts, `0` does not. Conflicting values with `PI_CONTAINER_GITCONFIG` are errors |
@@ -285,6 +299,114 @@ forwarded to the container automatically.
 | `PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE` | Exactly `1` allows a refused sensitive workspace, with a warning (not recommended) |
 | `TERM` | Terminal type (forwarded for TUI rendering) |
 | `EDITOR`, `VISUAL` | Host editor preference (forwarded with fallback to `nano`) |
+
+## Network modes
+
+`PI_CONTAINER_NETWORK` is required for every launch; an unset or empty value
+stops before any engine call or state change. Unknown values fail before image
+operations, and a failed restricted launch never retries with unrestricted
+networking. `PI_NETWORK` is rejected with migration guidance.
+
+| Mode | Agent network | Podman delegation |
+| --- | --- | --- |
+| `offline` | Own loopback, pipes and connected socket pairs only; no model provider is reachable | Rejected |
+| `provider` | As offline, plus the exact HTTPS host of one protected provider profile through an external proxy | Rejected |
+| `unrestricted` | Ordinary runtime networking, the previous behavior | Exact `PI_CONTAINER_PODMAN=1` |
+
+The restricted implementation is shared with `claude-container` and copied
+unchanged from its tag `sandbox-ref-6`; see
+[docs/network-contract.md](docs/network-contract.md) and
+[network/README.md](network/README.md).
+
+### Restricted prerequisites and qualification
+
+Offline and provider modes require:
+
+- host Python 3;
+- a same-host Unix rootless Podman >= 4.9 service with Netavark;
+- the standard OCI seccomp profile and usable Landlock ABI >= 3;
+- a protected installation outside writable workspace and state trees;
+- the static guard and its SHA-256 manifest in `network/bin`;
+- a current local qualification report.
+
+Run `--container-qualify` alone after preparation or relevant updates:
+
+```bash
+PI_CONTAINER_NETWORK=offline ./pi-container.sh --container-qualify
+```
+
+Qualification is bound to the boot, engine, security policy, code, images
+(including the Bun choice), policy, profile, CA trust and hardening settings. A
+reboot therefore requires requalification. An active SELinux or AppArmor policy
+that cannot be identified forces the full gate on every launch. The shipped
+release acceptance inventory is empty, so installations report
+`locally-qualified`.
+
+Restricted sessions receive no host proxy or CA variables, and
+`PI_OFFLINE=1`, `PI_SKIP_VERSION_CHECK=1` and `PI_TELEMETRY=0` are set after
+forwarding. Writable `~/.pi` settings cannot re-enable Pi's startup network
+operations. Runtime `npm`/`pi install` package downloads, Bun installs and
+named Unix sockets are unavailable: preinstall extensions in unrestricted mode
+or during maintenance. Pi's tools, its TUI and Bun were verified under the
+guard; see [the validation record](docs/validation.md).
+
+### Provider mode
+
+Provider mode needs:
+
+- `PI_CONTAINER_NETWORK_PROFILE`;
+- `PI_CONTAINER_NETWORK_POLICY`, a protected absolute policy path, normally
+  `agent/policies/default.json` of the installation;
+- `PI_CONTAINER_NETWORK_RUNTIME_DIR`, a private native directory at its host
+  path;
+- `PI_CONTAINER_EGRESS_IMAGE`, the immutable proxy image ID or registry digest.
+
+| Profile | Allowed host | Forwarded key |
+| --- | --- | --- |
+| `anthropic-api` | `api.anthropic.com` | `ANTHROPIC_API_KEY` |
+| `openai-api` | `api.openai.com` | `OPENAI_API_KEY` |
+| `gemini-api` | `generativelanguage.googleapis.com` | `GEMINI_API_KEY` |
+| `openrouter-api` | `openrouter.ai` | `OPENROUTER_API_KEY` |
+
+Only that key is forwarded. Subscription and browser-callback logins
+(Claude Pro/Max, ChatGPT, Copilot), cloud providers, gateways, custom base URLs
+and local model servers have no profile.
+
+Limits:
+
+- **Residual exfiltration.** The proxy binds the CONNECT host to the TLS server
+  name of the initial and retried ClientHello. It cannot tell your credentials
+  from an attacker's, so an injected agent can send workspace data to the
+  allowed host with a foreign key or account. Only offline removes this
+  channel.
+- **Opaque application routing.** Matching SNI does not prove exclusive
+  communication with your account. TLS 1.2 renegotiation is not inspected.
+- **Hosted tools.** Provider-hosted tools such as web search run at the
+  provider, outside this boundary.
+- **Maintenance traffic.** Image pulls and build `RUN` steps happen outside
+  runtime filtering.
+
+### Operator build inputs
+
+Prepare these under maintenance authorization (guided setup arrives with
+`add-container-setup`):
+
+```bash
+export PI_CONTAINER_MAINTENANCE=1
+tag=$(python3 -I network/agent_profile.py image toolchain development)
+podman build --pull=never --tag "$tag" --file network/guard-build.Containerfile network
+bash network/build-guard.sh "$PWD/network/bin"   # a protected native directory
+podman build --pull=never --tag localhost/pi-egress:local --file network/Containerfile network
+podman image inspect --format '{{.Id}}' localhost/pi-egress:local
+```
+
+### Host CA trust
+
+`PI_CONTAINER_TRUST_HOST_CA=1` (or `true`/`yes`) mounts one bundle read-only at
+`/pi-home/ca/bundle.pem`: `PI_CONTAINER_CA_BUNDLE`, or the first of
+`/etc/ssl/certs/ca-certificates.crt` and `/etc/pki/tls/certs/ca-bundle.crt`.
+The wrapper sets `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE` and
+`NODE_EXTRA_CA_CERTS` to it. Pi on Node honors `NODE_EXTRA_CA_CERTS`.
 
 ## Mounts and security
 
@@ -408,7 +530,8 @@ ownership changes. Every temporary store disappears with the session.
 > **Network egress is unrestricted by default.** An autonomous agent with
 > network access and read access to mounted volumes (including
 > `~/.pi/agent/auth.json`) could exfiltrate data if subverted by prompt
-> injection. Use `PI_NETWORK=none` (or a restricted network) to limit egress.
+> injection. Use `PI_CONTAINER_NETWORK=offline`, or `provider` with one exact
+> provider profile, to limit egress.
 > See [SECURITY.md](./SECURITY.md).
 >
 > **Config directories (`~/.pi`, `~/.agents`) are writable by default.**
@@ -589,10 +712,17 @@ ask for `--container-build`.
 ## Verification
 
 ```bash
-./test-wrapper.sh            # synthetic wrapper tests, no engine or credentials
-bash tests/run-runtime.sh    # real rootless checks from native Linux volume storage
-./test.sh                    # builds a disposable image, then runs the real checks
+./test-wrapper.sh                      # synthetic wrapper tests, no engine or credentials
+bash tests/run-runtime.sh              # unrestricted real rootless checks
+bash tests/run-runtime.sh --wrapper    # wrapper tests in the runner (executable /tmp)
+bash tests/run-runtime.sh --shared     # shared sandbox suites from claude-container
+bash tests/run-runtime.sh --network    # restricted modes with real rootless Podman
+bash tests/run-runtime.sh --guard      # guard fixtures (needs the toolchain image)
+./test.sh                              # builds a disposable image, then runs the real checks
 ```
+
+Further modes: `--qualification`, `--network-feasibility`, `--network-policy`,
+`--mux` and `--guard-idle`.
 
 Synthetic and real results, with their limitations, are recorded in
 [the validation record](docs/validation.md). See [CONTRIBUTING.md](./CONTRIBUTING.md)
@@ -614,6 +744,17 @@ setting an old and a new name to different values is an error.
 | `PI_RUN_TIMEOUT` | `PI_CONTAINER_RUN_TIMEOUT` |
 | `PI_ALLOW_UNSAFE_PWD` | `PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE` |
 | `PI_MOUNT_GITCONFIG` | `PI_CONTAINER_GITCONFIG` |
+
+Network egress port (`add-network-egress`):
+
+- Every launch needs `PI_CONTAINER_NETWORK`. Set `unrestricted` to keep the
+  previous networking.
+- `PI_NETWORK` is no longer supported: `PI_NETWORK=none` becomes
+  `PI_CONTAINER_NETWORK=offline`; other values become `unrestricted`.
+- Image builds, including the first and Bun changes, need
+  `PI_CONTAINER_MAINTENANCE=1`.
+- The default image name is `localhost/pi-container`, the same local image.
+- An empty `PI_CONTAINER_STATE_DIR` now selects shared state.
 
 Behavior changes:
 

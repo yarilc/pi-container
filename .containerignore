@@ -3,3 +3,7 @@
 !Containerfile
 !.containerignore
 !.version
+!network
+network/*
+!network/relay.py
+!network/mux.py

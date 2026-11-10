@@ -27,7 +27,7 @@ info=$(podman info --format '{{.Host.Security.Rootless}} {{.Host.OS}}')
 [[ "$info" == 'true linux' ]] || { printf 'Linux rootless Podman is required\n' >&2; exit 1; }
 version=$(head -1 "$root/.version" | tr -d '[:space:]')
 [[ -n "$version" ]] || exit 1
-hash=$({ cat "$root/Containerfile" "$root/.containerignore" "$root/.version"; printf 'INSTALL_BUN=0\n'; } | sha256sum)
+hash=$({ cat "$root/Containerfile" "$root/.containerignore" "$root/.version" "$root/network/relay.py" "$root/network/mux.py"; printf 'INSTALL_BUN=0\n'; } | sha256sum)
 hash=${hash%% *}
 podman build --format docker --tag "$image" --file "$root/Containerfile" \
     --build-arg "PI_VERSION=$version" --build-arg INSTALL_BUN=0 \

@@ -37,6 +37,18 @@ jobs:
           dockerfile: Containerfile
           failure-threshold: warning
 
+      - name: Hadolint (egress proxy Containerfile)
+        uses: hadolint/hadolint-action@2332a7b74a6de0dda2e2221d575162eba76ba5e5 # v3.3.0
+        with:
+          dockerfile: network/Containerfile
+          failure-threshold: warning
+
+      - name: Hadolint (guard toolchain Containerfile)
+        uses: hadolint/hadolint-action@2332a7b74a6de0dda2e2221d575162eba76ba5e5 # v3.3.0
+        with:
+          dockerfile: network/guard-build.Containerfile
+          failure-threshold: warning
+
       - name: Markdownlint (README.md)
         uses: DavidAnson/markdownlint-cli2-action@ded1f9488f68a970bc66ea5619e13e9b52e601cd # v23.2.0
         with:
@@ -59,6 +71,13 @@ jobs:
         run: |
           chmod +x ./test-wrapper.sh ./test.sh
           ./test-wrapper.sh
+
+      - name: Shared sandbox suites (credential-free, no real engine)
+        run: |
+          python3 -B -m unittest -v tests.test_reference_copy tests.test_agent_profile \
+            tests.test_network_policy tests.test_mux tests.test_tls_client_hello tests.test_tls_proxy \
+            tests.test_platform tests.test_qualification tests.test_guard tests.test_session \
+            tests.test_network_feasibility tests.test_image_pins
 
       - name: Start same-host rootless service for acceptance
         run: |
@@ -109,6 +128,11 @@ jobs:
       - name: Save image as tarball
         run: podman save pi-container-scan -o /tmp/pi-container-scan.tar
 
+      - name: Build egress proxy image for scanning
+        run: |
+          podman build --format docker -t pi-egress-scan -f network/Containerfile network
+          podman save pi-egress-scan -o /tmp/pi-egress-scan.tar
+
       - name: Vulnerability scan (Trivy)
         # Note: using trivy-action v0.36.0; previous v0.29.0 referenced
         # aquasecurity/setup-trivy@v0.2.2 which no longer exists.
@@ -126,5 +150,14 @@ jobs:
           severity: CRITICAL,HIGH
           # TODO: change to exit-code: '1' once CVEs are triaged in .trivyignore
           # Currently set to '0' because .trivyignore is empty.
+          exit-code: '0'
+          ignore-unfixed: true
+
+      - name: Vulnerability scan of the egress proxy (Trivy)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          input: /tmp/pi-egress-scan.tar
+          format: table
+          severity: CRITICAL,HIGH
           exit-code: '0'
           ignore-unfixed: true

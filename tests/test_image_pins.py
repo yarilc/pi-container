@@ -3,6 +3,7 @@
 Same parsing as the claude-container reference. Pi has no network policy yet, so there is no tested-CLI cross-check until the Wave 3 network port.
 """
 from pathlib import Path
+import json
 import re
 import unittest
 
@@ -67,9 +68,18 @@ def violations(recipe):
     return found
 
 
+def cli_mismatch(version, tested_cli):
+    """The Pi version in .version must equal the policy's tested CLI version."""
+    tested = re.match(r'(\d+\.\d+\.\d+)\b', tested_cli)
+    if tested and tested[1] == version:
+        return None
+    return f'.version {version or "(none)"} differs from policy tested.cli {tested_cli!r}'
+
+
 class ImagePinTests(unittest.TestCase):
     def setUp(self):
         self.recipe = (ROOT / 'Containerfile').read_text()
+        self.tested_cli = json.loads((ROOT / 'agent/policies/default.json').read_text())['tested']['cli']
 
     def test_shipped_recipe_is_pinned(self):
         self.assertEqual(violations(self.recipe), [])
@@ -77,6 +87,13 @@ class ImagePinTests(unittest.TestCase):
         self.assertRegex(args['BUN_VERSION'], VERSION)
         self.assertRegex((ROOT / '.version').read_text().strip(), VERSION)
         self.assertRegex(args['OPENSPEC_VERSION'], VERSION)
+
+    def test_version_matches_policy_tested_cli(self):
+        version = (ROOT / '.version').read_text().strip()
+        self.assertEqual(cli_mismatch(version, self.tested_cli), None)
+        message = cli_mismatch('0.80.9', self.tested_cli)
+        self.assertIn('0.80.9', message)
+        self.assertIn('0.80.8', message)
 
     def test_mutated_recipes_are_rejected(self):
         digest = re.search(r'@sha256:[a-f0-9]{64}', self.recipe)
