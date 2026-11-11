@@ -85,6 +85,10 @@ class ProfileSchemaTests(unittest.TestCase):
             lambda v: v['install'].update(files=['Containerfile']),
             lambda v: v['install'].update(files=['.version', '.version']),
             lambda v: v['install'].update(unknown=True),
+            lambda v: v['native'].update(private_shared_dirs=1),
+            lambda v: v['native'].update(private_shared_dirs='true'),
+            lambda v: v['native'].update(private_shared_dirs=None),
+            lambda v: v['native'].update(unknown=True),
         ):
             value = copy.deepcopy(self.value)
             mutate(value)
@@ -97,6 +101,16 @@ class ProfileSchemaTests(unittest.TestCase):
         value = copy.deepcopy(self.value)
         value['install']['files'] = ['.version', 'docs/agent-version']
         self.assertEqual(agent_profile.validate(value).install_files, ('.version', 'docs/agent-version'))
+
+    def test_optional_private_shared_dirs(self):
+        self.assertIs(agent_profile.validate(self.value).private_shared_dirs,
+                      self.value['native'].get('private_shared_dirs', False))
+        value = copy.deepcopy(self.value)
+        value['native'].pop('private_shared_dirs', None)
+        self.assertIs(agent_profile.validate(value).private_shared_dirs, False)
+        for flag in (True, False):
+            value['native']['private_shared_dirs'] = flag
+            self.assertIs(agent_profile.validate(value).private_shared_dirs, flag)
 
     def test_optional_runtime_build(self):
         self.assertEqual(agent_profile.validate(self.value).runtime_build,

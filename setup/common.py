@@ -96,8 +96,19 @@ def private(path, *, create=False):
             os.umask(old)
     if path.exists():
         info = path.stat()
-        if not path.is_dir() or info.st_uid != os.getuid() or info.st_mode & 0o077 or not os.access(path, os.R_OK | os.W_OK | os.X_OK):
-            raise SetupError(f'Private caller-owned directory required: {path}; existing permissions were not changed.')
+        reason = None
+        if not path.is_dir():
+            reason = 'it is not a directory'
+        elif info.st_uid != os.getuid():
+            reason = f'it belongs to UID {info.st_uid}, not the calling user'
+        elif info.st_mode & 0o077:
+            reason = (f'mode {info.st_mode & 0o777:o} grants group/other access; run chmod 700 {path} '
+                      'or use native Linux storage that enforces Unix permissions')
+        elif not os.access(path, os.R_OK | os.W_OK | os.X_OK):
+            reason = 'the calling user lacks read, write or traverse access'
+        if reason:
+            raise SetupError(f'Private caller-owned directory required: {path} ({reason}); '
+                             'existing permissions were not changed.')
     return path.resolve()
 
 
@@ -328,13 +339,19 @@ def protect_mounts(value, env, args=(), *, launcher=None, workspace=None):
 
 
 def prepare_state(env, *, create=False):
-    """Preserve the wrapper's private-configuration/shared-directory permission contract."""
+    """Preserve the wrapper's private-configuration/shared-directory permission contract.
+
+    Returns (path, private) pairs; private is true only for paths that passed private().
+    """
     paths = writable_mounts(env)[1:]
     isolated = env.get(PROFILE.env('STATE_DIR'))
+    checked = []
     for index, path in enumerate(paths):
-        if isolated or index == 0:
+        if isolated or index == 0 or PROFILE.private_shared_dirs:
             private(path, create=create)
+            checked.append((path, True))
         else:
+            checked.append((path, False))
             # Shared tool settings are writable state, not a credential home.
             trusted(path, missing=True)
             if create:
@@ -349,4 +366,4 @@ def prepare_state(env, *, create=False):
         child = Path(isolated) / PROFILE.config_home
         if child.exists():
             private(child)
-    return paths
+    return checked

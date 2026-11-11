@@ -83,6 +83,8 @@ class Profile:
         self.approval_bypass_env = native['approval_bypass_env']
         self.config_home = native['config_home']
         self.shared_dirs = tuple(native['shared_dirs'])
+        # Wrappers that refuse non-private shared directories declare it here.
+        self.private_shared_dirs = native.get('private_shared_dirs', False)
         self.auth = {key: dict(item) for key, item in value['auth'].items()}
 
     def env(self, suffix):
@@ -148,7 +150,9 @@ def validate(value):
         fail('install.files must be distinct agent files outside network/, setup/ and agent/')
     native = value['native']
     fields(native, ('home', 'command', 'config_dir_env', 'approval_bypass_env', 'config_home', 'shared_dirs'),
-           where='native')
+           ('private_shared_dirs',), where='native')
+    if type(native.get('private_shared_dirs', False)) is not bool:
+        fail('native.private_shared_dirs must be a boolean')
     string(native['home'], re.compile(r'/[a-z0-9][a-z0-9._-]*'), 'native.home')
     string(native['command'], NAME, 'native.command')
     for key in ('config_dir_env', 'approval_bypass_env'):

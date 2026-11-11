@@ -22,7 +22,8 @@
     "config_dir_env": "PI_CONTAINER_CONFIG_DIR",
     "approval_bypass_env": "PI_CONTAINER_YOLO",
     "config_home": ".pi",
-    "shared_dirs": [".agents"]
+    "shared_dirs": [".agents"],
+    "private_shared_dirs": true
   },
   "auth": {
     "anthropic": {
