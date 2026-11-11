@@ -15,8 +15,8 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-REFERENCE_TAG = 'sandbox-ref-9'
-REFERENCE_COMMIT = '8b191e55425d7482fca6c8abdc97c6a400215993'
+REFERENCE_TAG = 'sandbox-ref-10'
+REFERENCE_COMMIT = '0f6585f0973250a57398c0b187da4c99d2bfd09f'
 SIBLING = ROOT.parent / 'claude-container'
 # Shared directories whose complete file set is fixed by the manifest.
 CLOSED_DIRECTORIES = ('network', 'setup')
@@ -26,7 +26,7 @@ MANIFEST = {
     'network/Containerfile': 'b909198e5027bc58ceca4e6076ea4b1a54faa592083e4c0190b2c671cc5b2f36',
     'network/README.md': 'acf83595fb42e7911f99d94fbbca2c2c647a6a4e8bbeee72020a2de26adb37c1',
     'network/agent_budgets.py': 'cbd3cfded46d3bce280047b1e291df55ab74a87bf4af2a264796000307700cc7',
-    'network/agent_profile.py': '1b5bcd4c43d9a953ed6ef2a08d6695ab08ca87d4ef1da51d5b201bdb9f433344',
+    'network/agent_profile.py': 'b15288578fbe8b5c7788640156b61b620f96fb809310a9d5f245eef361ecc763',
     'network/build-guard.sh': 'e0cc2fce71feb01c447dcb4daf5194f65f098b8a4c9837f756de7e12345cc611',
     'network/control.py': 'b0076acd05c462fe27d706a6439cbc742febcaa9aefe4a9a4f212a24bdaae370',
     'network/guard-build.Containerfile': 'dfd10429fd61bfb12387d616b0cb1f2b3c9d90e9718dd341207a496e83d63094',
@@ -50,10 +50,10 @@ MANIFEST = {
     'network/revisions.py': 'fa35bcac26f5590c0d0b9477fea2773faa1f1eb285215e735e5cb8aa6b2b9cb1',
     'network/session.py': '2e13f1fe9c4d9f5299abe00f0b8a0fc6f40c78eefceff2a0b79b0c4e170264e6',
     'network/tls_client_hello.py': 'a4ce71c1710cb1dba7c9ad5889b16549b5d7ebb4a7ae7c2edbf96eab32771e80',
-    'setup/common.py': '0571c75390c95a002a51edf5a2b54360777b570655590efd4f730411692af091',
+    'setup/common.py': 'c17c8610755e741caf1b37a510d2d70c00770ba75dcce6ebaee4b51a23eb781a',
     'setup/diagnostics.py': 'd6f2a81010f115f5631c829ccc70c39ba329b1baf44b393e34a33a884a3bdc3d',
     'setup/launch.py': '72182ed789a6349fe3d660af88315c4665aa892bba4799b6a4e4969965baefc6',
-    'setup/setup.py': '725a6567cd98983dbbf651433480c5ee06f9ad554e8981ed108dd9fbc2c7d958',
+    'setup/setup.py': '7dfe3e71a13b13dffc3c2dad36e262913f2226c4564c52691360319054589fc1',
     'setup/smoke.py': '696abeb7b8a991c8d916348300b8435e315c2973877805f03383c6665ce63da3',
     'tests/guard_bind_fixture.py': 'd6e4eb85cedb249ec9c6b4f2a026d14acbd5e1309a63ac036647be06781287cc',
     'tests/guard_mux_fixture.py': 'c641e419f5f2939c0c0af34d8a19dfcbcdf42302e0686e2d446bfad1bfc85f3d',
@@ -65,7 +65,7 @@ MANIFEST = {
     'tests/network_fixture.py': '90311f5240f14c373dc83ce0d2c4d023c4aa247adcf361ccebfaa2009c3e3675',
     'tests/proxy_budget_fixture.py': 'cde9c888d3842045752a93ec1963110749a3d9cd4d48ef76d199e0b4847fea67',
     'tests/sandbox_profile.py': 'adf6dd51417ec62cf6c2ccc84b8789e41a4f8b8ba46d1be1635d3ab2445fa60e',
-    'tests/test_agent_profile.py': '37dc7aa531082a1c356bc347865196e7dc86406196b4abfe6f69d64dfbd91c5e',
+    'tests/test_agent_profile.py': '2c05729712341a6481390aadf775f573651d99ed6ec9243cc669863923727b1e',
     'tests/test_alignment.py': '4f1e68c087fe95abd34818385d7a12e1f36f86ca0d50e5dbfe57b22724de588c',
     'tests/test_guard.py': '78c623761899aee82e912888c2c769d86bf55bd445d47dfc2f09d4f5f1484f2c',
     'tests/test_mux.py': 'fb3a7cf8675d247c6609a337d56682d484cde6296e14ea939bfde70537cc8446',
@@ -74,7 +74,7 @@ MANIFEST = {
     'tests/test_platform.py': 'e5e30cbb9edb3561e0a6cac67641ab27986ce9e6bd425e5be96976c39fb5fecf',
     'tests/test_qualification.py': 'de1ef6d16975d1ab8939918ea2885f8d209f4ecc96fba8c28aaff44daf42c55d',
     'tests/test_session.py': 'f3b01c9965ee9785d6c910537485faa8cd3a11402b79b0cbb1401b1372e4df28',
-    'tests/test_setup.py': 'ae18a1e6b4a9fde7707b3fdb355235391f5b590ec0b7c2b78afee7125de69cfc',
+    'tests/test_setup.py': '8dd963ab5bfa33c54d1a62ea23263b4da723188f84650dd712ab81ddcb262eb3',
     'tests/test_tls_client_hello.py': '7d8f889af0c4a8f6d40038bdbda915f3afa3adc08c47b5506a02180b595b7ccc',
     'tests/test_tls_proxy.py': '77f9dda900a8ee28ef76d018d862bd0475193f5b90840fd29005a04fe4403e83',
     'tests/tls_binding_fixture.py': '062fe63ec1fc8ad399199a5f5823515070d5d1fa4ac62607f8722a61347f3331',

@@ -187,7 +187,25 @@ def questionnaire():
     return value, old
 
 
-def run(command, env, *, capture=False, input=None, timeout=20, terminal=False, cwd=None):
+class Captured(str):
+    """Captured standard output that also carries the command's standard error."""
+    stderr = ''
+
+
+def stderr_excerpt(data, *, lines=5, width=2048):
+    """Bounded, printable-only tail of untrusted command diagnostics."""
+    if isinstance(data, bytes):
+        data = data.decode('utf-8', errors='replace')
+    kept = (''.join(char for char in line if char.isprintable()).strip() for line in (data or '').splitlines())
+    return [line[:width] for line in [line for line in kept if line][-lines:]]
+
+
+def print_excerpt(data):
+    for line in stderr_excerpt(data):
+        print(PREFIX + 'smoke: ' + line, file=sys.stderr)
+
+
+def run(command, env, *, capture=False, input=None, timeout=20, terminal=False, cwd=None, excerpt=False):
     command = list(map(str, command))
     # Login retains its controlling terminal. Other operator commands receive
     # their own process group, so cancellation cannot kill the setup itself.
@@ -215,8 +233,16 @@ def run(command, env, *, capture=False, input=None, timeout=20, terminal=False, 
             for line in stderr.decode(errors='replace').splitlines():
                 if line.startswith(PREFIX + 'status='):
                     print(''.join(char for char in line[:2048] if char.isprintable()), file=sys.stderr)
+        if capture and excerpt:
+            print_excerpt(stderr)
         raise SetupError(f'Setup command failed (exit {process.returncode}): {command[0]} {command[1] if len(command) > 1 else ""}; check prerequisites and retry.')
-    return stdout.decode('utf-8') if capture else ''
+    if not capture:
+        return ''
+    if not excerpt:
+        return stdout.decode('utf-8')
+    output = Captured(stdout.decode('utf-8'))
+    output.stderr = stderr.decode('utf-8', errors='replace')
+    return output
 
 
 def stop_child(process, grouped):
@@ -635,8 +661,9 @@ def smoke_in(value, release, workspace):
     args = ['bash', str(release / PROFILE.wrapper), '--container-shell']
     if value['worktree']:
         args.append('--container-git-worktree')
-    output = run(args, env, capture=True, input=program, timeout=90, cwd=workspace)
+    output = run(args, env, capture=True, input=program, timeout=90, cwd=workspace, excerpt=True)
     if output.splitlines().count('SANDBOX_SETUP_SMOKE_OK') != 1:
+        print_excerpt(getattr(output, 'stderr', ''))
         raise SetupError('Installed sandbox smoke check did not confirm readiness.')
 
 
@@ -745,8 +772,9 @@ def main():
             candidate.mkdir(mode=0o700)
             copy_inputs(candidate)
             saved_env = runtime_environment(value, candidate, overrides=False)
-            for path in prepare_state(saved_env, create=True):
-                changes.append('Prepared or reused private state directory: ' + str(path))
+            for path, is_private in prepare_state(saved_env, create=True):
+                changes.append('Prepared or reused ' + ('private' if is_private else 'shared')
+                               + ' state directory: ' + str(path))
             if value['network'] == 'provider':
                 private(value['runtime_dir'], create=True)
             prepare_artifacts(value, previous, candidate, env, images, refresh, changes)

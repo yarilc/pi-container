@@ -58,6 +58,12 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
 
 ### Changed
 
+- Shared files now come from `claude-container` tag `sandbox-ref-10`, and
+  `agent/profile.json` sets `native.private_shared_dirs: true`. Setup now
+  refuses a non-private `~/.agents` before image work, instead of failing later
+  in the smoke check with only `exit 1`. A failed smoke check shows the
+  wrapper's sanitized stderr, and refusals name the reason and the `chmod 700`
+  fix. Existing installations requalify on their next setup.
 - **Breaking:** `--container-build` used alone now rebuilds the image and
   exits; add Pi arguments (for example `--version`) to rebuild and start.
 - **Breaking:** `PI_CONTAINER_YOLO` accepts only `0`, `1`, `true`, `false`,

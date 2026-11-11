@@ -455,3 +455,30 @@ methods keep their current setup behavior.
 | `bash tests/run-runtime.sh --shared` | Passed: 145 tests, 27 skipped (run by the modes) |
 | `bash tests/run-runtime.sh --setup` | Passed: 65 tests |
 | `bash tests/run-runtime.sh --setup-runtime` | Passed: 4 tests |
+
+## Adoption of `sandbox-ref-10`: 2026-11-11
+
+Copied from `claude-container` tag `sandbox-ref-10` (commit `0f6585f`):
+
+- `network/agent_profile.py`, `setup/common.py`, `setup/setup.py`;
+- `tests/test_agent_profile.py`, `tests/test_setup.py`.
+
+The `tests/test_reference_copy.py` manifest moved to the tag.
+`agent/profile.json` sets `native.private_shared_dirs: true`. The cause was an
+operator setup that failed with only `Setup command failed (exit 1)`: the
+wrapper refused a non-private `~/.agents` in the smoke launch, while setup had
+checked only `~/.pi`. Setup now refuses that directory before image work and
+shows the smoke stderr on failure.
+
+| Check | Result |
+| --- | --- |
+| `bash tests/run-runtime.sh --shared` | Passed: 146 tests, 27 skipped (run by the modes) |
+| `bash tests/run-runtime.sh --setup` | Passed: 68 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 4 tests, after a rerun (see below) |
+| `bash tests/run-runtime.sh --wrapper` | 74 tests; 72 passed. `test_permanently_stalled_creation_signal_matrix` failed in 2 subtests on `elapsed > 3` (2.6 to 2.9 s), also when run alone. The same timing failure occurs on `main` in `codex-container`, and this adoption changes neither the wrapper nor `test_wrapper.py`. It is recorded as an environment timing issue after the host crash, not a regression |
+
+A first run of all wrappers' suites was interrupted by a host crash. The crash
+left a test-runner image (`pi-runtime-runner-1000-124363`) whose cached package
+layer had an empty `libsubid.so.4.0.0`, so the next `--setup-runtime` run failed
+with `podman: error while loading shared libraries`. After that image was
+removed, the rerun built a fresh layer and passed.

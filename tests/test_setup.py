@@ -1,5 +1,6 @@
 """Synthetic setup tests: native disposable state, fake engines, no credentials."""
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -563,6 +564,34 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
             self.assertEqual(self.workspace.stat().st_mode & 0o777, 0o755)
         finally:
             os.umask(before)
+
+    def test_private_refusal_names_reason_and_fix(self):
+        shared = self.base / 'host-tool-dir'
+        shared.mkdir(mode=0o755)
+        shared.chmod(0o755)
+        with self.assertRaises(common.SetupError) as raised:
+            common.private(shared)
+        message = str(raised.exception)
+        for text in (str(shared), 'mode 755', 'chmod 700 ' + str(shared), 'existing permissions were not changed'):
+            self.assertIn(text, message)
+        self.assertEqual(shared.stat().st_mode & 0o777, 0o755)
+        regular = self.base / 'regular-file'
+        regular.write_text('')
+        with self.assertRaisesRegex(common.SetupError, 'not a directory'):
+            common.private(regular)
+        locked = self.base / 'locked'
+        locked.mkdir(mode=0o700)
+        locked.chmod(0o500)
+        self.addCleanup(locked.chmod, 0o700)
+        if not os.access(locked, os.W_OK):  # a caller that bypasses permission checks cannot observe this case
+            with self.assertRaisesRegex(common.SetupError, 'lacks read, write or traverse access'):
+                common.private(locked)
+        self.assertEqual(locked.stat().st_mode & 0o777, 0o500)
+        owned = self.base / 'owned'
+        owned.mkdir(mode=0o700)
+        with patch.object(common, 'trusted'), patch.object(common.os, 'getuid', return_value=os.getuid() + 1):
+            with self.assertRaisesRegex(common.SetupError, 'belongs to UID'):
+                common.private(owned)
 
     def test_missing_source_input_and_reserved_symlinks_are_rejected(self):
         with patch.dict(os.environ, self.env, clear=True), patch.object(setup, 'SOURCE', self.base):
@@ -1144,6 +1173,39 @@ printf 'APP_TTY=%s ARGS=%s\\n' "$terminal" "$*"
             with self.assertRaises(common.SetupError):
                 setup.smoke(self.value, release)
 
+    def test_failed_smoke_shows_a_bounded_sanitized_stderr_excerpt(self):
+        refusal = setup.PREFIX + 'State must be private: /home/user/.shared (chmod 700)'
+        program = ('printf "notice one\\n\\n%s\\n" ' + shlex.quote(refusal) + ' >&2; exit 1')
+        with patch('sys.stderr', new=io.StringIO()) as err:
+            with self.assertRaisesRegex(common.SetupError, 'Setup command failed'):
+                setup.run(['bash', '-c', program], self.env, capture=True, excerpt=True)
+        self.assertIn(setup.PREFIX + 'smoke: ' + refusal, err.getvalue())
+        self.assertIn(setup.PREFIX + 'smoke: notice one', err.getvalue())
+        # Without the flag, other captured commands keep their previous output.
+        with patch('sys.stderr', new=io.StringIO()) as err:
+            with self.assertRaises(common.SetupError):
+                setup.run(['bash', '-c', program], self.env, capture=True)
+        self.assertEqual(err.getvalue(), '')
+        hostile = '\x1b[31mred\x1b[0m\x07bell\r\n' + ''.join('line %d\n' % index for index in range(9)) + 'x' * 5000
+        excerpt = setup.stderr_excerpt(hostile.encode())
+        self.assertEqual(len(excerpt), 5)
+        self.assertEqual(excerpt[-1], 'x' * 2048)
+        self.assertEqual(setup.stderr_excerpt('\x1b[31mred\x1b[0m\x07bell'), ['[31mred[0mbell'])
+        self.assertTrue(all(char.isprintable() for line in excerpt for char in line))
+        _, release = self.release()
+        missing = setup.Captured('version-only\n')
+        missing.stderr = setup.PREFIX + 'warning before exit\n'
+        with patch.object(setup, 'run', return_value=missing) as run, patch('sys.stderr', new=io.StringIO()) as err:
+            with self.assertRaisesRegex(common.SetupError, 'did not confirm readiness'):
+                setup.smoke(self.value, release)
+        self.assertTrue(run.call_args.kwargs['excerpt'])
+        self.assertIn(setup.PREFIX + 'smoke: ' + setup.PREFIX + 'warning before exit', err.getvalue())
+        ready = setup.Captured('SANDBOX_SETUP_SMOKE_OK\n')
+        ready.stderr = setup.PREFIX + 'routine notice\n'
+        with patch.object(setup, 'run', return_value=ready), patch('sys.stderr', new=io.StringIO()) as err:
+            setup.smoke(self.value, release)
+        self.assertEqual(err.getvalue(), '')
+
     def test_restricted_smoke_requires_qualification_and_displays_its_status(self):
         _, release = self.release()
         value = self.value | {'network':'offline','auth':'none'}
@@ -1230,6 +1292,27 @@ printf 'APP_TTY=%s ARGS=%s\\n' "$terminal" "$*"
         common.prepare_state(self.env, create=True)
         self.assertEqual(openspec.stat().st_mode & 0o777, 0o755)
         self.assertEqual(config.stat().st_mode & 0o777, 0o700)
+
+    def test_profile_declared_shared_directory_privacy(self):
+        config = self.home / CONFIG_HOME
+        config.mkdir(mode=0o700, parents=True)
+        shared = self.home / '.shared-test-state'
+        shared.mkdir(mode=0o755)
+        shared.chmod(0o755)
+        with patch.object(common.PROFILE, 'shared_dirs', ('.shared-test-state',)):
+            with patch.object(common.PROFILE, 'private_shared_dirs', False):
+                checked = common.prepare_state(self.env, create=True)
+                self.assertEqual(checked, [(config.resolve(), True), (shared.resolve(), False)])
+            with patch.object(common.PROFILE, 'private_shared_dirs', True):
+                with self.assertRaises(common.SetupError) as raised:
+                    common.prepare_state(self.env, create=True)
+                self.assertIn(str(shared), str(raised.exception))
+                self.assertIn('chmod 700', str(raised.exception))
+                shared.chmod(0o700)
+                checked = common.prepare_state(self.env, create=True)
+                self.assertEqual(checked, [(config.resolve(), True), (shared.resolve(), True)])
+        self.assertEqual(shared.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(self.calls(), [])
 
     def test_timeout_allows_owned_child_cleanup_without_killing_setup(self):
         marker = self.base / 'child-cleaned'

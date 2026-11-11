@@ -334,7 +334,7 @@ networking. `PI_NETWORK` is rejected with migration guidance.
 | `unrestricted` | Ordinary runtime networking, the previous behavior | Exact `PI_CONTAINER_PODMAN=1` |
 
 The restricted implementation is shared with `claude-container` and copied
-unchanged from its tag `sandbox-ref-9`; see
+unchanged from its tag `sandbox-ref-10`; see
 [docs/network-contract.md](docs/network-contract.md) and
 [network/README.md](network/README.md).
 
@@ -458,6 +458,10 @@ chmodded, chowned, replaced, or populated from other credential stores.
 If rejected, inspect and explicitly repair the named directory yourself or
 relocate it to private native Linux storage and use a directory symlink.
 Filesystems that ignore Unix modes cannot provide this privacy check.
+Guided setup applies the same rule to `~/.agents` as to `~/.pi`
+(`native.private_shared_dirs: true` in `agent/profile.json`). It stops before
+image work, and the refusal names the path, the reason and, for a mode such as
+`755` left by another tool, the fix `chmod 700 <path>`.
 Read-only mode requires existing readable/traversable directories, without
 requiring ownership/privacy/write access; their confidentiality remains yours
 to manage. Missing read-only state fails without creating it.
