@@ -482,3 +482,19 @@ left a test-runner image (`pi-runtime-runner-1000-124363`) whose cached package
 layer had an empty `libsubid.so.4.0.0`, so the next `--setup-runtime` run failed
 with `podman: error while loading shared libraries`. After that image was
 removed, the rerun built a fresh layer and passed.
+
+## Operator authenticated session: 2026-11-11
+
+The operator ran an authenticated Pi session in provider mode with the
+setup-default profile `anthropic-api`. In the TUI, they asked the model to confirm
+that it could use the harness tools and to report the sandbox's access limits.
+The model did both, and the operator found the result correct.
+
+Setup succeeded after `PI_ENABLE_BUN` was unset and `~/.agents` was made
+private. `sandbox-ref-10` now refuses a non-private `~/.agents` before image
+work. A Bun image still fails qualification, which is an open decision.
+
+This covers an authenticated model request with tool use through the sandbox.
+The `openai-api`, `gemini-api` and `openrouter-api` profiles remain pending. Full profile verification under the readiness checklist is not
+claimed. The checklist also covers streaming and long-lived requests,
+WebSockets, sign-in, token reuse and refresh, CA behavior and shell mode.
