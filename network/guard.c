@@ -214,10 +214,14 @@ static void verify_mount_layout(int provider)
     FILE *mounts = fdopen(descriptor, "r");
     if (!mounts)
         fail("mount layout stream");
-    char line[8192], target[4096];
+    char line[8192], target[4096], options[1024], fstype[64];
     unsigned int roots = 0;
     while (fgets(line, sizeof(line), mounts)) {
-        if (!strchr(line, '\n') || sscanf(line, "%*s %*s %*s %*s %4095s", target) != 1) {
+        /* Fields: id parent dev root target per-mount-options [optional...] - fstype ... */
+        const char *separator = strstr(line, " - ");
+        if (!strchr(line, '\n') || !separator ||
+            sscanf(line, "%*s %*s %*s %*s %4095s %1023s", target, options) != 2 ||
+            sscanf(separator + 3, "%63s", fstype) != 1) {
             errno = EINVAL;
             fail("mount layout parsing");
         }
@@ -229,6 +233,12 @@ static void verify_mount_layout(int provider)
             continue;
         if (provider && !strcmp(target, "/run/sandbox-egress"))
             continue; /* connect_proxy separately verifies owner/mode/read-only. */
+        /* The wrapper masks engine default secrets (for example RHEL mounts.conf)
+         * with an empty tmpfs mounted read-only: it holds no host sockets and
+         * accepts no new ones (EROFS). Writable or non-tmpfs variants still fail. */
+        if (!strcmp(target, "/run/secrets") && !strcmp(fstype, "tmpfs") &&
+            (!strcmp(options, "ro") || !strncmp(options, "ro,", 3)))
+            continue;
         if (!strcmp(target, "/run/.containerenv")) {
             struct stat info;
             if (lstat(target, &info) == 0 && S_ISREG(info.st_mode))

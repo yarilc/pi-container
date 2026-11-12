@@ -18,26 +18,42 @@ def probe():
         raise ValueError('missing cgroup v2 mount')
     root = Path('/sys/fs/cgroup')
     status = dict(line.split(':', 1) for line in Path('/proc/1/status').read_text().splitlines())
+
+    def limit(name):
+        # A missing interface (controller not delegated) or 'max' means no limit.
+        path = root / name
+        if not path.exists():
+            return None
+        value = path.read_text().strip()
+        return None if value == 'max' else int(value)
     return {
-        'pids': int((root / 'pids.max').read_text()),
-        'memory': int((root / 'memory.max').read_text()),
+        'pids': limit('pids.max'),
+        'memory': limit('memory.max'),
         'capabilities': [int(status[key], 16) for key in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')],
         'no_new_privs': int(status['NoNewPrivs']),
         'seccomp': int(status['Seccomp']),
     }
 
 
-def verify(config, effective):
-    if type(config) is not dict or type(effective) is not dict:
+def verify(config, effective, enforced=('memory', 'pids')):
+    """Exact enforced budgets; budgets whose controller is not delegated must be absent."""
+    if type(config) is not dict or type(effective) is not dict or not set(enforced) <= {'memory', 'pids'}:
         raise ValueError('invalid hardening records')
-    if (type(config.get('PidsLimit')) is not int or config['PidsLimit'] != PIDS_LIMIT or
-            type(config.get('Memory')) is not int or config['Memory'] != MEMORY_LIMIT):
+    pids, memory = config.get('PidsLimit', 0), config.get('Memory', 0)
+    if type(pids) is not int or type(memory) is not int:
         raise ValueError('proxy configured budgets differ')
-    expected = dict(pids=PIDS_LIMIT, memory=MEMORY_LIMIT, capabilities=[0] * 5,
-                    no_new_privs=1, seccomp=2)
+    if (pids != PIDS_LIMIT if 'pids' in enforced else pids > 0) or \
+            (memory != MEMORY_LIMIT if 'memory' in enforced else memory != 0):
+        raise ValueError('proxy configured budgets differ')
+    expected = dict(pids=PIDS_LIMIT if 'pids' in enforced else None,
+                    memory=MEMORY_LIMIT if 'memory' in enforced else None,
+                    capabilities=[0] * 5, no_new_privs=1, seccomp=2)
     if effective != expected or any(type(effective.get(key)) is not int
-                                    for key in ('pids', 'memory', 'no_new_privs', 'seccomp')):
+                                    for key in ('no_new_privs', 'seccomp')):
         raise ValueError('proxy effective hardening differs')
+    for key in ('pids', 'memory'):
+        if expected[key] is not None and type(effective[key]) is not int:
+            raise ValueError('proxy effective hardening differs')
     if any(type(value) is not int for value in effective['capabilities']):
         raise ValueError('invalid capabilities')
 
@@ -53,8 +69,9 @@ if __name__ == '__main__':
     try:
         if sys.argv[1:] == ['probe']:
             print(json.dumps(probe(), sort_keys=True))
-        elif len(sys.argv) == 4 and sys.argv[1] == 'verify':
-            verify(read_record(sys.argv[2]), read_record(sys.argv[3]))
+        elif len(sys.argv) == 5 and sys.argv[1] == 'verify':
+            enforced = tuple(name for name in sys.argv[4].split(',') if name)
+            verify(read_record(sys.argv[2]), read_record(sys.argv[3]), enforced)
         else:
             raise ValueError('invalid operation')
     except (OSError, ValueError, KeyError, TypeError, IndexError):
@@ -68,6 +85,6 @@ if __name__ == '__main__':
             except ImportError:
                 pass
         print(prefix + 'proxy hardening unavailable or invalid; require effective '
-              'cgroup v2 pids=128/memory=256MiB, zero capabilities, no-new-privileges '
+              'cgroup v2 pids=128/memory=256MiB where delegated, zero capabilities, no-new-privileges '
               'and standard seccomp; inspect rootless controller delegation and the proxy image', file=sys.stderr)
         sys.exit(1)

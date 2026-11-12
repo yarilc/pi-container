@@ -150,16 +150,26 @@ with socket.socket() as server:
         peer, _ = server.accept()
         with peer:
             client.sendall(b'loopback'); assert peer.recv(16) == b'loopback'
-for family, target in ((socket.AF_INET, ('192.0.2.1', 443)),
-                       (socket.AF_INET6, ('2001:db8::1', 443))):
-    with socket.socket(family) as client:
-        client.settimeout(1)
+def no_direct_route(ipv6):
+    for family, target in ((socket.AF_INET, ('192.0.2.1', 443)),
+                           (socket.AF_INET6, ('2001:db8::1', 443))):
         try:
-            client.connect(target)
-        except OSError:
-            pass
-        else:
-            raise AssertionError('direct route exists')
+            client = socket.socket(family)
+        except OSError as error:
+            # Only a host qualified without a kernel IPv6 stack may refuse the family.
+            assert family == socket.AF_INET6 and not ipv6 and error.errno == errno.EAFNOSUPPORT, error
+            continue
+        with client:
+            client.settimeout(1)
+            try:
+                client.connect(target)
+            except OSError:
+                pass
+            else:
+                raise AssertionError('direct route exists')
+
+
+no_direct_route(config['ipv6'])
 for target in ('1.1.1.1', '192.168.1.1', '169.254.169.254',
                'host.containers.internal', 'host.docker.internal'):
     try:

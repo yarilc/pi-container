@@ -25,7 +25,7 @@ English. Communicate with the user in the language and style the user asks for.
   `test_tls_client_hello.py`, `test_tls_proxy.py`, `test_platform.py`,
   `test_qualification.py`, `test_guard.py`, `test_session.py`,
   `test_network_feasibility.py` and their fixtures) are copied unchanged from
-  `claude-container` at tag `sandbox-ref-10`. Never edit them here, and never
+  `claude-container` at tag `sandbox-ref-12`. Never edit them here, and never
   add a profile identifier (`pi-container`, `anthropic`, `openai`, `gemini`,
   `openrouter`) to them; fix a defect in `claude-container` first, then copy the
   files again and update `tests/test_reference_copy.py`.
@@ -113,8 +113,17 @@ changes.
   Trivy. Never add capabilities, `--privileged` or SELinux relabeling.
 - Validate `PI_CONTAINER_MEMORY_LIMIT` (4g), `PI_CONTAINER_CPU_LIMIT` (2),
   `PI_CONTAINER_PIDS_LIMIT` (512) and `PI_CONTAINER_RUN_TIMEOUT` before engine
-  queries with the claude-container `sandbox-ref-5` rules; start a session only
-  when the created container carries the selected budgets.
+  queries with the claude-container `sandbox-ref-5` rules; request each budget
+  only when the engine delegates its cgroup v2 controller
+  (`Host.CgroupControllers`), announce unenforced ones, never require host
+  changes to delegate them, and start a session only when enforced budgets
+  match and unenforced ones are absent.
+- Keep automatic read-only tmpfs provisioning with the explicit `noexec` `/dev`,
+  `devpts`, empty read-only `/dev/shm` and `/run/secrets` mounts; never
+  reintroduce `--read-only-tmpfs=false` or a writable `/dev/shm`.
+- Debian packages are fetched over verified HTTPS only. The host CA reaches
+  builds only as the `build-ca` secret, selected before any build including the
+  build-only refresh, and never enters `build-inputs-hash`.
 - Refuse a workspace or worktree parent that physically is `/`, a system
   directory, `/tmp`, the physical home or a `/mnt/<letter>` drive root, unless
   exactly `PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1`.

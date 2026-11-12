@@ -82,5 +82,41 @@ def canonical(suffix, text):
     return text.lower() if suffix == 'MEMORY_LIMIT' else ('0' if suffix == 'RUN_TIMEOUT' and text == '' else text)
 
 
-def agent_hardening(environ, profile):
-    return dict(capabilities=[], no_new_privs=True, **from_environment(environ, profile))
+# Budget -> cgroup v2 controller. A budget is enforced only when the verified
+# rootless engine reports its controller as delegated; otherwise it is omitted,
+# announced and bound into qualification evidence (never silently half-applied).
+AGENT_CONTROLLERS = {'memory': 'memory', 'nano_cpus': 'cpu', 'pids': 'pids'}
+PROXY_CONTROLLERS = {'memory': 'memory', 'pids': 'pids'}
+CONTROLLER_LIST = re.compile(r'\[(?:[a-z_]+(?: [a-z_]+)*)?\]')
+CONTROLLER_NAME = re.compile(r'[a-z_]{1,32}')
+
+
+class ControllerError(ValueError):
+    pass
+
+
+def controllers(value):
+    """Engine-reported controllers: Go template text ``[cpu memory]`` or a JSON list."""
+    if isinstance(value, str):
+        if not CONTROLLER_LIST.fullmatch(value):
+            raise ControllerError('unverifiable cgroup controller list')
+        names = value[1:-1].split()
+    elif isinstance(value, list) and all(isinstance(name, str) for name in value):
+        names = value
+    else:
+        raise ControllerError('unverifiable cgroup controller list')
+    if len(names) > 32 or not all(CONTROLLER_NAME.fullmatch(name) for name in names):
+        raise ControllerError('unverifiable cgroup controller list')
+    return tuple(sorted(set(names)))
+
+
+def enforced(available, kind='agent'):
+    """Sorted controllers whose budgets are enforced for the agent or the proxy."""
+    mapping = {'agent': AGENT_CONTROLLERS, 'proxy': PROXY_CONTROLLERS}[kind]
+    present = set(controllers(available))
+    return sorted(name for name in mapping.values() if name in present)
+
+
+def agent_hardening(environ, profile, available):
+    return dict(capabilities=[], no_new_privs=True, enforced=enforced(available),
+                **from_environment(environ, profile))

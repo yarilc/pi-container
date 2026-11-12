@@ -22,6 +22,7 @@ import time
 NETWORK = Path(__file__).resolve().parent
 sys.path.insert(0, str(NETWORK))
 from policy import PolicyError  # noqa: E402
+import agent_budgets  # noqa: E402
 import agent_profile  # noqa: E402
 from revisions import TLS_ENFORCEMENT as TLS  # noqa: E402
 
@@ -168,6 +169,20 @@ def start(args):
                         '--volume', f'{Path(args.installation) / "network/qualification_proxy.py"}:/qualification-proxy.py:ro',
                         '--volume', f'{Path(args.qualification_input).parent}:/qualification:ro']
             command = ['-I', '/qualification-proxy.py']
+    # Proxy budgets are enforced only when the engine delegates their controller;
+    # unenforced ones are announced and verified absent (never half-applied).
+    controllers = run(['podman', 'info', '--format', '{{.Host.CgroupControllers}}'],
+                      stdout=subprocess.PIPE, text=True).stdout.rstrip('\n')
+    try:
+        enforced = agent_budgets.enforced(controllers, 'proxy')
+    except agent_budgets.ControllerError:
+        die('unverifiable cgroup controller list from the Podman engine; agent not started')
+    budgets = ['--memory=256m' if 'memory' in enforced else None,
+               '--pids-limit=128' if 'pids' in enforced else '--pids-limit=-1']
+    for controller, label in (('memory', 'memory'), ('pids', 'process')):
+        if controller not in enforced:
+            note(f'proxy {label} budget not enforced: cgroup controller {controller} '
+                 'is not delegated to the rootless engine')
     (session / 'proxy.pending').touch()
     with open(session / 'proxy.stdout', 'w') as output:
         run(['podman', 'create', '--name', PROFILE.state_name + '-' + token,
@@ -175,7 +190,9 @@ def start(args):
              '--label', PROFILE.label('egress') + '=' + token, '--read-only', '--read-only-tmpfs=false',
              '--userns=keep-id', '--user', f'{os.getuid()}:{os.getgid()}',
              '--cap-drop=all', '--security-opt=no-new-privileges',
-             '--pids-limit=128', '--memory=256m',
+             *[flag for flag in budgets if flag],
+             # Mask engine default /run/secrets mounts (e.g. RHEL subscription secrets).
+             '--mount', 'type=tmpfs,destination=/run/secrets,ro=true',
              '--volume', f'{session}/config:/config:ro',
              '--volume', f'{session}/transport:/transport:rw',
              '--volume', f'{session}/logs:/logs:rw',
@@ -207,7 +224,8 @@ def start(args):
                    CHECK_SECONDS, output):
             die('cannot verify effective proxy hardening; check rootless cgroup v2 memory/pids controllers '
                 'and proxy image; agent not started')
-    run([PYTHON, '-I', hardening, 'verify', session / 'proxy.config', session / 'proxy.effective'])
+    run([PYTHON, '-I', hardening, 'verify', session / 'proxy.config', session / 'proxy.effective',
+         ','.join(enforced)])
     print(policy_identity)
 
 

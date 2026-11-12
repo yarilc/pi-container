@@ -200,7 +200,12 @@ class Proxy:
         future.add_done_callback(released)
         addresses = await asyncio.wait_for(asyncio.shield(future), 10)
         for family, kind, proto, address in addresses:
-            upstream = socket.socket(family, kind, proto)
+            try:
+                # A kernel without the family (EAFNOSUPPORT, e.g. ipv6.disable=1)
+                # moves on to the next validated address.
+                upstream = socket.socket(family, kind, proto)
+            except OSError:
+                continue
             upstream.setblocking(False)
             try:
                 # sock_connect receives a numeric sockaddr; never resolve again.

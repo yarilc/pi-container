@@ -34,9 +34,20 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HOME=/pi-home
 
 # Common toolset shared with the other wrappers, including the Podman client.
-RUN test -n "${PI_VERSION}" || { echo "PI_VERSION build arg is required" >&2; exit 1; } \
-    && apt-get update \
-    && apt-get install --no-install-recommends -y \
+# Debian packages are fetched only over verified HTTPS, so builds need no outbound
+# port 80. The slim base has no ca-certificates, so the pinned base's Node.js root
+# certificates verify the fetches until Debian ca-certificates is installed. With
+# host CA trust enabled, the selected bundle arrives as the optional build-ca
+# secret (never stored in a layer) and is appended for TLS-intercepting networks.
+# The temporary bundle stays readable by apt's _apt user and is removed in this step.
+RUN --mount=type=secret,id=build-ca,required=false \
+    test -n "${PI_VERSION}" || { echo "PI_VERSION build arg is required" >&2; exit 1; } \
+    && node -e 'process.stdout.write(require("tls").rootCertificates.join("\n") + "\n")' \
+        > /tmp/apt-bootstrap-ca.pem \
+    && if [ -s /run/secrets/build-ca ]; then cat /run/secrets/build-ca >> /tmp/apt-bootstrap-ca.pem; fi \
+    && sed -i 's|^URIs: http://|URIs: https://|' /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::https::CAInfo=/tmp/apt-bootstrap-ca.pem update \
+    && apt-get -o Acquire::https::CAInfo=/tmp/apt-bootstrap-ca.pem install --no-install-recommends -y \
         bash \
         bubblewrap \
         bzip2 \
@@ -63,6 +74,7 @@ RUN test -n "${PI_VERSION}" || { echo "PI_VERSION build arg is required" >&2; ex
         util-linux \
         xz-utils \
         zip \
+    && rm -f /tmp/apt-bootstrap-ca.pem \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

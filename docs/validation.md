@@ -498,3 +498,67 @@ This covers an authenticated model request with tool use through the sandbox.
 The `openai-api`, `gemini-api` and `openrouter-api` profiles remain pending. Full profile verification under the readiness checklist is not
 claimed. The checklist also covers streaming and long-lived requests,
 WebSockets, sign-in, token reuse and refresh, CA behavior and shell mode.
+
+## Adoption of `sandbox-ref-12` and lab-host fixes (`adopt-lab-host-fixes`): 2026-11-12
+
+Copied from `claude-container` tag `sandbox-ref-12` (commit `fd196c9`),
+adopted directly from `sandbox-ref-10`:
+
+- `network/.containerignore`, `network/README.md`, `network/agent_budgets.py`;
+- `network/control.py`, `network/guard-build.Containerfile`, `network/guard.c`;
+- `network/proxy.py`, `network/proxy_hardening.py`;
+- `network/qualification_peer.py`, `network/qualification_probe.py`,
+  `network/qualification_records.py`, `network/qualification_runtime.py`;
+- `network/qualify.py`, `network/session.py`;
+- `setup/setup.py`, `setup/smoke.py`;
+- `tests/test_guard.py`, `tests/test_network_policy.py`,
+  `tests/test_qualification.py`, `tests/test_session.py`, `tests/test_setup.py`.
+
+The `tests/test_reference_copy.py` manifest moved to the tag.
+
+A first adoption of `sandbox-ref-11` was discarded, as `docs/propagation.md`
+requires. The shared
+`test_runtime_build_receives_host_ca_only_when_trusted` assumed
+`runtime_build: recipe` and failed for Pi's wrapper-built runtime.
+`sandbox-ref-12` fixes that test and also runs every qualification container
+in `/`.
+
+Pi adaptations, equivalent to the Codex and OpenCode ports:
+
+- the Podman 5 `unix://` socket report is reduced to its pathname;
+- each budget is requested only when its cgroup controller is delegated,
+  with notices, and the inspection requires enforced budgets and no
+  unenforced one;
+- the `/run/secrets` mask;
+- a `noexec` `/dev`, `devpts` and an empty read-only `/dev/shm` instead of
+  `--read-only-tmpfs=false`. The `noexec` `/tmp`, `/var/tmp`, `/run`, the
+  home, the npm cache and the delegated Podman storage tmpfs are unchanged;
+- the host CA selection moved into `select_ca_bundle()`, before any build,
+  so the build-only refresh that setup uses also passes the `build-ca`
+  secret. The secret does not enter `build-inputs-hash`;
+- `.containerignore` admits `podman-build-secret*`;
+- Debian packages are fetched over verified HTTPS in the first `RUN`.
+
+The pin tests also reject a future `WORKDIR` that no build step creates. Pi
+declares none.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 358 tests, 68 skipped |
+| `python3 -m unittest discover -s tests -p test_wrapper.py` | Passed: 81 tests. New cases: socket URL and invalid `unix://` values; every subset of controllers; unverifiable lists; unenforced budget present or enforced budget missing; device and secrets mounts in every unrestricted mode, offline and provider; proxy secrets mask and budgets; build secret for build-only and launch builds with and without trust, with an unchanged staleness label; an invalid bundle stops build-only before image operations |
+| `python3 -m unittest tests.test_image_pins` | Passed: 7 tests. Transport, toolchain and workdir checks with mutations adapted to Pi's two-step recipe; the toolset check accepts `apt-get -o ... install` |
+| `bash tests/run-runtime.sh --shared` | Passed: 159 tests, 28 skipped |
+| `bash tests/run-runtime.sh --setup` | Passed: 71 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 4 tests, including the wrapper-built runtime |
+| `bash tests/run-runtime.sh --qualification` | Passed: 27 tests, with `localhost/pi-guard-toolchain:development` (`215f5ffc1023`) |
+| `bash tests/run-runtime.sh --guard` | Passed: 20 tests, 1 skipped (the 305-second idle check) |
+| `bash tests/run-runtime.sh --network` | Passed: 21 tests |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 15 tests |
+| `./test.sh` (disposable image with Bun, real wrapper checks) | Passed: 15 tests; the test image was removed |
+| Runtime image via `PI_CONTAINER_NETWORK=unrestricted PI_CONTAINER_MAINTENANCE=1 PI_CONTAINER_IMAGE=localhost/pi-container:adopt-ref-11 ./pi-container.sh --container-build` | Image `9d90d493f905`. Debian sources `https://`, no `/tmp/apt-bootstrap-ca.pem`, `ca-certificates` installed, Pi `0.80.8` (`.version`), OpenSpec `1.16.0`, no `WORKDIR` (`/`). The `build-inputs-hash` label equals the launcher's current hash (`d37f2c98…`) |
+| `bash -n pi-container.sh test-wrapper.sh test.sh tests/run-runtime.sh`, `git diff --check`, `openspec validate adopt-lab-host-fixes --strict` | Passed, clean, valid |
+| Parity table | SHA-256 `4079aef2ddc9883bf8208deb0c0906cc825f9228a2a6198b901b9b523d1eb376`, identical to claude-container. Codex and OpenCode will match after adopting `sandbox-ref-12` |
+| Operator `--container-setup` (refresh approved) and a session on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending: the operator runs them after the push |
+
+Every Pi image is stale until rebuilt (the `Containerfile` and
+`.containerignore` change), and restricted installations rerun setup.

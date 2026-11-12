@@ -331,6 +331,8 @@ def verify_socket(url, env):
         raise SetupError('The selected Podman Unix socket is not accessible.')
     output = record(['podman', '--remote', '--url', url, 'info', '--format', '{{.Host.Security.Rootless}} {{.Host.RemoteSocket.Path}}'], env)
     rootless, separator, host_path = output.partition(' ')
+    # Podman 5 reports the service socket as a unix:// URL; earlier releases report the bare path.
+    host_path = host_path.removeprefix('unix://')
     if rootless != 'true' or not separator or not host_path.startswith('/'):
         raise SetupError('The exact Podman socket must serve a rootless engine and report an absolute host socket path.')
 
@@ -423,14 +425,17 @@ def image_identity(name, env):
     return identity
 
 
-def build_image(release, recipe, tag, env):
+def build_image(release, recipe, tag, env, ca_bundle=''):
     # Pull the recipe's exact base before --pull=never builds. No pin substitutions.
     recipe_path = release / recipe
     bases = re.findall(r'^FROM\s+(\S+)', recipe_path.read_text(), re.MULTILINE)
     for base in bases:
         if not image_identity(base, env):
             run(['podman', 'pull', base], env, timeout=None)
-    run(['podman', 'build', '--pull=never', '--tag', tag, '--file', recipe_path,
+    # The opted-in host CA bundle verifies build-time package fetches as a build
+    # secret; it is mounted only for the RUN step and never stored in a layer.
+    secret = ['--secret', 'id=build-ca,src=' + ca_bundle] if ca_bundle else []
+    run(['podman', 'build', '--pull=never', *secret, '--tag', tag, '--file', recipe_path,
          recipe_path.parent], env, timeout=None)
     identity = image_identity(tag, env)
     if not identity:
@@ -438,13 +443,17 @@ def build_image(release, recipe, tag, env):
     return identity
 
 
-def build_runtime(release, tag, env):
+def build_runtime(release, tag, env, ca_bundle=''):
     # A wrapper-built runtime keeps the agent's own build arguments and labels.
     if PROFILE.runtime_build == 'recipe':
-        return build_image(release, 'Containerfile', tag, env)
-    # The build-only operation starts no session; the mode only admits it.
+        return build_image(release, 'Containerfile', tag, env, ca_bundle)
+    # The build-only operation starts no session; the mode only admits it. The
+    # wrapper receives the trust selection and bundle explicitly and passes the
+    # bundle to its own build as a build secret; without trust it gets none.
     run(['bash', release / PROFILE.wrapper, '--container-build'],
-        env | {PROFILE.env('NETWORK'): 'unrestricted', PROFILE.env('IMAGE'): tag}, input='', timeout=None)
+        env | {PROFILE.env('NETWORK'): 'unrestricted', PROFILE.env('IMAGE'): tag,
+               PROFILE.env('TRUST_HOST_CA'): '1' if ca_bundle else '0',
+               PROFILE.env('CA_BUNDLE'): ca_bundle}, input='', timeout=None)
     identity = image_identity(tag, env)
     if not identity:
         raise SetupError('Built image is unavailable after preparation.')
@@ -575,7 +584,8 @@ def prepare_artifacts(value, previous, release, env, images, refresh, changes):
         run(['podman', 'tag', runtime, candidate_tag], maintenance)
     else:
         changes.append('Runtime build requested; intermediate build images may remain under ' + candidate_tag)
-        runtime = build_runtime(release, candidate_tag, maintenance)
+        runtime = build_runtime(release, candidate_tag, maintenance,
+                                value['ca_bundle'] if value['trust_ca'] else '')
     changes.append('Prepared runtime image tag: ' + candidate_tag)
     value['image'], value['image_id'] = candidate_tag, runtime
     if value['network'] == 'unrestricted':
@@ -596,7 +606,8 @@ def prepare_artifacts(value, previous, release, env, images, refresh, changes):
         if not toolchain:
             changes.append('Toolchain build requested: ' + PROFILE.image('toolchain', 'setup-' + release.name))
             toolchain = build_image(release, 'network/guard-build.Containerfile',
-                                    PROFILE.image('toolchain', 'setup-' + release.name), maintenance)
+                                    PROFILE.image('toolchain', 'setup-' + release.name), maintenance,
+                                    value['ca_bundle'] if value['trust_ca'] else '')
         value['toolchain_image'] = toolchain
         run(['bash', release / 'network/build-guard.sh', release / 'network/bin'],
             maintenance | {'SANDBOX_GUARD_TOOLCHAIN': toolchain,
@@ -628,6 +639,14 @@ def scratch_workspace():
         yield workspace
 
 
+def engine_enforced(env):
+    # Budgets are enforced only for controllers the verified engine delegates.
+    try:
+        return agent_budgets.enforced(record(['podman', 'info', '--format', '{{.Host.CgroupControllers}}'], env))
+    except agent_budgets.ControllerError:
+        raise SetupError('The Podman engine reported an unverifiable cgroup controller list.') from None
+
+
 def expected_budgets(value):
     record = agent_budgets.normalize({suffix: value[name] for name, suffix in BUDGETS.items()})
     return [str(record[key]) for key in ('memory', 'nano_cpus', 'pids')]
@@ -655,7 +674,8 @@ def smoke_in(value, release, workspace):
             print('This installation passed local enforcement checks; its combination is not release-measured. SELinux/AppArmor compatibility is not guaranteed.')
     script = (release / 'setup/smoke.py').read_text()
     smoke_args = [value['network'], '1' if value['trust_ca'] else '0', PROFILE.home,
-                  PROFILE.config_dir_env, PROFILE.command, *expected_budgets(value)]
+                  PROFILE.config_dir_env, PROFILE.command, *expected_budgets(value),
+                  ','.join(engine_enforced(env))]
     program = ('set -Eeuo pipefail\npython3 - ' + ' '.join(map(shlex.quote, smoke_args))
                + " <<'SANDBOX_SETUP_SMOKE'\n" + script + '\nSANDBOX_SETUP_SMOKE\n')
     args = ['bash', str(release / PROFILE.wrapper), '--container-shell']
@@ -751,6 +771,18 @@ def main():
         for name in ('runtime', 'toolchain', 'proxy'):
             if name in images:
                 print(f'  {name} image: ' + ('reuse inspected ' + images[name] if images[name] else 'prepare/build missing image'))
+        # Budgets follow the controllers the engine delegates; no extra question.
+        enforced = engine_enforced(env)
+        print('  enforced agent budgets: ' + (', '.join(enforced) or 'none'))
+        for controller, label in (('memory', 'memory'), ('cpu', 'CPU'), ('pids', 'process')):
+            if controller not in enforced:
+                print(f'  agent {label} budget not enforced: cgroup controller {controller} '
+                      'is not delegated to the rootless engine')
+        if value['network'] == 'provider':
+            for controller, label in (('memory', 'memory'), ('pids', 'process')):
+                if controller not in enforced:
+                    print(f'  proxy {label} budget not enforced: cgroup controller {controller} '
+                          'is not delegated to the rootless engine')
         path_guidance(value['command'])
         refresh = yes('Refresh prepared images and recompile the guard instead of reusing valid artifacts?')
         print('Missing/selected images will be prepared; restricted mode includes a static guard and manifest.')
