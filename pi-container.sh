@@ -714,11 +714,10 @@ podman_args=(--rm --interactive --read-only
     # tmpfs that the guard accepts and that exposes no host material.
     --mount type=tmpfs,destination=/run/secrets,ro=true
     # Podman forces /dev read-only with --read-only-tmpfs=false, and crun >= 1.27
-    # must replace /dev/console to attach a terminal. Keep automatic provisioning
-    # but override each of its targets: a noexec /dev, the devpts that a user /dev
-    # mount drops, and an empty read-only /dev/shm.
-    --tmpfs "/dev:rw,nosuid,noexec,mode=755,size=65536k"
-    --mount type=devpts,destination=/dev/pts
+    # must replace /dev/console to attach a terminal, so automatic provisioning
+    # stays on. /dev and /dev/pts are left to the engine: an explicit /dev/pts mount
+    # gets ptmxmode=000 (Podman rejects the option), so no pseudo-terminal could
+    # be opened. Only /dev/shm is overridden, with an empty read-only tmpfs.
     --mount type=tmpfs,destination=/dev/shm,ro=true
     --volume "$workspace_mount:$workspace_mount:rw")
 # The dedicated home is a private state directory or an ephemeral tmpfs.

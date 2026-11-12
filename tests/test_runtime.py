@@ -180,6 +180,29 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn('file payload\n', result.stdout)
         self.assert_success(self.shell('test -t 0\ntest -t 1'))
 
+    def test_pseudo_terminals_and_device_masks(self):
+        # Interactive tools open their own PTY: the session must allocate one,
+        # while /dev/shm and /run/secrets stay empty read-only masks.
+        probe = r'''import os
+import pathlib
+import pty
+master, slave = pty.openpty()
+assert os.ttyname(slave).startswith('/dev/pts/'), os.ttyname(slave)
+os.close(master); os.close(slave)
+for path in ('/dev/shm', '/run/secrets'):
+    assert list(pathlib.Path(path).iterdir()) == [], path
+    try:
+        (pathlib.Path(path) / 'probe').write_text('x')
+    except OSError:
+        pass
+    else:
+        raise AssertionError(path + ' is writable')
+print('pty-and-masks-ok')
+'''
+        result = self.shell('python3 -c ' + shlex.quote(probe) + '\n')
+        self.assert_success(result)
+        self.assertIn('pty-and-masks-ok', result.stdout)
+
     def test_concurrent_reservation_with_stopped_container(self):
         self.unique_project()
         stopped = self.engine('create', '--name', self.project.name + '-08',
