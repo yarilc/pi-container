@@ -118,9 +118,11 @@ changes.
   (`Host.CgroupControllers`), announce unenforced ones, never require host
   changes to delegate them, and start a session only when enforced budgets
   match and unenforced ones are absent.
-- Keep automatic read-only tmpfs provisioning with the explicit `noexec` `/dev`,
-  `devpts`, empty read-only `/dev/shm` and `/run/secrets` mounts; never
-  reintroduce `--read-only-tmpfs=false` or a writable `/dev/shm`.
+- Keep automatic read-only tmpfs provisioning and leave `/dev` and its `devpts`
+  to the engine (an explicit `devpts` gets `ptmxmode=000`, so no
+  pseudo-terminal can be opened). Mount empty read-only `/dev/shm` and
+  `/run/secrets`; never reintroduce `--read-only-tmpfs=false` or a writable
+  `/dev/shm`.
 - Debian packages are fetched over verified HTTPS only. The host CA reaches
   builds only as the `build-ca` secret, selected before any build including the
   build-only refresh, and never enters `build-inputs-hash`.

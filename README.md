@@ -540,7 +540,7 @@ ownership changes. Every temporary store disappears with the session.
 | Control | Implementation |
 | --- | --- |
 | Identity / capabilities | Caller UID/GID, keep-id, `--cap-drop=ALL`, no additions |
-| Root filesystem | Read-only; explicit bounded `/tmp`, `/var/tmp`, `/run`, and npm cache; a `noexec` 64 MiB `/dev`, `devpts` and an empty read-only `/dev/shm`; an empty read-only `/run/secrets` mask |
+| Root filesystem | Read-only; explicit bounded `/tmp`, `/var/tmp`, `/run`, and npm cache; the engine's `/dev` and `devpts`, and an empty read-only `/dev/shm`; an empty read-only `/run/secrets` mask |
 | Privilege escalation | `--security-opt=no-new-privileges` |
 | Resource limits | 4 GiB memory, 2 CPUs, 512 processes (configurable), validated, each enforced when its cgroup controller is delegated, and checked after create |
 | SELinux | Host labels and confinement remain unchanged |
@@ -590,12 +590,15 @@ qualification records the enforced set, so a change in delegation requires
 requalification. Budgets and tmpfs sizes do not limit workspace or state storage
 growth.
 
-Each session mounts its own `/dev` tmpfs (`nosuid,noexec`, mode 755, 64 MiB), an
-explicit `devpts` at `/dev/pts` and an empty read-only `/dev/shm`: Podman 5 with
-crun 1.27 cannot attach a terminal to a read-only `/dev`, so automatic read-only
-tmpfs provisioning stays enabled and each of its targets is overridden. `/dev`
-is writable but not executable, and tools that need POSIX shared memory in
-`/dev/shm` are not supported. An empty read-only tmpfs at `/run/secrets` masks
+Podman 5 with crun 1.27 cannot attach a terminal to a read-only `/dev`, so
+automatic read-only tmpfs provisioning stays enabled. The engine provides `/dev`
+and a `devpts` at `/dev/pts` that allows pseudo-terminals, which interactive
+tools such as `script`, `expect` or `tmux` need. An explicit `devpts` mount
+would get `ptmxmode=000`, and no pseudo-terminal could be opened. Each session
+mounts an empty read-only `/dev/shm`; tools that need POSIX shared memory there
+are not supported. On Podman 5, `/dev` is the engine's writable tmpfs and is not
+`noexec`, but no device can be created without capabilities. On Podman 4.9,
+`/dev` stays read-only. An empty read-only tmpfs at `/run/secrets` masks
 engine default mounts there (for example RHEL subscription certificates from
 `mounts.conf`).
 

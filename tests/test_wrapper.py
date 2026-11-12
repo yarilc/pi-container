@@ -762,10 +762,9 @@ reap_client
             self.assertLess(args.index('--timeout'),args.index('localhost/pi-container'))
             self.assertEqual(args[args.index('--timeout')+1],'12')
             mounts=[args[j+1] for j,a in enumerate(args[:-1]) if a=='--tmpfs']
-            self.assertEqual(len(mounts),6)
-            # /dev holds the engine's device nodes, so it is noexec,nosuid but not nodev.
-            self.assertIn('/dev:rw,nosuid,noexec,mode=755,size=65536k',mounts)
-            mounts=[m for m in mounts if not m.startswith('/dev:')]
+            self.assertEqual(len(mounts),5)
+            # The engine provides /dev and its devpts; no tmpfs targets /dev.
+            self.assertFalse(any(m=='/dev' or m.startswith('/dev:') or m.startswith('/dev/') for m in mounts),mounts)
             for value in mounts:
                 self.assertIn('noexec,nosuid,nodev',value)
                 self.assertIn('size=',value)
@@ -1116,9 +1115,7 @@ reap_client
             for flag in ('--memory=4294967296', '--cpus=2', '--pids-limit=512', '--cap-drop=ALL'):
                 self.assertIn(flag, self.run_args())
 
-    DEVICE_MOUNTS = ('/dev:rw,nosuid,noexec,mode=755,size=65536k',
-                     'type=devpts,destination=/dev/pts',
-                     'type=tmpfs,destination=/dev/shm,ro=true',
+    DEVICE_MOUNTS = ('type=tmpfs,destination=/dev/shm,ro=true',
                      'type=tmpfs,destination=/run/secrets,ro=true')
 
     def assert_device_and_secret_mounts(self, args):
@@ -1127,6 +1124,11 @@ reap_client
         mounts = [args[i + 1] for i, arg in enumerate(args[:-1]) if arg in ('--tmpfs', '--mount')]
         for mount in self.DEVICE_MOUNTS:
             self.assertEqual(mounts.count(mount), 1, mount)
+        # The engine provides /dev and a devpts that allows pseudo-terminals; an
+        # explicit devpts would get ptmxmode=000.
+        self.assertFalse(any(m == '/dev' or m.startswith('/dev:') or 'type=devpts' in m
+                             or m.endswith('destination=/dev') or 'destination=/dev,' in m
+                             for m in mounts), mounts)
         # Pi temporary storage keeps its own noexec policy and sizes.
         for mount in ('/tmp:rw,noexec,nosuid,nodev,mode=1777,size=256M',
                       '/var/tmp:rw,noexec,nosuid,nodev,mode=1777,size=256M',

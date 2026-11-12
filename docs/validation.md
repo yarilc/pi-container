@@ -564,3 +564,35 @@ declares none.
 
 Every Pi image is stale until rebuilt (the `Containerfile` and
 `.containerignore` change), and restricted installations rerun setup.
+
+## Engine-provided `/dev` for pseudo-terminals: 2026-11-12
+
+Change `use-engine-dev-for-pseudo-terminals`, launcher only, as in the Claude
+reference (claude-container `docs/validation.md`, same title), Codex and
+OpenCode. No shared file changes.
+
+Pi and shell containers no longer mount their own `/dev` tmpfs or `devpts`.
+The explicit `devpts` from `sandbox-ref-11` took the kernel defaults
+`mode=600,ptmxmode=000`, so no process in a session could open a
+pseudo-terminal ("out of pty devices"). The terminal itself attached,
+because the engine allocates the console outside that `devpts`. The engine's
+`devpts` is `mode=620,ptmxmode=666`.
+
+On Podman 5, `/dev` is now the engine's writable tmpfs without `noexec`.
+Pi's own temporary mounts are all `noexec`, so this is a policy change. The
+workspace bind mount was already writable and executable. The requirement
+"Terminal-compatible device mounts" is replaced by "Engine-provided device
+mounts allow pseudo-terminals".
+
+| Check | Result |
+| --- | --- |
+| Image `5428725d0274` (`localhost/pi-container:setup-7c06…`, from the operator's setup on this host) with the previous `/dev` arguments | `pty.openpty()`: "out of pty devices" |
+| `test_pseudo_terminals_and_device_masks` (new) with the previous launcher | Failed: "out of pty devices" |
+| `test_pseudo_terminals_and_device_masks` with the fix | Passed |
+| `tests/test_wrapper.py` | Passed: 81 tests. With the previous launcher, the updated assertions fail (12 failures) |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 359 tests, 69 skipped (the runtime tests are opt-in) |
+| `bash tests/run-runtime.sh` (`test_runtime.py`, same image) | Passed: 16 tests, including `test_identity_storage_hardening_and_ephemeral_lifetime` and `test_pseudo_terminals_and_device_masks` (`PI_ENABLE_BUN` unset) |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending |
+
+Qualification digests the launcher, so restricted installations rerun
+`--container-setup`. The runtime image is unchanged.
