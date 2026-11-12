@@ -138,6 +138,17 @@ alternate families, compat/x32 and asynchronous syscalls are checked alongside
 working loopback, connected pairs and ordinary persistence in both state modes.
 No missing peer, skipped check or unrelated connection error counts as denial.
 
+The engine host's IPv6 state is part of the qualification identity. On a kernel
+booted without IPv6 (`ipv6.disable=1`: no `/proc/sys/net/ipv6`, and `AF_INET6`
+socket creation fails with `EAFNOSUPPORT`), the bridge and peers are IPv4-only.
+IPv6 denial is then evidenced by the kernel refusing `AF_INET6` in both the
+unconfined control and the guarded probe. Any other combination, or fixtures
+that contradict the detected state, fails the gate without a fallback. A host
+that later boots with the other state needs requalification. Per-interface
+`disable_ipv6` sysctls do not remove the stack, so such hosts keep the
+dual-stack path. The provider proxy skips validated upstream addresses whose
+family the kernel lacks, and tries the next one.
+
 Provider qualification additionally exercises the selected production proxy code
 with a separate exact fixture policy and certificate, matching TLS/SNI, mismatched
 SNI with zero upstream bytes, denied authority and owned proxy loss. The fixed

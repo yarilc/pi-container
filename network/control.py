@@ -19,6 +19,33 @@ from revisions import GUARD_REQUIRED_ABI, GUARD_REVISION, TLS_ENFORCEMENT
 GUARD = 'sandbox-egress-guard'
 
 
+def fixed_qualification_input(value, command, mode, workspace):
+    """Exact fixed gate input: one IPv4 fixture address, plus one IPv6 address only with host IPv6."""
+    try:
+        budgets = value.get('budgets') if isinstance(value, dict) else None
+        return not (not isinstance(value, dict) or
+                set(value) != {'schema', 'token', 'addresses', 'ipv6', 'workspace', 'provider', 'tls', 'agent', 'budgets'} or
+                value['agent'] != command or not isinstance(budgets, dict) or
+                set(budgets) != {'capabilities', 'no_new_privs', 'enforced', 'memory', 'nano_cpus', 'pids', 'timeout'} or
+                # Enforced budgets: a sorted, duplicate-free subset of the agent controllers.
+                not isinstance(budgets['enforced'], list) or
+                budgets['enforced'] != sorted(set(budgets['enforced'])) or
+                not set(budgets['enforced']) <= {'cpu', 'memory', 'pids'} or
+                any(type(budgets[key]) is not int for key in ('memory', 'nano_cpus', 'pids', 'timeout')) or
+                budgets['capabilities'] != [] or budgets['no_new_privs'] is not True or
+                type(value['schema']) is not int or value['schema'] != 1 or
+                not isinstance(value['token'], str) or not re.fullmatch(r'[a-f0-9]{32}', value['token']) or
+                type(value['provider']) is not bool or type(value['tls']) is not bool or type(value['ipv6']) is not bool or
+                value['provider'] != (mode == 'provider') or (value['tls'] and not value['provider']) or
+                value['workspace'] != workspace or not Path(workspace).is_absolute() or
+                # One IPv4 fixture address, plus one IPv6 address only when the host has IPv6.
+                not isinstance(value['addresses'], list) or len(value['addresses']) != (2 if value['ipv6'] else 1) or
+                not all(isinstance(address, str) for address in value['addresses']) or
+                [ipaddress.ip_address(address).version for address in value['addresses']] != ([4, 6] if value['ipv6'] else [4]))
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('operation', choices=('preflight', 'snapshot', 'qualification-input'))
@@ -83,20 +110,7 @@ def main():
         if len(data) > 65536:
             raise PolicyError('oversized qualification input')
         value = json.loads(data, object_pairs_hook=unique_object)
-        budgets = value.get('budgets') if isinstance(value, dict) else None
-        if (not isinstance(value, dict) or
-                set(value) != {'schema', 'token', 'addresses', 'workspace', 'provider', 'tls', 'agent', 'budgets'} or
-                value['agent'] != profile.command or not isinstance(budgets, dict) or
-                set(budgets) != {'capabilities', 'no_new_privs', 'memory', 'nano_cpus', 'pids', 'timeout'} or
-                any(type(budgets[key]) is not int for key in ('memory', 'nano_cpus', 'pids', 'timeout')) or
-                budgets['capabilities'] != [] or budgets['no_new_privs'] is not True or
-                type(value['schema']) is not int or value['schema'] != 1 or
-                not isinstance(value['token'], str) or not re.fullmatch(r'[a-f0-9]{32}', value['token']) or
-                type(value['provider']) is not bool or type(value['tls']) is not bool or
-                value['provider'] != (args.mode == 'provider') or (value['tls'] and not value['provider']) or
-                value['workspace'] != args.workspace or not Path(args.workspace).is_absolute() or
-                not isinstance(value['addresses'], list) or len(value['addresses']) != 2 or
-                [ipaddress.ip_address(address).version for address in value['addresses']] != [4, 6]):
+        if not fixed_qualification_input(value, profile.command, args.mode, args.workspace):
             raise PolicyError('invalid fixed qualification input')
         if value['tls']:
             trusted_path(input_path.parent / 'cert.pem', args.writable)

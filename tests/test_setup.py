@@ -103,6 +103,7 @@ if 'info' in args:
     template=args[-1]
     if 'RemoteSocket.Path' in template: print('true '+os.environ.get('SETUP_TEST_SOCKET','/run/user/1000/podman/podman.sock'))
     elif 'NetworkBackend' in template: print('netavark')
+    elif 'CgroupControllers' in template: print(os.environ.get('SETUP_TEST_CONTROLLERS', '[cpu memory pids]'))
     elif 'json .Host' in template:
         print(json.dumps({'kernel':'6.6.87.2-microsoft-standard-WSL2','arch':'amd64',
            'security':{'seccompEnabled':True,'selinuxEnabled':False,'apparmorEnabled':False}}))
@@ -266,6 +267,26 @@ class SetupTests(unittest.TestCase):
         self.assertIn('cancelled before', output)
         self.assertFalse(Path(self.value['installation']).exists())
         self.assertFalse(any(c['args'][0] in ('build', 'pull', 'tag') for c in self.calls()))
+
+    def test_setup_plan_names_unenforced_budgets_without_a_question(self):
+        for controllers, notices in (('[memory pids]', ['agent CPU budget not enforced: cgroup controller cpu']),
+                                     ('[cpu pids]', ['agent memory budget not enforced: cgroup controller memory']),
+                                     ('[cpu memory pids]', [])):
+            with self.subTest(controllers=controllers):
+                env = self.env | {name('NETWORK'): 'provider', 'SETUP_TEST_MISSING': '1',
+                                  'SETUP_TEST_ENGINE': 'true linux false', 'SETUP_TEST_CONTROLLERS': controllers}
+                answers = self.answers() + [('Refresh prepared images', 'no'), ('Apply this installation', 'no')]
+                code, output = pty_run(['bash', str(ROOT / WRAPPER), '--container-setup'], env,
+                                       self.workspace, answers)
+                self.assertEqual(code, 1, output)
+                self.assertIn('enforced agent budgets: ' + ', '.join(controllers[1:-1].split()), output)
+                for notice in notices:
+                    self.assertIn(notice, output)
+                if not notices:
+                    self.assertNotIn('budget not enforced', output)
+                # This questionnaire selects unrestricted mode, which has no proxy.
+                self.assertNotIn('proxy memory budget', output)
+                self.assertIn('cancelled before', output)
 
     def test_questionnaire_defaults_retries_and_explicit_delegation_conflict(self):
         with patch.dict(os.environ, self.env, clear=True), patch.object(setup, 'SOURCE', ROOT):
@@ -446,11 +467,15 @@ class SetupTests(unittest.TestCase):
         endpoint = Path(temporary.name) / 'podman.sock'
         with socket.socket(socket.AF_UNIX) as bound:
             bound.bind(str(endpoint))
-            for response in ('false /host/socket', 'true relative', 'true /host/socket\r', 'true /host/socket\n\n'):
+            for response in ('false /host/socket', 'true relative', 'true /host/socket\r', 'true /host/socket\n\n',
+                             'true unix://relative', 'true unix:///host/socket\r'):
                 with patch.object(setup, 'run', return_value=response):
                     with self.assertRaises(common.SetupError):
                         setup.verify_socket('unix://' + str(endpoint), self.env)
             setup.verify_socket('unix://' + str(endpoint), self.env)
+            # Podman 5 reports the host socket as a unix:// URL.
+            with patch.object(setup, 'run', return_value='true unix:///host/socket'):
+                setup.verify_socket('unix://' + str(endpoint), self.env)
 
     def test_manifest_copies_complete_native_inputs_without_credentials(self):
         root, release = self.release()
@@ -737,8 +762,12 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
                 patch.object(setup, 'build_image', return_value=identity) as build, \
                 patch.object(setup, 'run') as run:
             self.assertEqual(setup.build_runtime(release, 'localhost/test:recipe', env), identity)
-        build.assert_called_once_with(release, 'Containerfile', 'localhost/test:recipe', env)
+        build.assert_called_once_with(release, 'Containerfile', 'localhost/test:recipe', env, '')
         run.assert_not_called()
+        with patch.object(setup.PROFILE, 'runtime_build', 'recipe'), \
+                patch.object(setup, 'build_image', return_value=identity) as build:
+            setup.build_runtime(release, 'localhost/test:recipe', env, '/ca/bundle.pem')
+        build.assert_called_once_with(release, 'Containerfile', 'localhost/test:recipe', env, '/ca/bundle.pem')
         with patch.object(setup.PROFILE, 'runtime_build', 'wrapper'), \
                 patch.object(setup, 'build_image') as build, \
                 patch.object(setup, 'run') as run, \
@@ -747,14 +776,69 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
         build.assert_not_called()
         command, used = run.call_args.args
         self.assertEqual(command, ['bash', release / PROFILE.wrapper, '--container-build'])
-        self.assertEqual(used, env | {name('NETWORK'): 'unrestricted', name('IMAGE'): 'localhost/test:wrapper'})
+        self.assertEqual(used, env | {name('NETWORK'): 'unrestricted', name('IMAGE'): 'localhost/test:wrapper',
+                                      name('TRUST_HOST_CA'): '0', name('CA_BUNDLE'): ''})
         self.assertEqual(used[name('MAINTENANCE')], '1')
         self.assertEqual(run.call_args.kwargs['input'], '')
         inspect.assert_called_once_with('localhost/test:wrapper', env)
+        # Wrapper-built runtimes receive setup's trust selection, never an inherited one,
+        # and setup adds no --secret of its own: the wrapper owns its build arguments.
+        inherited = env | {name('TRUST_HOST_CA'): '1', name('CA_BUNDLE'): '/inherited.pem'}
+        for bundle in ('', '/ca/bundle.pem'):
+            with self.subTest(bundle=bundle), patch.object(setup.PROFILE, 'runtime_build', 'wrapper'), \
+                    patch.object(setup, 'build_image') as build, patch.object(setup, 'run') as run, \
+                    patch.object(setup, 'image_identity', return_value=identity):
+                setup.build_runtime(release, 'localhost/test:wrapper', inherited, bundle)
+            build.assert_not_called()
+            command, used = run.call_args.args
+            self.assertNotIn('--secret', command)
+            self.assertEqual(used[name('TRUST_HOST_CA')], '1' if bundle else '0')
+            self.assertEqual(used[name('CA_BUNDLE')], bundle)
         with patch.object(setup.PROFILE, 'runtime_build', 'wrapper'), patch.object(setup, 'run'), \
                 patch.object(setup, 'image_identity', return_value=''):
             with self.assertRaisesRegex(common.SetupError, 'unavailable after preparation'):
                 setup.build_runtime(release, 'localhost/test:missing', env)
+
+    def test_runtime_build_receives_host_ca_only_when_trusted(self):
+        # The recipe path is asserted here; wrapper-built runtimes are covered by
+        # test_runtime_build_follows_the_profile, so pin the profile for any wrapper.
+        recipe = patch.object(setup.PROFILE, 'runtime_build', 'recipe')
+        recipe.start()
+        self.addCleanup(recipe.stop)
+        _, release = self.release()
+        env = self.env | {name('MAINTENANCE'): '1'}
+        bundle = self.base / 'bundle.pem'
+        bundle.write_text('-----BEGIN CERTIFICATE-----\n')
+        for trusted in (False, True):
+            with self.subTest(trusted=trusted):
+                value = self.value | {'trust_ca': trusted, 'ca_bundle': str(bundle) if trusted else ''}
+                with patch.object(setup, 'build_image', return_value='b' * 64) as build:
+                    setup.prepare_artifacts(value, None, release, self.env, {'runtime': ''}, False, [])
+                self.assertEqual(build.call_args.args[4], str(bundle) if trusted else '')
+                self.log.unlink(missing_ok=True)
+                with patch.object(setup, 'image_identity', side_effect=['sha256:' + 'a' * 64, 'sha256:' + 'b' * 64]):
+                    setup.build_image(release, 'Containerfile', 'localhost/test:ca', env, build.call_args.args[4])
+                args = next(c for c in self.calls() if c['args'][0] == 'build')['args']
+                secrets = [args[i + 1] for i, arg in enumerate(args) if arg == '--secret']
+                self.assertEqual(secrets, ['id=build-ca,src=' + str(bundle)] if trusted else [])
+        # The toolchain build takes the same opt-in CA; the proxy build never receives it.
+        second = release.parent / 'provider-ca'
+        second.mkdir(mode=0o700)
+        setup.copy_inputs(second)
+        value = self.value | {'network': 'provider', 'endpoint': 'default', 'trust_ca': True,
+                              'ca_bundle': str(bundle), 'runtime_dir': str(self.base / 'egress')}
+        with patch.object(setup, 'run'), patch.object(setup, 'build_image', return_value='b' * 64) as build:
+            setup.prepare_artifacts(value, None, second, self.env, {'runtime': ''}, True, [])
+        recipes = {call.args[1]: call.args[4] if len(call.args) > 4 else '' for call in build.call_args_list}
+        self.assertEqual(recipes, {'Containerfile': str(bundle), 'network/guard-build.Containerfile': str(bundle),
+                                   'network/Containerfile': ''})
+        third = release.parent / 'provider-no-ca'
+        third.mkdir(mode=0o700)
+        setup.copy_inputs(third)
+        value = value | {'trust_ca': False, 'ca_bundle': ''}
+        with patch.object(setup, 'run'), patch.object(setup, 'build_image', return_value='b' * 64) as build:
+            setup.prepare_artifacts(value, None, third, self.env, {'runtime': ''}, True, [])
+        self.assertEqual({call.args[4] if len(call.args) > 4 else '' for call in build.call_args_list}, {''})
 
     def test_mode_specific_artifacts_and_scoped_maintenance(self):
         _, release = self.release()
@@ -1145,7 +1229,32 @@ printf 'APP_TTY=%s ARGS=%s\\n' "$terminal" "$*"
         self.assertEqual(code, 0, output)
         self.assertIn('APP_TTY=yes ARGS=--container-git-worktree --version', output)
 
+    def test_smoke_budgets_follow_the_enforced_controllers(self):
+        import smoke
+        base = Path(tempfile.mkdtemp(dir=self.base))
+        def write(**values):
+            for key in ('memory.max', 'pids.max', 'cpu.max'):
+                (base / key).unlink(missing_ok=True)
+            for key, value in values.items():
+                (base / (key + '.max')).write_text(value + '\n')
+        write(memory='4294967296', pids='512', cpu='200000 100000')
+        smoke.budgets(4294967296, 2000000000, 512, ('cpu', 'memory', 'pids'), base)
+        write(memory='4294967296', pids='512')
+        smoke.budgets(4294967296, 2000000000, 512, ('memory', 'pids'), base)
+        with self.assertRaises(AssertionError):
+            smoke.budgets(4294967296, 2000000000, 512, ('cpu', 'memory', 'pids'), base)
+        write(memory='max', pids='max', cpu='max 100000')
+        smoke.budgets(4294967296, 2000000000, 512, (), base)
+        write(memory='4294967296', pids='512', cpu='200000 100000')
+        for enforced in (('memory', 'pids'), ('cpu', 'pids'), ('cpu', 'memory'), ()):
+            with self.subTest(enforced=enforced), self.assertRaises(AssertionError):
+                smoke.budgets(4294967296, 2000000000, 512, enforced, base)
+
     def test_smoke_requires_confirmed_success_and_has_no_maintenance_or_key(self):
+        # Smoke queries the engine's delegated controllers; the fake engine reports all three.
+        enforced = patch.object(setup, 'engine_enforced', return_value=['cpu', 'memory', 'pids'])
+        enforced.start()
+        self.addCleanup(enforced.stop)
         _, release = self.release()
         for trust in (False, True):
             value = self.value | {'trust_ca': trust}
@@ -1156,7 +1265,7 @@ printf 'APP_TTY=%s ARGS=%s\\n' "$terminal" "$*"
                 self.assertNotIn(name('MAINTENANCE'), run.call_args.args[1])
                 self.assertNotIn(CREDENTIAL, run.call_args.args[1])
                 self.assertIn('unrestricted ' + ('1' if trust else '0'), run.call_args.kwargs['input'])
-                self.assertIn(' 4294967296 2000000000 512 <<', run.call_args.kwargs['input'])
+                self.assertIn(' 4294967296 2000000000 512 cpu,memory,pids <<', run.call_args.kwargs['input'])
                 workspace = Path(run.call_args.kwargs['cwd'])
                 self.assertNotEqual(workspace, Path.cwd())
                 self.assertFalse(workspace.exists())
@@ -1164,7 +1273,7 @@ printf 'APP_TTY=%s ARGS=%s\\n' "$terminal" "$*"
         with patch.dict(os.environ, self.env | {name('MEMORY_LIMIT'): '1g'}, clear=True), \
                 patch.object(setup, 'run', return_value='SANDBOX_SETUP_SMOKE_OK\n') as run:
             setup.smoke(value, release)
-            self.assertIn(' 8589934592 1500000000 1024 <<', run.call_args.kwargs['input'])
+            self.assertIn(' 8589934592 1500000000 1024 cpu,memory,pids <<', run.call_args.kwargs['input'])
             self.assertEqual(run.call_args.args[1][name('MEMORY_LIMIT')], '8g')
         with patch.object(setup, 'run', return_value='version-only\n'):
             with self.assertRaisesRegex(common.SetupError, 'did not confirm readiness'):
@@ -1174,6 +1283,10 @@ printf 'APP_TTY=%s ARGS=%s\\n' "$terminal" "$*"
                 setup.smoke(self.value, release)
 
     def test_failed_smoke_shows_a_bounded_sanitized_stderr_excerpt(self):
+        # Smoke queries the engine's delegated controllers; the fake engine reports all three.
+        enforced = patch.object(setup, 'engine_enforced', return_value=['cpu', 'memory', 'pids'])
+        enforced.start()
+        self.addCleanup(enforced.stop)
         refusal = setup.PREFIX + 'State must be private: /home/user/.shared (chmod 700)'
         program = ('printf "notice one\\n\\n%s\\n" ' + shlex.quote(refusal) + ' >&2; exit 1')
         with patch('sys.stderr', new=io.StringIO()) as err:
@@ -1207,6 +1320,10 @@ printf 'APP_TTY=%s ARGS=%s\\n' "$terminal" "$*"
         self.assertEqual(err.getvalue(), '')
 
     def test_restricted_smoke_requires_qualification_and_displays_its_status(self):
+        # Smoke queries the engine's delegated controllers; the fake engine reports all three.
+        enforced = patch.object(setup, 'engine_enforced', return_value=['cpu', 'memory', 'pids'])
+        enforced.start()
+        self.addCleanup(enforced.stop)
         _, release = self.release()
         value = self.value | {'network':'offline','auth':'none'}
         passing='SANDBOX_QUALIFICATION_STATUS=locally-qualified\nSANDBOX_QUALIFICATION_OK\n'

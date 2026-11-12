@@ -273,6 +273,36 @@ class AsyncProxyTests(unittest.IsolatedAsyncioTestCase):
         server.close()
         await server.wait_closed()
 
+    async def test_unsupported_address_family_falls_through_to_next_validated_address(self):
+        # Kernel without IPv6 (ipv6.disable=1): AAAA answers must not abort the tunnel.
+        import asyncio
+        import errno
+        server = await asyncio.start_server(lambda r, w: w.close(), '127.0.0.1', 0)
+        port = server.sockets[0].getsockname()[1]
+        instance = proxy.Proxy({'destinations': [{'host': 'local.test', 'port': port, 'addresses': ['127.0.0.1']}]}, None)
+        ipv6 = (socket.AF_INET6, socket.SOCK_STREAM, socket.IPPROTO_TCP, ('2001:db8::1', port, 0, 0))
+        ipv4 = (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, ('127.0.0.1', port))
+        real = socket.socket
+        created = []
+        def without_ipv6(family=socket.AF_INET, *args, **kwargs):
+            created.append(family)
+            if family == socket.AF_INET6:
+                raise OSError(errno.EAFNOSUPPORT, 'Address family not supported by protocol')
+            return real(family, *args, **kwargs)
+        with patch('socket.socket', side_effect=without_ipv6), \
+                patch('socket.getaddrinfo', side_effect=AssertionError('second DNS lookup')):
+            with patch('proxy.resolve', return_value=[ipv6, ipv4]) as resolver:
+                _, writer = await instance.connect('local.test', port)
+                writer.close()
+                await writer.wait_closed()
+            self.assertEqual(resolver.call_count, 1)
+            self.assertEqual(created[:2], [socket.AF_INET6, socket.AF_INET])
+            with patch('proxy.resolve', return_value=[ipv6]), self.assertRaises(proxy.Rejected) as caught:
+                await instance.connect('local.test', port)
+            self.assertEqual(caught.exception.reason, 'upstream-unavailable')
+        server.close()
+        await server.wait_closed()
+
 
 class TLSManifestTests(unittest.TestCase):
     def test_required_enforcement_identity(self):

@@ -1,6 +1,15 @@
-"""Disposable dual-stack TCP/UDP positive-control endpoint. No external forwarding."""
+"""Disposable TCP/UDP positive-control endpoint. No external forwarding.
+
+The fixed argument selects ``dual`` (IPv4 and IPv6) or ``ipv4`` (hosts whose
+kernel has no IPv6 stack).
+"""
 import socket
+import sys
 import threading
+
+if sys.argv[1:] not in (['dual'], ['ipv4']):
+    raise SystemExit('fixed peer family selection required: dual or ipv4')
+FAMILIES = ((socket.AF_INET, '0.0.0.0'), (socket.AF_INET6, '::'))[:2 if sys.argv[1] == 'dual' else 1]
 
 
 def tcp(server):
@@ -19,7 +28,7 @@ def udp(server):
             server.sendto(b'qualification-positive', target)
 
 
-for family, address in ((socket.AF_INET, '0.0.0.0'), (socket.AF_INET6, '::')):
+for family, address in FAMILIES:
     for kind, serve in ((socket.SOCK_STREAM, tcp), (socket.SOCK_DGRAM, udp)):
         server = socket.socket(family, kind)
         if family == socket.AF_INET6:

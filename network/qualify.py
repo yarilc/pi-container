@@ -117,8 +117,13 @@ class Gate:
             self.engine('network', 'rm', name, timeout=4)
 
     def common(self, image, network='none'):
-        return ['--pull=never', '--network=' + network, '--read-only', '--cap-drop=all',
+        # Same empty read-only /run/secrets mask as agent launches: engine default
+        # mounts (RHEL mounts.conf) would otherwise fail the guard's mount check.
+        # An explicit /: the engine never creates or chowns an image WORKDIR missing
+        # from the image layers (that chown fails for domain UIDs under keep-id).
+        return ['--pull=never', '--network=' + network, '--read-only', '--workdir', '/', '--cap-drop=all',
                 '--security-opt=no-new-privileges', '--userns=keep-id', '--user', f'{os.getuid()}:{os.getgid()}',
+                '--mount', 'type=tmpfs,destination=/run/secrets,ro=true',
                 '--label', PROFILE.label('qualification') + '=' + self.token]
 
     @contextmanager
@@ -186,6 +191,7 @@ class Gate:
         for path in (project, home, runtime):
             path.mkdir(mode=0o700)
         config = dict(schema=1, token=self.token, addresses=addresses, workspace=str(project),
+                      ipv6=identity['security']['ipv6'] == 'present',
                       provider=identity['mode'] == 'provider', tls=tls, agent=PROFILE.command,
                       budgets=identity['hardening']['agent'])
         input_path = phase / 'input.json'
@@ -292,22 +298,26 @@ class Gate:
         with tempfile.TemporaryDirectory(prefix='.' + PROFILE.name + '-qualification-', dir=ROOT.parent) as temporary:
             work = Path(temporary)
             network = PROFILE.name + '-qualification-' + self.token
-            self.engine('network', 'create', '--internal', '--ipv6', '--label',
+            # Without a kernel IPv6 stack the fixtures are IPv4-only; IPv6 denial is
+            # then evidenced by kernel rejection in the control and guarded probe.
+            ipv6 = identity['security']['ipv6'] == 'present'
+            self.engine('network', 'create', '--internal', *(['--ipv6'] if ipv6 else []), '--label',
                         PROFILE.label('qualification') + '=' + self.token, network)
             peer = self.engine('create', *self.common(identity['runtime'], network),
                 '--volume', f'{ROOT / "network/qualification_peer.py"}:/peer.py:ro',
-                '--entrypoint', 'python3', identity['runtime'], '-I', '/peer.py')
+                '--entrypoint', 'python3', identity['runtime'], '-I', '/peer.py', 'dual' if ipv6 else 'ipv4')
             self.engine('start', peer)
             deadline = time.monotonic() + 10
             while 'qualification-peer-ready' not in self.engine('logs', peer):
                 if time.monotonic() >= deadline:
-                    raise GateError('dual-stack positive-control fixture unavailable')
+                    raise GateError('positive-control fixture unavailable')
                 time.sleep(.05)
             networks = json.loads(self.engine('inspect', '--format', '{{json .NetworkSettings.Networks}}', peer))
             value = networks[network]
-            addresses = [value['IPAddress'], value['GlobalIPv6Address']]
-            if not all(addresses):
-                raise GateError('dual-stack fixture identity unavailable')
+            addresses = [value.get('IPAddress'), value.get('GlobalIPv6Address')]
+            if not addresses[0] or bool(addresses[1]) != ipv6:
+                raise GateError('positive-control fixture identity contradicts the host IPv6 state')
+            addresses = addresses if ipv6 else addresses[:1]
             for isolated in (False, True):
                 self.case(work, identity, network, addresses, isolated=isolated)
             if identity['mode'] == 'provider':

@@ -314,6 +314,26 @@ class GuardTests(unittest.TestCase):
         self.assertIn('nested private IPC mount validation', result.stderr)
         self.assertFalse(self.marker.exists())
 
+    def test_read_only_secrets_mask_is_the_only_admitted_nested_mount(self):
+        # The wrapper masks engine default /run/secrets (RHEL mounts.conf) with an
+        # empty read-only tmpfs; the guard admits exactly that and nothing similar.
+        script = ("import os\nassert os.listdir('/run/secrets') == []\n"
+                  "open('/workspace/agent-started','w').close()")
+        result = self.production_container(script, extra=[
+            '--mount', 'type=tmpfs,destination=/run/secrets,ro=true'])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(self.marker.exists())
+        self.marker.unlink()
+        for extra in (['--mount', 'type=tmpfs,destination=/run/secrets'],
+                      ['--volume', f'{self.fixture}:/run/secrets:ro'],
+                      ['--mount', 'type=tmpfs,destination=/run/other-secrets,ro=true'],
+                      ['--mount', 'type=tmpfs,destination=/tmp/secrets,ro=true']):
+            with self.subTest(extra=extra):
+                result = self.production_container(script, extra=extra)
+                self.assertEqual(result.returncode, 78, result.stdout + result.stderr)
+                self.assertIn('nested private IPC mount validation', result.stderr)
+                self.assertFalse(self.marker.exists())
+
     def test_real_provider_preconnect_and_descriptor_contract(self):
         import threading
         endpoint = self.fixture / 'run/sandbox-egress/proxy.sock'

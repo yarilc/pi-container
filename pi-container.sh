@@ -54,8 +54,11 @@ Environment:
   PI_CONTAINER_MEMORY_LIMIT session memory, integer with k/m/g unit (default: 4g)
   PI_CONTAINER_CPU_LIMIT    session CPUs, up to 3 decimals (default: 2)
   PI_CONTAINER_PIDS_LIMIT   session process limit (default: 512)
-                         Budgets cannot be disabled; they require delegated
-                         rootless cgroup v2 cpu/memory/pids controllers
+                         Budgets cannot be disabled; each is enforced only when
+                         the rootless engine delegates its cgroup v2 controller
+                         (memory, cpu, pids). A missing controller leaves that
+                         budget unenforced with a notice; without memory or
+                         process budgets a session can exhaust host resources
   PI_CONTAINER_RUN_TIMEOUT  session container lifetime in whole seconds
                          (default: 0, disabled); independent from shutdown budgets
   PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE exact 1 permits a refused sensitive
@@ -244,6 +247,27 @@ case "${PI_CONTAINER_TRUST_HOST_CA:-}" in
     ''|0|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]) ;;
     *) die 'PI_CONTAINER_TRUST_HOST_CA must be 0, 1, true, false, yes, or no' ;;
 esac
+# The host CA bundle is selected from the environment alone, before any build:
+# the build-only refresh (used by setup) exits before state validation, and its
+# HTTPS package fetches must verify against the same bundle as a session.
+ca_bundle=''
+select_ca_bundle() {
+    ((trust_host_ca)) || return 0
+    if [[ -n "${PI_CONTAINER_CA_BUNDLE:-}" ]]; then
+        [[ -f "$PI_CONTAINER_CA_BUNDLE" ]] || die "PI_CONTAINER_CA_BUNDLE is not a file: $PI_CONTAINER_CA_BUNDLE"
+        ca_bundle=$(readlink -f -- "$PI_CONTAINER_CA_BUNDLE")
+    else
+        for candidate in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
+            if [[ -f "$candidate" ]]; then
+                ca_bundle=$candidate
+                break
+            fi
+        done
+        [[ -n "$ca_bundle" ]] || die 'no default CA bundle found; set PI_CONTAINER_CA_BUNDLE to a bundle file'
+    fi
+    [[ "$ca_bundle" != *[:$'\n'$'\r']* ]] || die "CA bundle path must not contain colon, CR or LF: $ca_bundle"
+}
+select_ca_bundle
 config_override=${PI_CONTAINER_CONFIG_DIR:-}
 if [[ -n "$config_override" ]]; then
     [[ -z "${PI_CONTAINER_STATE_DIR:-}" ]] \
@@ -470,6 +494,10 @@ build_runtime_image() {
     local build_args=(--tag "$image" --file "$script_dir/Containerfile" --format docker
         --build-arg "PI_VERSION=$pi_version" --build-arg "INSTALL_BUN=$install_bun"
         --label "build-inputs-hash=$build_hash")
+    # The opted-in host CA bundle also verifies the build's package fetches. It is
+    # a build secret: mounted only for its RUN step, never stored in a layer and
+    # not a build input, so it does not enter the staleness hash.
+    [[ -z "$ca_bundle" ]] || build_args+=(--secret "id=build-ca,src=$ca_bundle")
     printf 'Building Pi v%s image...\n' "$pi_version" >&2
     timeout --kill-after=1s 300s podman build "${build_args[@]}" "$script_dir" </dev/null || die 'Image build failed or timed out (300s); check build output and network'
 }
@@ -478,6 +506,42 @@ if ((build_only)); then
         || die "image $image build requires exact PI_CONTAINER_MAINTENANCE=1 (host pulls and build RUN steps are outside runtime filtering)"
     build_runtime_image
     exit 0
+fi
+
+# A budget is enforced only when the verified engine reports its cgroup v2
+# controller as delegated. Unenforced budgets are not requested, are announced,
+# and must be absent from the created configuration (see network/agent_budgets.py).
+capture_engine_info info --format '{{.Host.CgroupControllers}}' \
+    || die 'cannot query the rootless cgroup controllers; check the Podman engine'
+cgroup_controllers=$engine_response
+[[ "$cgroup_controllers" =~ ^\[([a-z_]+( [a-z_]+)*)?\]$ ]] \
+    || die 'unverifiable cgroup controller list from the Podman engine'
+controller_delegated() {
+    [[ " ${cgroup_controllers:1:${#cgroup_controllers}-2} " == *" $1 "* ]]
+}
+budget_args=()
+expected_memory=0
+expected_cpu=0
+pids_enforced=0
+if controller_delegated memory; then
+    budget_args+=("--memory=$memory_bytes")
+    expected_memory=$memory_bytes
+else
+    printf 'pi-container: agent memory budget not enforced: cgroup controller memory is not delegated to the rootless engine\n' >&2
+fi
+if controller_delegated cpu; then
+    budget_args+=("--cpus=$cpu_text")
+    expected_cpu=$cpu_nano
+else
+    printf 'pi-container: agent CPU budget not enforced: cgroup controller cpu is not delegated to the rootless engine\n' >&2
+fi
+if controller_delegated pids; then
+    budget_args+=("--pids-limit=$pids_limit")
+    pids_enforced=1
+else
+    # Override any containers.conf default that would request the missing controller.
+    budget_args+=(--pids-limit=-1)
+    printf 'pi-container: agent process budget not enforced: cgroup controller pids is not delegated to the rootless engine\n' >&2
 fi
 if ((restricted)); then
     command -v python3 >/dev/null || die 'host Python 3 is required for restricted network policy validation'
@@ -506,6 +570,8 @@ if [[ "$podman_setting" == 1 ]]; then
     capture_engine_info --remote --url "unix://$socket" info --format '{{.Host.Security.Rootless}}{{"\n"}}{{.Host.RemoteSocket.Path}}' || die "Cannot query selected Podman socket or invalid response: $socket"
     [[ "$engine_response" == true$'\n'* ]] || die 'Selected socket must report rootless true and an absolute host socket path'
     host_socket=${engine_response#*$'\n'}
+    # Podman 5 reports the service socket as a unix:// URL; earlier releases report the bare path.
+    host_socket=${host_socket#unix://}
     [[ "$host_socket" == /* && -n "${host_socket//\//}" && "$host_socket" != *$'\n'* ]] || die 'Selected socket must report one absolute host socket path beyond /'
 fi
 
@@ -546,21 +612,9 @@ if [[ -n "${PI_CONTAINER_STATE_DIR:-}" ]]; then
 fi
 validate_state "${config_override:-$state_root/.pi}"; pi_state=$state_path
 validate_state "$state_root/.agents"; agents_state=$state_path
-ca_bundle=''
+# The CA bundle itself was selected before any build (select_ca_bundle); only
+# the isolated-home mount parent depends on the validated state.
 if ((trust_host_ca)); then
-    if [[ -n "${PI_CONTAINER_CA_BUNDLE:-}" ]]; then
-        [[ -f "$PI_CONTAINER_CA_BUNDLE" ]] || die "PI_CONTAINER_CA_BUNDLE is not a file: $PI_CONTAINER_CA_BUNDLE"
-        ca_bundle=$(readlink -f -- "$PI_CONTAINER_CA_BUNDLE")
-    else
-        for candidate in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
-            if [[ -f "$candidate" ]]; then
-                ca_bundle=$candidate
-                break
-            fi
-        done
-        [[ -n "$ca_bundle" ]] || die 'no default CA bundle found; set PI_CONTAINER_CA_BUNDLE to a bundle file'
-    fi
-    [[ "$ca_bundle" != *[:$'\n'$'\r']* ]] || die "CA bundle path must not contain colon, CR or LF: $ca_bundle"
     if [[ -n "$isolated_home" ]]; then
         # Resolve first so an existing symlink cannot move the CA mount parent.
         ca_parent=$(readlink -m -- "$isolated_home/ca")
@@ -646,15 +700,26 @@ if ((restricted)); then
     session_image=$engine_response
 fi
 
-podman_args=(--rm --interactive --read-only --read-only-tmpfs=false
+podman_args=(--rm --interactive --read-only
     --userns=keep-id --user "$caller_uid:$caller_gid"
     --cap-drop=ALL --security-opt=no-new-privileges
-    "--memory=$memory_bytes" "--cpus=$cpu_text" "--pids-limit=$pids_limit"
+    "${budget_args[@]}"
     --workdir "$workspace" --env "HOME=$CONTAINER_HOME"
     --env "EDITOR=${EDITOR:-nano}" --env "VISUAL=${VISUAL:-nano}"
     --tmpfs "/tmp:rw,noexec,nosuid,nodev,mode=1777,size=256M"
     --tmpfs "/var/tmp:rw,noexec,nosuid,nodev,mode=1777,size=256M"
     --tmpfs "/run:rw,noexec,nosuid,nodev,mode=1777,size=32M"
+    # Mask engine default mounts at /run/secrets (RHEL subscription secrets from
+    # mounts.conf): Podman skips its own mount there, leaving an empty read-only
+    # tmpfs that the guard accepts and that exposes no host material.
+    --mount type=tmpfs,destination=/run/secrets,ro=true
+    # Podman forces /dev read-only with --read-only-tmpfs=false, and crun >= 1.27
+    # must replace /dev/console to attach a terminal. Keep automatic provisioning
+    # but override each of its targets: a noexec /dev, the devpts that a user /dev
+    # mount drops, and an empty read-only /dev/shm.
+    --tmpfs "/dev:rw,nosuid,noexec,mode=755,size=65536k"
+    --mount type=devpts,destination=/dev/pts
+    --mount type=tmpfs,destination=/dev/shm,ro=true
     --volume "$workspace_mount:$workspace_mount:rw")
 # The dedicated home is a private state directory or an ephemeral tmpfs.
 if [[ -n "$isolated_home" ]]; then
@@ -1003,13 +1068,22 @@ done
 ((pending_status == 0)) || exit "$pending_status"
 
 # Engine flags alone are not evidence: require the created configuration to
-# carry every selected budget before the application starts.
+# carry every enforced budget and no unenforced one before the application starts.
 configured_budgets=$(timeout --kill-after=1s 10s podman inspect --type container \
     --format '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}}' "$container_id") \
     || die 'Cannot inspect session resource budgets; session not started'
 ((pending_status == 0)) || exit "$pending_status"
-[[ "$configured_budgets" == "$memory_bytes $cpu_nano $pids_limit" ]] \
-    || die "Session resource budgets were not applied (expected memory=$memory_bytes nano_cpus=$cpu_nano pids=$pids_limit); check rootless cgroup v2 cpu/memory/pids controller delegation; session not started"
+read -r configured_memory configured_cpu configured_pids extra <<< "$configured_budgets"
+budgets_applied=0
+if [[ -z "${extra:-}" && "$configured_budgets" != *$'\n'* && "$configured_memory" == "$expected_memory" && "$configured_cpu" == "$expected_cpu" ]]; then
+    if ((pids_enforced)); then
+        [[ "$configured_pids" == "$pids_limit" ]] && budgets_applied=1
+    else
+        [[ "$configured_pids" =~ ^(0|-1)$ ]] && budgets_applied=1
+    fi
+fi
+((budgets_applied)) \
+    || die "Session resource budgets were not applied as expected (memory=$expected_memory nano_cpus=$expected_cpu pids=$( ((pids_enforced)) && printf '%s' "$pids_limit" || printf 'unenforced')); engine reports controllers $cgroup_controllers; check rootless cgroup v2 controller delegation; session not started"
 
 # Explicit redirection retains redirected stdin for the background client.
 attached=1

@@ -55,6 +55,8 @@ elif command == 'exec':
           '{"pids":128,"memory":268435456,"capabilities":[0,0,0,0,0],"no_new_privs":1,"seccomp":2}'))
 elif command == 'ps':
     print(os.environ.get('FAKE_RECOVERY', ''))
+elif command == 'info':
+    print(os.environ.get('FAKE_CONTROLLERS', '[cpu memory pids]'))
 '''
 
 FAKE_CONTROL = r'''import json, os, pathlib, socket, sys
@@ -96,7 +98,7 @@ class SessionHelper(unittest.TestCase):
         self.install = self.base / 'installed'
         (self.install / 'network/bin').mkdir(parents=True)
         (self.install / 'agent').mkdir()
-        for name in ('session.py', 'revisions.py', 'agent_profile.py', 'policy.py', 'proxy_hardening.py', 'platform_check.py',
+        for name in ('session.py', 'revisions.py', 'agent_profile.py', 'agent_budgets.py', 'policy.py', 'proxy_hardening.py', 'platform_check.py',
                      'relay.py', 'mux.py', 'resolv.conf', 'qualification_proxy.py',
                      'qualification_probe.py', 'qualification_runtime.py'):
             shutil.copyfile(NETWORK / name, self.install / 'network' / name)
@@ -255,14 +257,70 @@ class SessionHelper(unittest.TestCase):
         self.assertEqual((self.session / 'proxy.id').read_text(), PROXY + '\n')
         self.assertFalse((self.session / 'proxy.pending').exists())
         calls = self.engine_calls()
-        self.assertEqual([call[0] for call in calls], ['create', 'start', 'inspect', 'exec'])
-        create = calls[0]
+        self.assertEqual([call[0] for call in calls], ['info', 'create', 'start', 'inspect', 'exec'])
+        self.assertEqual(calls[0], ['info', '--format', '{{.Host.CgroupControllers}}'])
+        self.assertNotIn('budget not enforced', result.stderr)
+        create = calls[1]
         self.assertEqual(create[create.index('--name') + 1], PROFILE.state_name + '-' + self.session.name)
+        self.assertEqual(create[create.index('type=tmpfs,destination=/run/secrets,ro=true') - 1], '--mount')
         for option in ('--cap-drop=all', '--security-opt=no-new-privileges', '--pids-limit=128',
                        '--memory=256m', '--read-only', PROFILE.label('egress') + '=' + self.session.name,
                        'EGRESS_PROFILE=fixture', 'EGRESS_SESSION=' + self.session.name):
             self.assertIn(option, create)
         self.assertEqual(create[-1], 'd' * 64)
+
+    def test_proxy_budgets_follow_delegated_controllers(self):
+        config = {'memory': '{"PidsLimit":0,"Memory":268435456}', 'pids': '{"PidsLimit":128,"Memory":0}',
+                  'none': '{"PidsLimit":-1,"Memory":0}'}
+        effective = '{{"pids":{},"memory":{},"capabilities":[0,0,0,0,0],"no_new_privs":1,"seccomp":2}}'
+        cases = (('[cpu memory]', config['memory'], effective.format('null', 268435456), ['memory']),
+                 ('[cpu pids]', config['pids'], effective.format(128, 'null'), ['pids']),
+                 ('[]', config['none'], effective.format('null', 'null'), []))
+        for controllers, configured, measured, enforced in cases:
+            with self.subTest(controllers=controllers):
+                shutil.rmtree(self.session); self.session.mkdir(mode=0o700)
+                Path(str(self.log)).unlink(missing_ok=True)
+                env = self.ready_env() | {'FAKE_CONTROLLERS': controllers, 'FAKE_CONFIG': configured,
+                                          'FAKE_EFFECTIVE': measured}
+                result = self.start(env=env, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                create = next(call for call in self.engine_calls() if call[0] == 'create')
+                self.assertEqual('--memory=256m' in create, 'memory' in enforced)
+                self.assertEqual('--pids-limit=128' in create, 'pids' in enforced)
+                self.assertEqual('--pids-limit=-1' in create, 'pids' not in enforced)
+                for controller, label in (('memory', 'memory'), ('pids', 'process')):
+                    self.assertEqual(f'proxy {label} budget not enforced: cgroup controller {controller}'
+                                     in result.stderr, controller not in enforced)
+        # A delegated budget that is missing, or an unenforced one that appears, stops startup.
+        for controllers, configured, measured in (
+                ('[cpu memory]', config['memory'], effective.format(128, 268435456)),
+                ('[cpu memory]', '{"PidsLimit":128,"Memory":268435456}', effective.format('null', 268435456)),
+                ('[cpu memory pids]', config['memory'], effective.format('null', 268435456)),
+                ('bogus', config['none'], effective.format('null', 'null'))):
+            with self.subTest(controllers=controllers, configured=configured, measured=measured):
+                shutil.rmtree(self.session); self.session.mkdir(mode=0o700)
+                env = self.ready_env() | {'FAKE_CONTROLLERS': controllers, 'FAKE_CONFIG': configured,
+                                          'FAKE_EFFECTIVE': measured}
+                result = self.start(env=env, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertRegex(result.stderr, 'proxy hardening unavailable|unverifiable cgroup controller list')
+
+    def test_proxy_hardening_verification_is_exact_per_enforced_budget(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'network'))
+        import proxy_hardening as hardening
+        full = dict(capabilities=[0] * 5, no_new_privs=1, seccomp=2)
+        hardening.verify({'PidsLimit': 128, 'Memory': 268435456}, full | dict(pids=128, memory=268435456))
+        hardening.verify({'PidsLimit': 128, 'Memory': 0}, full | dict(pids=128, memory=None), ('pids',))
+        hardening.verify({'PidsLimit': -1, 'Memory': 0}, full | dict(pids=None, memory=None), ())
+        for config, effective, enforced in (
+                ({'PidsLimit': 128, 'Memory': 0}, full | dict(pids=128, memory=None), ('memory', 'pids')),
+                ({'PidsLimit': 128, 'Memory': 268435456}, full | dict(pids=128, memory=268435456), ('pids',)),
+                ({'PidsLimit': 2048, 'Memory': 0}, full | dict(pids=None, memory=None), ()),
+                ({'PidsLimit': -1, 'Memory': 0}, full | dict(pids=None, memory=1), ()),
+                ({'PidsLimit': 128, 'Memory': 0}, full | dict(pids='128', memory=None), ('pids',)),
+                ({'PidsLimit': -1, 'Memory': 0}, full | dict(pids=None, memory=None), ('cpu',))):
+            with self.subTest(config=config, effective=effective, enforced=enforced), self.assertRaises(ValueError):
+                hardening.verify(config, effective, enforced)
 
     def test_start_fails_closed_on_identity_hardening_and_invalid_results(self):
         cases = [({'FAKE_READY': 'wrong-policy guard=' + DIGEST + ' mux=1 tls=' + TLS_ENFORCEMENT},

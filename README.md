@@ -334,7 +334,7 @@ networking. `PI_NETWORK` is rejected with migration guidance.
 | `unrestricted` | Ordinary runtime networking, the previous behavior | Exact `PI_CONTAINER_PODMAN=1` |
 
 The restricted implementation is shared with `claude-container` and copied
-unchanged from its tag `sandbox-ref-10`; see
+unchanged from its tag `sandbox-ref-12`; see
 [docs/network-contract.md](docs/network-contract.md) and
 [network/README.md](network/README.md).
 
@@ -540,9 +540,9 @@ ownership changes. Every temporary store disappears with the session.
 | Control | Implementation |
 | --- | --- |
 | Identity / capabilities | Caller UID/GID, keep-id, `--cap-drop=ALL`, no additions |
-| Root filesystem | Read-only; explicit bounded `/tmp`, `/var/tmp`, `/run`, and npm cache |
+| Root filesystem | Read-only; explicit bounded `/tmp`, `/var/tmp`, `/run`, and npm cache; a `noexec` 64 MiB `/dev`, `devpts` and an empty read-only `/dev/shm`; an empty read-only `/run/secrets` mask |
 | Privilege escalation | `--security-opt=no-new-privileges` |
-| Resource limits | 4 GiB memory, 2 CPUs, 512 processes (configurable), validated and checked after create |
+| Resource limits | 4 GiB memory, 2 CPUs, 512 processes (configurable), validated, each enforced when its cgroup controller is delegated, and checked after create |
 | SELinux | Host labels and confinement remain unchanged |
 | Sensitive workspace guard | Refuses `/`, system directories, `/tmp`, `$HOME` and `/mnt/<letter>` on physical paths (override: exact `PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1`) |
 | Rootless enforcement | Verified Linux rootless engine before image operations; no override |
@@ -574,12 +574,30 @@ ownership changes. Every temporary store disappears with the session.
 | `PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE` | unset | exactly `1` permits a refused workspace |
 
 Only an unset budget selects its default; no value disables a budget. Invalid
-values stop with status 1 before any engine query or state creation. After
-creating the container the wrapper inspects it and starts it only when the
-configured memory, CPU and process limits equal the selected budgets;
-otherwise it removes its own container and names rootless cgroup v2
-`cpu`/`memory`/`pids` controller delegation. Budgets and tmpfs sizes do not
-limit workspace or state storage growth.
+values stop with status 1 before any engine query or state creation. Each budget
+is enforced only when the rootless engine delegates its cgroup v2 controller
+(`memory`, `cpu`, `pids`), as reported by `podman info`
+(`Host.CgroupControllers`). A missing controller leaves that budget unenforced:
+the wrapper does not request it, prints a notice such as `pi-container: agent
+CPU budget not enforced: cgroup controller cpu is not delegated to the rootless
+engine`, and continues without a question. Provider proxies follow the same rule
+for their 128-process and 256 MiB limits. Without the memory or process budget,
+a session can exhaust host memory or processes for your user. After creating the
+container the wrapper inspects it and starts it only when every enforced budget
+equals its selected value and no unenforced budget is present; otherwise it
+removes its own container and names the reported controllers. Restricted
+qualification records the enforced set, so a change in delegation requires
+requalification. Budgets and tmpfs sizes do not limit workspace or state storage
+growth.
+
+Each session mounts its own `/dev` tmpfs (`nosuid,noexec`, mode 755, 64 MiB), an
+explicit `devpts` at `/dev/pts` and an empty read-only `/dev/shm`: Podman 5 with
+crun 1.27 cannot attach a terminal to a read-only `/dev`, so automatic read-only
+tmpfs provisioning stays enabled and each of its targets is overridden. `/dev`
+is writable but not executable, and tools that need POSIX shared memory in
+`/dev/shm` are not supported. An empty read-only tmpfs at `/run/secrets` masks
+engine default mounts there (for example RHEL subscription certificates from
+`mounts.conf`).
 
 `PI_CONTAINER_RUN_TIMEOUT` sets Podman's native container lifetime,
 independent of the wrapper's shutdown budgets. When it stops a session, the
@@ -664,6 +682,15 @@ context contains only those five files.
 - `--container-build` always rebuilds from the pinned inputs. Used alone, it
   only rebuilds and exits; guided setup uses this form to build its candidate
   runtime image with the same build arguments and label.
+- Debian packages are fetched over verified HTTPS only; image preparation needs
+  outbound HTTPS (443) to the Debian, npm and container registries, not port 80.
+- With `PI_CONTAINER_TRUST_HOST_CA=1`, the selected bundle is resolved before
+  any build, including the build-only refresh, and passed to the build as the
+  `build-ca` secret, so the package fetches verify on TLS-intercepting networks.
+  It is never stored in a layer and is not a build input, so the
+  `build-inputs-hash` label does not depend on it.
+- The recipe declares no `WORKDIR`; a future one must be created by an earlier
+  build step, so the engine never creates or chowns it at container start.
 
 `PI_PULL_ALWAYS` is ignored with a warning: the base image is pinned by digest.
 Weekly CI scans monitor the built image for CVEs.

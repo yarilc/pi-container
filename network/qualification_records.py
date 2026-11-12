@@ -1,5 +1,6 @@
 """Strict protected qualification records and immutable enforcement identities."""
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
@@ -50,6 +51,49 @@ def expected_checks(provider):
     return list(CHECKS + (PROVIDER_CHECKS if provider else ()))
 
 
+def ipv6_state(sysctl='/proc/sys/net/ipv6'):
+    """Engine-host IPv6 state: present, or absent only when the kernel has no IPv6 stack."""
+    # Runs inside the server-side identity probe container; keep it self-contained.
+    import errno
+    import os
+    import socket
+    present = os.path.isdir(sysctl)
+    try:
+        socket.socket(socket.AF_INET6, socket.SOCK_DGRAM).close()
+    except OSError as error:
+        if error.errno == errno.EAFNOSUPPORT and not present:
+            return 'absent'
+        raise RuntimeError('unverifiable IPv6 state') from None
+    if not present:
+        raise RuntimeError('unverifiable IPv6 state')
+    return 'present'
+
+
+def validate_security(security, ca_path):
+    if (type(security) is not dict or set(security) != {'boot', 'seccomp', 'netavark', 'ca', 'ipv6'} or
+            not isinstance(security['boot'], str) or not re.fullmatch(r'[a-f0-9-]{36}', security['boot']) or
+            not all(isinstance(security[key], str) for key in ('seccomp', 'netavark', 'ca', 'ipv6')) or
+            not re.fullmatch(r'[a-f0-9]{64}', security['seccomp']) or
+            not re.fullmatch(r'[a-f0-9]{64}', security['netavark']) or
+            (ca_path and not re.fullmatch(r'[a-f0-9]{64}', security['ca'])) or
+            (not ca_path and security['ca'] != '') or
+            security['ipv6'] not in ('present', 'absent')):
+        raise PolicyError('unverifiable security identity')
+    return security
+
+
+def security_probe_args(profile, token, profile_path, ca_mount, candidate, runtime, script):
+    """Engine arguments of the server-side security-identity probe container."""
+    # An explicit /: the engine never creates or chowns an image WORKDIR missing
+    # from the image layers (that chown fails for domain UIDs under keep-id).
+    return ['podman', 'run', '--rm', '--pull=never', '--network=none', '--read-only', '--workdir', '/',
+            '--label', profile.label('qualification') + '=' + token,
+            '--cap-drop=all', '--security-opt=no-new-privileges', '--userns=keep-id', '--user', f'{os.getuid()}:{os.getgid()}',
+            '--volume', profile_path + ':/qualification-seccomp:ro', *ca_mount,
+            '--mount', 'type=bind,src=' + candidate + ',dst=/qualification-netavark,ro=true',
+            '--entrypoint', 'python3', runtime, '-I', '-c', script]
+
+
 def evidence_status(value, identity):
     if (type(value) is not dict or set(value) != {'schema', 'fingerprints'} or
             type(value['schema']) is not int or value['schema'] != 1 or
@@ -92,7 +136,8 @@ def fingerprint(root, env, run, platform, token):
         'cgroupVersion', 'cgroupManager', 'cgroupControllers', 'ociRuntime')}
     if any(item is None for item in engine_configuration.values()):
         raise PolicyError('unverifiable engine/backend configuration')
-    socket = run(['podman', 'info', '--format', '{{.Host.RemoteSocket.Path}}'])
+    # Podman 5 reports the service socket as a unix:// URL; earlier releases report the bare path.
+    socket = run(['podman', 'info', '--format', '{{.Host.RemoteSocket.Path}}']).removeprefix('unix://')
     if not socket.startswith('/') or '\n' in socket or '\r' in socket:
         raise PolicyError('unverifiable host socket identity')
     abi_output = run([str(root / 'network/bin' / GUARD), '--probe'])
@@ -130,9 +175,10 @@ def fingerprint(root, env, run, platform, token):
         if not Path(ca_path).is_file():
             raise PolicyError('unverifiable selected CA bundle')
         ca_path = str(Path(ca_path).resolve())
-    security_probe = """import hashlib,json
+    security_probe = inspect.getsource(ipv6_state) + """
+import hashlib,json
 from pathlib import Path
-print(json.dumps({'boot':Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+print(json.dumps({'boot':Path('/proc/sys/kernel/random/boot_id').read_text().strip(),'ipv6':ipv6_state(),
 'seccomp':hashlib.sha256(Path('/qualification-seccomp').read_bytes()).hexdigest(),
 'netavark':hashlib.sha256(Path('/qualification-netavark').read_bytes()).hexdigest(),
 'ca':hashlib.sha256(Path('/qualification-ca').read_bytes()).hexdigest() if Path('/qualification-ca').exists() else ''}))
@@ -145,23 +191,18 @@ print(json.dumps({'boot':Path('/proc/sys/kernel/random/boot_id').read_text().str
     if not isinstance(candidate,str) or not candidate.startswith('/') or any(c in candidate for c in ':,\n\r'):
         raise PolicyError('unverifiable server Netavark path')
     engine_configuration['networkBackendInfo'] = backend_info
-    raw = run(['podman', 'run', '--rm', '--pull=never', '--network=none', '--read-only',
-        '--label', profile.label('qualification') + '=' + token,
-        '--cap-drop=all', '--security-opt=no-new-privileges', '--userns=keep-id', '--user', f'{os.getuid()}:{os.getgid()}',
-        '--volume', profile_path + ':/qualification-seccomp:ro', *ca_mount,
-        '--mount', 'type=bind,src=' + candidate + ',dst=/qualification-netavark,ro=true',
-        '--entrypoint', 'python3', runtime, '-I', '-c', security_probe])
-    security = decode(raw.encode())
-    if (not re.fullmatch(r'[a-f0-9-]{36}', security.get('boot', '')) or
-            not re.fullmatch(r'[a-f0-9]{64}', security.get('seccomp', '')) or
-            not re.fullmatch(r'[a-f0-9]{64}', security.get('netavark', '')) or
-            (ca_path and not re.fullmatch(r'[a-f0-9]{64}', security.get('ca', ''))) or
-            (not ca_path and security.get('ca') != '')):
-        raise PolicyError('unverifiable security identity')
+    raw = run(security_probe_args(profile, token, profile_path, ca_mount, candidate, runtime, security_probe))
+    # The IPv6 state is bound into the identity: a host that later boots with the
+    # other state needs requalification.
+    security = validate_security(decode(raw.encode()), ca_path)
     code = {name: digest(trusted_path(root / name, []).read_bytes()) for name in code_files(profile)}
     try:
         # Agent capability, budget and lifetime settings of the launch being qualified.
-        agent = agent_budgets.agent_hardening(env, profile)
+        # The enforced budgets follow the controllers the verified engine delegates.
+        agent = agent_budgets.agent_hardening(env, profile, engine_configuration['cgroupControllers'])
+        proxy_enforced = agent_budgets.enforced(engine_configuration['cgroupControllers'], 'proxy')
+    except agent_budgets.ControllerError:
+        raise PolicyError('unverifiable engine cgroup controllers') from None
     except agent_budgets.BudgetError as error:
         raise PolicyError('invalid ' + profile.env(str(error)) + ' agent budget or lifetime') from None
     identity = dict(revision=REVISION, platform=value, engine_configuration=engine_configuration,
@@ -169,7 +210,7 @@ print(json.dumps({'boot':Path('/proc/sys/kernel/random/boot_id').read_text().str
                     security=security, code=code, runtime=runtime, proxy=proxy,
                     mode=mode, profile=selected_profile if mode == 'provider' else '', policy=policy_id,
                     hardening=dict(capabilities=[], no_new_privs=True, pids=PIDS_LIMIT, memory=MEMORY_LIMIT,
-                                   agent=agent))
+                                   enforced=proxy_enforced, agent=agent))
     # Active LSM policy identity cannot generally be read by an unprivileged
     # operator. Rerun the gate each launch instead of caching unverifiable state.
     return identity, not (value['selinux'] or value['apparmor'])
