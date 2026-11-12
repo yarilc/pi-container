@@ -268,7 +268,7 @@ Setup SHALL install the agent profile and its provider policy file together with
 - **THEN** it also installs `.version`, which the profile declares in `install.files` and the wrapper reads on every launch, and qualification binds it as installed code
 
 ### Requirement: Runtime image built through the Pi wrapper
-Because the profile declares `install.runtime_build: "wrapper"`, setup SHALL build a new runtime image by running the installed release's `pi-container.sh --container-build` alone, under maintenance authorization and with the candidate image tag, then inspect the candidate's immutable identity. The build SHALL use the same build arguments and `build-inputs-hash` label as a launch, without Bun, and start no session. A reused runtime image SHALL keep its labels.
+Because the profile declares `install.runtime_build: "wrapper"`, setup SHALL build a new runtime image by running the installed release's `pi-container.sh --container-build` alone, under maintenance authorization and with the candidate image tag, then inspect the candidate's immutable identity. The build SHALL use the same build arguments and `build-inputs-hash` label as a launch, without Bun, and start no session. A reused runtime image SHALL keep its labels. When host CA trust is enabled, setup SHALL pass the trust selection and the selected bundle to that build, and the wrapper SHALL give the bundle to its runtime build only as the non-persisted `build-ca` secret.
 
 #### Scenario: Fresh runtime build
 - **WHEN** approved setup has no reusable runtime image
@@ -286,6 +286,14 @@ Because the profile declares `install.runtime_build: "wrapper"`, setup SHALL bui
 #### Scenario: Bun is not selected by setup
 - **WHEN** a managed launch sets `PI_ENABLE_BUN`
 - **THEN** the setup-built image is stale for that selection and the launch stops until an explicit maintenance rebuild
+
+#### Scenario: Wrapper-built runtime with host CA trust
+- **WHEN** setup prepares the runtime image with host CA trust enabled
+- **THEN** the wrapper's build receives the selected bundle as the `build-ca` secret, and the built image contains neither the bundle nor its temporary copy
+
+#### Scenario: Wrapper-built runtime without host CA trust
+- **WHEN** setup prepares the runtime image with host CA trust disabled
+- **THEN** the wrapper's build receives no build secret and no host CA bundle
 
 ### Requirement: Provider residual exfiltration acknowledgement
 When provider mode is selected, setup SHALL show a residual-exfiltration notice before authentication questions. The notice SHALL state that the allowed hosts of the selected profile can receive workspace data sent with attacker-supplied credentials. Setup SHALL require explicit acknowledgement. Declining SHALL return to the network-mode choice and SHALL NOT select another mode on the operator's behalf. The acknowledgement is not stored.
@@ -322,7 +330,7 @@ Setup SHALL ask for the agent memory, CPU and process budgets and the optional s
 - **THEN** those values are the proposed answers
 
 ### Requirement: Saved budgets govern managed launches and verification
-The managed launcher SHALL supply the saved budgets and lifetime through `PI_CONTAINER_MEMORY_LIMIT`, `PI_CONTAINER_CPU_LIMIT`, `PI_CONTAINER_PIDS_LIMIT` and `PI_CONTAINER_RUN_TIMEOUT` when these are absent from the launch environment. An explicitly present variable SHALL take precedence. Setup smoke and qualification SHALL use the saved values.
+The managed launcher SHALL supply the saved budgets and lifetime through `PI_CONTAINER_MEMORY_LIMIT`, `PI_CONTAINER_CPU_LIMIT`, `PI_CONTAINER_PIDS_LIMIT` and `PI_CONTAINER_RUN_TIMEOUT` when these are absent from the launch environment. An explicitly present variable SHALL take precedence. Setup smoke and qualification SHALL use the saved values for every budget the engine can enforce.
 
 #### Scenario: Managed launch uses saved budgets
 - **WHEN** the user launches through the managed command with no budget variables exported
@@ -335,7 +343,12 @@ The managed launcher SHALL supply the saved budgets and lifetime through `PI_CON
 
 #### Scenario: Smoke verifies saved values
 - **WHEN** setup runs its installed smoke check
-- **THEN** the smoke compares the effective cgroup limits with the saved budgets, not with ambient environment values
+- **THEN** the smoke compares the effective cgroup limits of every enforced budget with the saved budgets, not with ambient environment values
+- **AND** it requires every unenforced budget to be absent
+
+#### Scenario: Setup plan names unenforced budgets
+- **WHEN** setup runs on an engine that does not report the `cpu` controller
+- **THEN** the setup plan lists the CPU budget as not enforced, with the missing controller, and setup continues without an extra question
 
 ### Requirement: Preferences without budgets are migrated
 Setup SHALL read saved preferences from earlier schema versions that lack budget and lifetime fields. It SHALL fill in the first-run defaults as proposed answers. New installations SHALL always be saved with the current schema. Unknown fields or unsupported schema versions SHALL still be rejected.
@@ -347,3 +360,15 @@ Setup SHALL read saved preferences from earlier schema versions that lack budget
 #### Scenario: Unsupported schema
 - **WHEN** preferences declare an unknown schema version or contain an unknown field
 - **THEN** setup and the launcher fail before image operations, as before
+
+### Requirement: Host CA trust covers setup package fetches
+When host CA trust is enabled, setup SHALL give the selected CA bundle to the runtime image and guard toolchain builds only as a non-persisted build secret, so their HTTPS package fetches verify on TLS-intercepting networks. Without host CA trust, setup SHALL pass no host CA to any build. The proxy build SHALL never receive it.
+
+#### Scenario: Toolchain build on a TLS-intercepting network
+- **WHEN** setup prepares the guard toolchain with host CA trust enabled and a bundle containing the interception CA
+- **THEN** the toolchain package fetches verify against that bundle and the build completes
+- **AND** the toolchain image contains neither the bundle nor its temporary copy
+
+#### Scenario: Host CA trust disabled
+- **WHEN** setup prepares images with host CA trust disabled
+- **THEN** no build receives a host CA bundle, and the toolchain build verifies only against the base image's certificates
