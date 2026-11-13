@@ -221,19 +221,23 @@ Every Pi and shell container SHALL be created with an empty read-only tmpfs at `
 - **WHEN** the engine adds no mount at `/run/secrets`
 - **THEN** the session still has the empty read-only tmpfs there and behaves as before
 
-### Requirement: Terminal-compatible device mounts
-Every Pi and shell container SHALL provide its own `/dev` tmpfs with `nosuid,noexec`, mode `755` and a 64 MiB limit, an explicit `devpts` at `/dev/pts`, and an empty read-only tmpfs at `/dev/shm`. A terminal SHALL then attach where the engine would otherwise mount `/dev` read-only. Automatic read-only tmpfs provisioning SHALL add no writable path beyond the explicit temporary and device mounts.
+### Requirement: Engine-provided device mounts allow pseudo-terminals
+Every Pi and shell container SHALL keep automatic read-only tmpfs provisioning enabled and SHALL NOT mount its own `/dev` or `devpts`, so that the engine provides `/dev` and a `devpts` that allows pseudo-terminals. It SHALL mask `/dev/shm` with an empty read-only tmpfs. Automatic provisioning SHALL add no writable path beyond the explicit temporary mounts and the engine's `/dev`.
 
 #### Scenario: Terminal attaches on an engine that mounts /dev read-only
 - **WHEN** an interactive session starts with a terminal on Podman 5 with crun 1.27
 - **THEN** the terminal attaches and Pi starts without any host configuration change
-- **AND** `/dev` is not executable, `/dev/pts` is present, and `/dev/shm` is read-only and empty
+- **AND** `/dev/pts` is present and `/dev/shm` is read-only and empty
 
-#### Scenario: Executables cannot run from /dev
-- **WHEN** a session copies an executable into `/dev`
-- **THEN** the mount policy prevents its direct execution
+#### Scenario: Pseudo-terminals are available to tools
+- **WHEN** a process inside the session opens a pseudo-terminal, as an interactive tool run by Pi or in the shell does
+- **THEN** the allocation succeeds through `/dev/ptmx` and returns a terminal under `/dev/pts`
+
+#### Scenario: Device masks stay empty and read-only
+- **WHEN** a process inside the session lists or writes `/dev/shm` or `/run/secrets`
+- **THEN** both are empty and the write fails
 
 #### Scenario: Temporary mounts keep their Pi policy
-- **WHEN** a session starts with the device mounts
+- **WHEN** a session starts
 - **THEN** `/tmp`, `/var/tmp` and `/run` keep their `noexec` 256, 256 and 32 MiB policy, and the home and npm cache keep theirs
 - **AND** no writable `/var/log` tmpfs or writable `/dev/shm` is introduced by automatic provisioning

@@ -592,7 +592,7 @@ mounts allow pseudo-terminals".
 | `tests/test_wrapper.py` | Passed: 81 tests. With the previous launcher, the updated assertions fail (12 failures) |
 | `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 359 tests, 69 skipped (the runtime tests are opt-in) |
 | `bash tests/run-runtime.sh` (`test_runtime.py`, same image) | Passed: 16 tests, including `test_identity_storage_hardening_and_ephemeral_lifetime` and `test_pseudo_terminals_and_device_masks` (`PI_ENABLE_BUN` unset) |
-| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Passed (operator-reported, 2026-11-13) on all three hosts, with `PI_ENABLE_BUN` unset |
 
 Qualification digests the launcher, so restricted installations rerun
 `--container-setup`. The runtime image is unchanged.
