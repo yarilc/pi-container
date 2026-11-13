@@ -596,3 +596,35 @@ mounts allow pseudo-terminals".
 
 Qualification digests the launcher, so restricted installations rerun
 `--container-setup`. The runtime image is unchanged.
+
+## Bun removal: 2026-11-13
+
+Change `remove-bun`, Pi-specific files only. No shared file changes.
+
+The image no longer offers the optional Bun runtime. Setup always built the
+runtime image without Bun, and qualification could not accept an image built
+with it, so a `PI_ENABLE_BUN` left in the operator's shell made the setup
+fail as stale (see "Operator `--container-setup` on the newer WSL host"
+above). This closes the open Bun decision recorded there.
+
+- `Containerfile` has no `INSTALL_BUN` or `BUN_VERSION`; the image has a
+  single variant.
+- `pi-container.sh` no longer reads `PI_ENABLE_BUN`. `PI_BUN_VERSION` is no
+  longer warned about, while `PI_PULL_ALWAYS` still is. The build passes only
+  `PI_VERSION`.
+- The `build-inputs-hash` covers exactly the five build-context files, so
+  every existing runtime image is stale once.
+
+| Check | Result |
+| --- | --- |
+| `tests/test_image_pins.py` with the previous recipe | Failed as intended: `unexpected package is installed: bun@1.3.14`. New cases: unexpected package; the unversioned-package and remote-installer mutations now use OpenSpec |
+| Updated `tests/test_wrapper.py` cases with the previous launcher | Failed as intended (build arguments, inert `PI_ENABLE_BUN`/`PI_BUN_VERSION`, help text) |
+| `tests/test_image_pins.py` with the change | Passed: 7 tests |
+| `tests/test_wrapper.py` | Passed: 81 tests |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 359 tests, 69 skipped (the runtime tests are opt-in) |
+| `./test.sh` (disposable image built without Bun, then `tests/run-runtime.sh`) | Passed: 16 tests, including `test_native_pi_help_version_npm_git_and_no_bun` (`bun` absent) and `test_pseudo_terminals_and_device_masks`; the test image was removed |
+| `grep -rni bun` over live files | Remaining hits: existing dated records, existing changelog entries, the removal notes in `README.md` and `CHANGELOG.md`, and test assertions that Bun is absent or inert |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending |
+
+Qualification digests the launcher and the runtime image changes, so every
+installation reruns `--container-setup`.

@@ -13,6 +13,8 @@ import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+# Bun, PI_ENABLE_BUN or PI_BUN_VERSION, but not CA_BUNDLE.
+BUN_MENTION = r'(?i)\bbun\b|_BUN\b|\bPI_BUN_'
 WRAPPER = ROOT / 'pi-container.sh'
 FAKE = (ROOT / 'tests/fake_podman.py').read_text()
 
@@ -83,9 +85,10 @@ class WrapperTests(unittest.TestCase):
                        'PI_IMAGE_NAME, PI_ENABLE_PODMAN, PI_PODMAN_SOCKET, PI_MEMORY_LIMIT',
                        'PI_MOUNT_GITCONFIG', 'Pi has no tool-approval layer', '--approve trusts',
                        'do not limit workspace or state storage', '/mnt/<letter>', '/tmp, the caller',
-                       'PI_CONTAINER_STATE_DIR', 'PI_BUN_VERSION and PI_PULL_ALWAYS are ignored',
+                       'PI_CONTAINER_STATE_DIR', 'PI_PULL_ALWAYS is ignored',
                        'stops the launch until', 'HOME=/pi-home'):
             self.assertIn(needle, result.stdout)
+        self.assertNotRegex(result.stdout, BUN_MENTION)
         self.assertEqual(self.calls(), [])
         self.assertFalse(self.state.exists())
 
@@ -704,9 +707,10 @@ reap_client
             self.assertFalse(self.state.exists())
             self.assertEqual(self.calls(), [])
 
-    def test_exact_delegation_bun_and_connection_forwarding(self):
-        for access, bun in itertools.product(('', '0', 'false', 'true', 'yes', '1', 'unexpected'), ('', '1')):
-            result=self.run_wrapper('--version', PI_CONTAINER_PODMAN=access, PI_ENABLE_BUN=bun,
+    def test_exact_delegation_and_connection_forwarding(self):
+        # A leftover PI_ENABLE_BUN is inert and does not affect delegation.
+        for access in ('', '0', 'false', 'true', 'yes', '1', 'unexpected'):
+            result=self.run_wrapper('--version', PI_CONTAINER_PODMAN=access, PI_ENABLE_BUN='1',
                 PI_CONTAINER_PODMAN_SOCKET=str(self.sock_path), PI_ENV_VARS='CONTAINER_HOST CONTAINER_CONNECTION CUSTOM_SECRET',
                 CONTAINER_HOST='unix:///launch.sock', FAKE_INFO='true linux true', CUSTOM_SECRET='dummy-private-value', PI_DEBUG='1')
             self.assertEqual(result.returncode,0,result.stderr)
@@ -780,11 +784,11 @@ reap_client
         self.project.mkdir()
         self.assert_rejected(self.run_wrapper('--container-git-worktree'))
 
-    def test_hash_inspection_bun_build_inputs_and_failures(self):
+    def test_hash_inspection_build_inputs_and_failures(self):
         self.assertNotEqual(self.run_wrapper(FAKE_INSPECT_STATUS='125').returncode,0)
         self.assertFalse(any(c[0]=='build' for c in self.calls()))
         # A stale image stops the launch instead of rebuilding silently.
-        for env in ({'FAKE_LABEL_HASH':''},{'FAKE_LABEL_HASH':'0'*64},{'PI_ENABLE_BUN':'1','FAKE_LABEL_HASH':'0'*64}):
+        for env in ({'FAKE_LABEL_HASH':''},{'FAKE_LABEL_HASH':'0'*64}):
             with self.subTest(env=env):
                 result=self.run_wrapper(**env)
                 self.assertEqual(result.returncode,1,result.stderr)
@@ -794,21 +798,22 @@ reap_client
         result=self.run_wrapper(FAKE_IMAGE_STATUS='1')
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertTrue(any(c[0]=='build' for c in self.calls()))
-        hashes=[]
-        for bun in ('','1'):
-            result=self.run_wrapper('--container-build','--version',PI_ENABLE_BUN=bun,PI_BUN_VERSION='bun-v1.2.0',PI_PULL_ALWAYS='1')
+        # Former Bun variables are inert: same label, same build arguments, no warning.
+        builds=[]
+        for former in ({}, {'PI_ENABLE_BUN':'1','PI_BUN_VERSION':'bun-v1.2.0'}):
+            result=self.run_wrapper('--container-build','--version',PI_PULL_ALWAYS='1',**former)
             self.assertEqual(result.returncode,0,result.stderr)
-            for name in ('PI_BUN_VERSION','PI_PULL_ALWAYS'):
-                self.assertEqual(result.stderr.count(f'{name} is ignored; image inputs are pinned in Containerfile'),1)
+            self.assertEqual(result.stderr.count('PI_PULL_ALWAYS is ignored; image inputs are pinned in Containerfile'),1)
+            self.assertNotRegex(result.stderr,BUN_MENTION)
             build=next(c for c in self.calls() if c[0]=='build')
-            hashes.append(build[build.index('--label')+1])
             args=[build[i+1] for i,a in enumerate(build) if a=='--build-arg']
-            self.assertEqual([a.split('=')[0] for a in args],['PI_VERSION','INSTALL_BUN'])
-            self.assertIn('INSTALL_BUN='+('1' if bun else '0'),args)
+            self.assertEqual([a.split('=')[0] for a in args],['PI_VERSION'])
             self.assertNotIn('--pull=always',build)
-        self.assertNotEqual(*hashes)
-        result=self.run_wrapper(PI_ENABLE_BUN='1')
+            builds.append((build[build.index('--label')+1],args))
+        self.assertEqual(builds[0],builds[1])
+        result=self.run_wrapper(PI_ENABLE_BUN='1',PI_BUN_VERSION='bun-v1.2.0')
         self.assertEqual(result.returncode,0,result.stderr)
+        self.assertNotRegex(result.stderr,BUN_MENTION)
         self.assertFalse(any(c[0]=='build' for c in self.calls()))
         result=self.run_wrapper(FAKE_CREATE_STATUS='42',FAKE_FAIL_WITH_CID='1')
         self.assertEqual(result.returncode,42,result.stderr)
@@ -1459,24 +1464,23 @@ reap_client
     def test_build_only_refresh(self):
         fixture = self.restricted_fixture()
         for mode in ('unrestricted', 'offline', 'provider'):
-            for bun in ('', '1'):
-                with self.subTest(mode=mode, bun=bun):
-                    env = {'PI_CONTAINER_NETWORK': mode, 'PI_CONTAINER_MAINTENANCE': '1',
-                           'PI_CONTAINER_IMAGE': 'localhost/pi-container:setup-x', 'PI_ENABLE_BUN': bun}
-                    if mode != 'unrestricted':
-                        env = fixture | env
-                    result = self.run_wrapper('--container-build', **env)
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    calls = self.calls()
-                    build = next(c for c in calls if c[0] == 'build')
-                    self.assertIn('localhost/pi-container:setup-x', build)
-                    build_args = [build[i + 1] for i, a in enumerate(build) if a == '--build-arg']
-                    self.assertIn('PI_VERSION=' + (ROOT / '.version').read_text().strip(), build_args)
-                    self.assertIn('INSTALL_BUN=' + ('1' if bun else '0'), build_args)
-                    label = build[build.index('--label') + 1]
-                    self.assertRegex(label, '^build-inputs-hash=[0-9a-f]{64}$')
-                    self.assertFalse(any(c[0] in ('create', 'start', 'run', 'pull') for c in calls))
-                    self.assertFalse(any(c[0] == 'image' for c in calls))
+            with self.subTest(mode=mode):
+                env = {'PI_CONTAINER_NETWORK': mode, 'PI_CONTAINER_MAINTENANCE': '1',
+                       'PI_CONTAINER_IMAGE': 'localhost/pi-container:setup-x'}
+                if mode != 'unrestricted':
+                    env = fixture | env
+                result = self.run_wrapper('--container-build', **env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                calls = self.calls()
+                build = next(c for c in calls if c[0] == 'build')
+                self.assertIn('localhost/pi-container:setup-x', build)
+                build_args = [build[i + 1] for i, a in enumerate(build) if a == '--build-arg']
+                self.assertIn('PI_VERSION=' + (ROOT / '.version').read_text().strip(), build_args)
+                self.assertEqual([a.split('=')[0] for a in build_args], ['PI_VERSION'])
+                label = build[build.index('--label') + 1]
+                self.assertRegex(label, '^build-inputs-hash=[0-9a-f]{64}$')
+                self.assertFalse(any(c[0] in ('create', 'start', 'run', 'pull') for c in calls))
+                self.assertFalse(any(c[0] == 'image' for c in calls))
         # The label equals the one a launch would require for the same inputs.
         self.run_wrapper('--container-build', '--version', PI_CONTAINER_MAINTENANCE='1')
         launch_build = next(c for c in self.calls() if c[0] == 'build')

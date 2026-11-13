@@ -79,8 +79,6 @@ Environment:
   PI_CONTAINER_YOLO      permission bypass: 0, 1, true, false, yes, or no
                          (default: disabled); Pi 0.80.8 has no tool-approval
                          layer, so an enabled value only prints a warning
-  PI_ENABLE_BUN          nonempty builds the image with the pinned Bun runtime;
-                         changing it requires --container-build
   PI_NPM_CACHE_SIZE      default: 256M
   PI_READONLY_CONFIG     nonempty mounts existing state read-only
   PI_ENV_VARS            space-separated extra variable names; never values
@@ -91,12 +89,12 @@ Deprecated names (warned; conflicting old and new values are errors):
   PI_IMAGE_NAME, PI_ENABLE_PODMAN, PI_PODMAN_SOCKET, PI_MEMORY_LIMIT,
   PI_CPU_LIMIT, PI_PIDS_LIMIT, PI_RUN_TIMEOUT, PI_ALLOW_UNSAFE_PWD (exact 1
   only) and PI_MOUNT_GITCONFIG map to the PI_CONTAINER_* names above.
-  PI_BUN_VERSION and PI_PULL_ALWAYS are ignored: image inputs (base digest,
-  Pi from .version, OpenSpec and Bun) are pinned in Containerfile.
+  PI_PULL_ALWAYS is ignored: image inputs (base digest, Pi from .version and
+  OpenSpec) are pinned in Containerfile.
 
 A missing image is built only with exact PI_CONTAINER_MAINTENANCE=1. A stale
-image (Containerfile, .containerignore, .version, network/relay.py,
-network/mux.py or PI_ENABLE_BUN changed) stops the launch until
+image (Containerfile, .containerignore, .version, network/relay.py
+or network/mux.py changed) stops the launch until
 --container-build is run explicitly under maintenance.
 Sessions use HOME=/pi-home, an ephemeral noexec tmpfs, with ~/.pi, ~/.agents,
 the npm cache and an opted-in ~/.gitconfig mounted below it; other files
@@ -133,7 +131,7 @@ Without delegation session CONTAINER_HOST is explicitly unset, even if listed
 in PI_ENV_VARS. Connection settings cannot override the selected session URI.
 Delegation grants the service user's host authority, including further mounts.
 Worktree mode exposes siblings in the whole immediate parent read/write.
-Bun and native Pi permissions are independent of delegation.
+Native Pi permissions are independent of delegation.
 
 New users must first run: bash ./pi-container.sh --container-setup
 Then use the managed launch command printed by setup (by default
@@ -164,7 +162,7 @@ Restricted sessions receive no host proxy or CA variables; provider mode
 forwards only the key of the selected profile (ANTHROPIC_API_KEY,
 OPENAI_API_KEY, GEMINI_API_KEY or OPENROUTER_API_KEY) and offline forwards none.
 PI_OFFLINE=1, PI_SKIP_VERSION_CHECK=1 and PI_TELEMETRY=0 are set after
-forwarding. Runtime npm or Bun installs and named Unix sockets are unavailable.
+forwarding. Runtime package installs and named Unix sockets are unavailable.
 Provider mode uses an external CONNECT proxy that binds the TLS server name
 (initial and retried ClientHello) to the CONNECT host before forwarding; it
 does not prove exclusive communication with your provider account. Allowed
@@ -337,11 +335,9 @@ select_setting PI_CONTAINER_PIDS_LIMIT PI_PIDS_LIMIT
 pids_text=512; ((setting_set == 0)) || pids_text=$setting_value
 select_setting PI_CONTAINER_RUN_TIMEOUT PI_RUN_TIMEOUT; timeout_text=${setting_value:-0}
 select_setting PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE PI_ALLOW_UNSAFE_PWD switch; unsafe_setting=$setting_value
-for variable_name in PI_BUN_VERSION PI_PULL_ALWAYS; do
-    if [[ -n "${!variable_name+x}" ]]; then
-        printf 'pi-container: %s is ignored; image inputs are pinned in Containerfile\n' "$variable_name" >&2
-    fi
-done
+if [[ -n "${PI_PULL_ALWAYS+x}" ]]; then
+    printf 'pi-container: PI_PULL_ALWAYS is ignored; image inputs are pinned in Containerfile\n' >&2
+fi
 # Validated like the other wrappers' approval switches; setup saves 0 or 1.
 case "${PI_CONTAINER_YOLO:-}" in
     [Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|1)
@@ -486,13 +482,11 @@ esac
 runtime_info=$engine_response
 
 # Build inputs and the staleness label shared by launches and build-only refreshes.
-install_bun=0
-[[ -z "${PI_ENABLE_BUN:-}" ]] || install_bun=1
-build_hash=$({ cat "$script_dir/Containerfile" "$script_dir/.containerignore" "$version_file" "$script_dir/network/relay.py" "$script_dir/network/mux.py"; printf 'INSTALL_BUN=%s\n' "$install_bun"; } | sha256sum)
+build_hash=$(cat "$script_dir/Containerfile" "$script_dir/.containerignore" "$version_file" "$script_dir/network/relay.py" "$script_dir/network/mux.py" | sha256sum)
 build_hash=${build_hash%% *}
 build_runtime_image() {
     local build_args=(--tag "$image" --file "$script_dir/Containerfile" --format docker
-        --build-arg "PI_VERSION=$pi_version" --build-arg "INSTALL_BUN=$install_bun"
+        --build-arg "PI_VERSION=$pi_version"
         --label "build-inputs-hash=$build_hash")
     # The opted-in host CA bundle also verifies the build's package fetches. It is
     # a build secret: mounted only for its RUN step, never stored in a layer and
@@ -669,7 +663,7 @@ if ((build_image == 0)); then
     if podman image exists "$image"; then
         label_hash=$(podman image inspect "$image" --format '{{index .Labels "build-inputs-hash"}}') || die "Cannot inspect staleness label for $image; check engine/storage"
         [[ "$label_hash" == "$build_hash" ]] \
-            || die "Image $image is stale for the current inputs (Containerfile, .containerignore, .version, network/relay.py, network/mux.py or PI_ENABLE_BUN); rebuild explicitly with --container-build and PI_CONTAINER_MAINTENANCE=1"
+            || die "Image $image is stale for the current inputs (Containerfile, .containerignore, .version, network/relay.py or network/mux.py); rebuild explicitly with --container-build and PI_CONTAINER_MAINTENANCE=1"
     else
         image_status=$?
         [[ "$image_status" == 1 ]] || { printf 'pi-container: Cannot inspect image %s (status %s)\n' "$image" "$image_status" >&2; exit "$image_status"; }

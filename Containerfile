@@ -12,15 +12,11 @@
 # Build arguments:
 #   PI_VERSION        Pi Coding Agent version (set by pi-container.sh from .version)
 #   OPENSPEC_VERSION  pinned OpenSpec release
-#   INSTALL_BUN       1 includes the optional Bun runtime (PI_ENABLE_BUN)
-#   BUN_VERSION       pinned Bun release, installed from npm
 
 FROM docker.io/library/node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da
 
 ARG PI_VERSION
 ARG OPENSPEC_VERSION=1.16.0
-ARG INSTALL_BUN=0
-ARG BUN_VERSION=1.3.14
 
 # Bash with pipefail for RUN commands (hadolint DL4006).
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -78,15 +74,10 @@ RUN --mount=type=secret,id=build-ca,required=false \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# npm verifies the registry integrity of every package; Bun's platform
-# binaries are exact-version optional dependencies of the bun package.
+# npm verifies the registry integrity of every package.
 RUN npm install --global --omit=dev \
         "@earendil-works/pi-coding-agent@${PI_VERSION}" \
         "@fission-ai/openspec@${OPENSPEC_VERSION}" \
-    && if [ "${INSTALL_BUN}" = "1" ]; then \
-        npm install --global --omit=dev "bun@${BUN_VERSION}" \
-        && test "$(bun --version)" = "${BUN_VERSION}"; \
-    fi \
     && test "$(pi --version)" = "${PI_VERSION}" \
     && test "$(openspec --version)" = "${OPENSPEC_VERSION}" \
     && rm -rf /root/.npm /root/.cache /pi-home \

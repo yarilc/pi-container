@@ -131,6 +131,14 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
 - `PI_MOUNT_GITCONFIG`: use `PI_CONTAINER_GITCONFIG=1`. `1` still mounts and
   `0` does not, with a warning; conflicting values are errors.
 
+### Removed
+
+- Bun (`remove-bun`): the image no longer offers the optional Bun runtime,
+  and `PI_ENABLE_BUN` and `PI_BUN_VERSION` have no effect and print no
+  warning. Setup never built a Bun image, and qualification could not accept
+  one. The staleness hash no longer includes a Bun selection, so existing
+  images are stale once: rerun `--container-setup`.
+
 ## [0.1.0] - 2026-06-30
 
 First tagged release of the pi-container wrapper (the wrapper version is

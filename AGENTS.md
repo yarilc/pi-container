@@ -10,7 +10,7 @@ English. Communicate with the user in the language and style the user asks for.
   hardening and budgets, environment forwarding, naming and owned cleanup.
 - `Containerfile` and `.containerignore` define the Pi image (digest-pinned
   base, common toolset with the Podman client, Pi from `.version`, pinned
-  OpenSpec and optional pinned Bun) and its five-file build context
+  OpenSpec) and its five-file build context
   (including `network/relay.py` and `network/mux.py`).
 - `tests/test_image_pins.py` rejects floating image inputs and a `.version`
   that differs from the policy's `tested.cli`.

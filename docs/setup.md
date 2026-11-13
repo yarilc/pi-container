@@ -29,9 +29,7 @@ Pi 0.80.8 has no tool-approval layer: its tools run without prompts and the
 container is the only boundary. The permission-bypass question is kept so the
 managed launcher can save `PI_CONTAINER_YOLO=0` or `1` as for the other
 wrappers. `0` is silent; `1` prints a warning that the setting has no effect
-yet. Setup does not offer Bun: the runtime image is built without it, and a
-managed launch that exports `PI_ENABLE_BUN` stops as stale until an explicit
-`--container-build` under maintenance.
+yet.
 Accept defaults with Enter; invalid choices are requested again. Existing saved
 choices are offered for review on rerun, including a previously selected offline
 mode. The managed launcher applies the saved network choice. Ordinary direct
@@ -189,9 +187,8 @@ Pi's profile declares `install.runtime_build: "wrapper"`. When no suitable
 runtime image exists, or refresh is approved, setup runs the installed
 release's `pi-container.sh --container-build` alone with the candidate tag and
 the scoped maintenance authorization. That build-only operation uses the same
-`PI_VERSION` (from the installed `.version`), `INSTALL_BUN=0` and
-`build-inputs-hash` label as an ordinary launch, starts no session, and exits;
-setup then inspects the candidate's immutable identity. A reused
+`PI_VERSION` (from the installed `.version`) and `build-inputs-hash` label as
+an ordinary launch, starts no session, and exits; setup then inspects the candidate's immutable identity. A reused
 `localhost/pi-container:latest` keeps its labels: if they are stale for the
 installed inputs, the smoke check stops with the stale-image message, and a
 rerun with refresh rebuilds through the wrapper. `.version` is installed with

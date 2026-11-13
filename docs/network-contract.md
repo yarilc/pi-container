@@ -46,7 +46,7 @@ Intentional differences are limited to per-agent files:
 | `agent/profile.json` | Identity: `pi-container`, prefix `PI_CONTAINER`, labels `io.pi-container.*`. Images: `localhost/pi-container`, `localhost/pi-egress`, `localhost/pi-guard-toolchain`. Runtime: home `/pi-home`, command `pi`. State: configuration `.pi` with override `PI_CONTAINER_CONFIG_DIR`, shared `.agents`. Approval variable `PI_CONTAINER_YOLO` (validated; warns when enabled, because Pi has no approval layer). Four API-key methods. Installation file `.version` (`install.files`); runtime built through the wrapper (`install.runtime_build`) |
 | `agent/policies/default.json` | `anthropic-api`, `openai-api`, `gemini-api` and `openrouter-api`, revision `pi-2026-11-10-v1` |
 | `pi-container.sh` | Pi arguments, shared or isolated state, noexec `/pi-home` with the npm cache tmpfs, read-only state mode, removed `PI_NETWORK`, protected `PI_OFFLINE`, `PI_SKIP_VERSION_CHECK` and `PI_TELEMETRY` values, profile-selected key, no host proxy or CA variables in restricted modes, build-only `--container-build`, `--container-setup` and the `setup required:` message, diagnostics filter |
-| `Containerfile`, `.containerignore` | Pi image with optional Bun; copies `network/relay.py` and `network/mux.py`, which the staleness hash also covers |
+| `Containerfile`, `.containerignore` | Pi image; copies `network/relay.py` and `network/mux.py`, which the staleness hash also covers |
 | `tests/test_wrapper.py`, `fake_podman.py`, `test_runtime.py`, `test_network_runtime.py`, `network_tls_fixture.py`, `run-runtime.sh`, `Containerfile.runner`, `test_image_pins.py`, `test_reference_copy.py` | Pi names, synthetic OpenAI-compatible Chat Completions fixture, provider host inventories |
 
 ## Modes
@@ -104,7 +104,7 @@ Restricted sessions set `PI_OFFLINE=1`, `PI_SKIP_VERSION_CHECK=1` and
 `PI_TELEMETRY=0` after forwarding. On 0.80.8 these remove the startup request
 to `pi.dev` (version check and install telemetry), and a writable
 `~/.pi/agent/settings.json` cannot re-enable it. Runtime package installs from
-npm or Bun registries fail; extensions are preinstalled in unrestricted mode or
+package registries fail; extensions are preinstalled in unrestricted mode or
 during maintenance.
 
 ## Limits

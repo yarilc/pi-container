@@ -31,7 +31,7 @@ container. Its primary concerns are:
 ./test.sh
 
 # Real wrapper acceptance from disposable native Linux storage
-# Build your selected image first; optional Bun coverage is enabled by test.sh
+# Build your selected image first
 PI_CONTAINER_IMAGE=localhost/pi-container ./tests/run-runtime.sh
 
 # Restricted-mode and shared sandbox suites
@@ -64,8 +64,8 @@ is separate from shutdown budgets.
 
 All build/shell/worktree modes share engine/state/socket preflights. Help aliases
 must work without Podman, state, or .version; native --help goes to Pi.
-Changes to identity, mounts, optional tools, or state must include real Pi/npm,
-Git, and enabled Bun workflow checks, not only duplicated podman flags.
+Changes to identity, mounts, optional tools, or state must include real Pi/npm
+and Git workflow checks, not only duplicated podman flags.
 
 ### Coding Style
 

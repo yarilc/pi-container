@@ -50,7 +50,6 @@ elif args[:2] == ['image', 'inspect']:
     root = pathlib.Path(os.environ['FAKE_ROOT'])
     inputs = b''.join((root / name).read_bytes() for name in ('Containerfile', '.containerignore', '.version',
                                                                  'network/relay.py', 'network/mux.py'))
-    inputs += ('INSTALL_BUN=' + ('1' if os.environ.get('PI_ENABLE_BUN') else '0') + '\n').encode()
     print(os.environ.get('FAKE_LABEL_HASH', hashlib.sha256(inputs).hexdigest()))
     sys.exit(int(os.environ.get('FAKE_INSPECT_STATUS', '0')))
 elif args[:3] == ['inspect', '--type', 'container']:
