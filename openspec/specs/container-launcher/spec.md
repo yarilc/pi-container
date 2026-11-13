@@ -63,24 +63,21 @@ Automatic image creation SHALL occur only for image-existence status 1, and ever
 - **WHEN** the image is absent or `--container-build` is requested and `PI_CONTAINER_MAINTENANCE` differs from exactly `1`
 - **THEN** the wrapper exits nonzero naming the variable, without building, pulling or creating a session
 
-### Requirement: Versioned optional tooling remains coherent
+### Requirement: Single image variant with coherent freshness
+The runtime image SHALL have a single variant without optional image inputs. Image freshness SHALL account for `Containerfile`, `.containerignore`, `.version`, `network/relay.py` and `network/mux.py`, and for no environment selection. `.version` SHALL remain Pi's version source. The Podman client SHALL be part of every image, independent of delegation. The image SHALL NOT contain Bun.
 
-Image freshness SHALL account for `Containerfile`, `.containerignore`, `.version` and Bun selection. `.version` SHALL remain Pi's version source. The Podman client SHALL be part of every image, independent of delegation. Optional Bun SHALL be selected by a nonempty `PI_ENABLE_BUN`, installed at the version recorded in the recipe, and remain independent of Podman delegation.
+#### Scenario: Recipe input changes
+- **WHEN** an image exists and `Containerfile` or `.version` changes
+- **THEN** the wrapper reports a stale image and names `--container-build`
 
-#### Scenario: Bun version changes
+#### Scenario: Former Bun variables have no effect
+- **WHEN** a current image exists and `PI_ENABLE_BUN=1` and `PI_BUN_VERSION=bun-v1.2.0` are set
+- **THEN** the launch starts without a stale-image stop, a build or a warning about either variable
+- **AND** `bun` is not found in the session
 
-- **WHEN** Bun is enabled and `PI_BUN_VERSION` is set to a different version
-- **THEN** the variable is ignored with a warning and the image keeps the Bun version recorded in the recipe
-
-#### Scenario: Bun selection changes
-
-- **WHEN** an image built without Bun exists and `PI_ENABLE_BUN=1` is set
-- **THEN** the wrapper reports a stale image and names `--container-build`, and after that build `bun --version` reports the recorded version
-
-#### Scenario: No delegated authority with Bun
-
-- **WHEN** Bun is enabled with Podman delegation disabled
-- **THEN** Bun is available without a host socket mount or additional runtime privileges.
+#### Scenario: Podman client without delegation
+- **WHEN** a session starts with Podman delegation disabled
+- **THEN** the `podman` client is present in the image and no host socket is mounted
 
 ### Requirement: Retained runtime and secret controls
 
@@ -154,15 +151,15 @@ Wrapper settings SHALL use the `PI_CONTAINER_` prefix: `PI_CONTAINER_IMAGE`, `PI
 
 ### Requirement: Ignored image variables
 
-When `PI_BUN_VERSION` or `PI_PULL_ALWAYS` is set, the wrapper SHALL print one stderr warning that the variable is ignored, because image inputs are pinned in the recipe, and SHALL continue unchanged.
+When `PI_PULL_ALWAYS` is set, the wrapper SHALL print one stderr warning that the variable is ignored, because image inputs are pinned in the recipe, and SHALL continue unchanged.
 
 #### Scenario: Ignored variables set
 
-- **WHEN** `PI_BUN_VERSION=bun-v1.2.0` and `PI_PULL_ALWAYS=1` are set
-- **THEN** stderr names both variables as ignored and no build argument or pull option depends on them
+- **WHEN** `PI_PULL_ALWAYS=1` is set
+- **THEN** stderr names the variable as ignored and no pull option depends on it
 
 ### Requirement: Build-only image refresh
-`--container-build` used alone SHALL build the runtime image and exit without creating a container. It SHALL require the exact `PI_CONTAINER_MAINTENANCE=1`, an explicit network mode, a verified engine and the selected image name, and SHALL use the same build arguments, Bun selection and `build-inputs-hash` label as a launch that builds. With host CA trust enabled, the build-only refresh SHALL resolve the selected bundle before building and pass it as the `build-ca` secret, as a launch that builds does. Combined with a launch, it SHALL keep refreshing the image before starting the session.
+`--container-build` used alone SHALL build the runtime image and exit without creating a container. It SHALL require the exact `PI_CONTAINER_MAINTENANCE=1`, an explicit network mode, a verified engine and the selected image name, and SHALL use the same build arguments and `build-inputs-hash` label as a launch that builds. With host CA trust enabled, the build-only refresh SHALL resolve the selected bundle before building and pass it as the `build-ca` secret, as a launch that builds does. Combined with a launch, it SHALL keep refreshing the image before starting the session.
 
 #### Scenario: Build-only refresh
 - **WHEN** `PI_CONTAINER_NETWORK=unrestricted PI_CONTAINER_MAINTENANCE=1 PI_CONTAINER_IMAGE=localhost/pi-container:setup-x pi-container.sh --container-build` runs

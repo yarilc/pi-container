@@ -268,7 +268,7 @@ Setup SHALL install the agent profile and its provider policy file together with
 - **THEN** it also installs `.version`, which the profile declares in `install.files` and the wrapper reads on every launch, and qualification binds it as installed code
 
 ### Requirement: Runtime image built through the Pi wrapper
-Because the profile declares `install.runtime_build: "wrapper"`, setup SHALL build a new runtime image by running the installed release's `pi-container.sh --container-build` alone, under maintenance authorization and with the candidate image tag, then inspect the candidate's immutable identity. The build SHALL use the same build arguments and `build-inputs-hash` label as a launch, without Bun, and start no session. A reused runtime image SHALL keep its labels. When host CA trust is enabled, setup SHALL pass the trust selection and the selected bundle to that build, and the wrapper SHALL give the bundle to its runtime build only as the non-persisted `build-ca` secret.
+Because the profile declares `install.runtime_build: "wrapper"`, setup SHALL build a new runtime image by running the installed release's `pi-container.sh --container-build` alone, under maintenance authorization and with the candidate image tag, then inspect the candidate's immutable identity. The build SHALL use the same build arguments and `build-inputs-hash` label as a launch and start no session. A reused runtime image SHALL keep its labels. When host CA trust is enabled, setup SHALL pass the trust selection and the selected bundle to that build, and the wrapper SHALL give the bundle to its runtime build only as the non-persisted `build-ca` secret.
 
 #### Scenario: Fresh runtime build
 - **WHEN** approved setup has no reusable runtime image
@@ -284,8 +284,9 @@ Because the profile declares `install.runtime_build: "wrapper"`, setup SHALL bui
 - **THEN** the smoke check stops with the stale-image message instead of declaring the sandbox ready, and a rerun with refresh rebuilds it through the wrapper
 
 #### Scenario: Bun is not selected by setup
-- **WHEN** a managed launch sets `PI_ENABLE_BUN`
-- **THEN** the setup-built image is stale for that selection and the launch stops until an explicit maintenance rebuild
+- **WHEN** setup runs, or a managed launch starts, with `PI_ENABLE_BUN` set in the operator's environment
+- **THEN** the setup-built image matches the launch's inputs, so neither setup nor the launch stops as stale
+- **AND** the image contains no Bun
 
 #### Scenario: Wrapper-built runtime with host CA trust
 - **WHEN** setup prepares the runtime image with host CA trust enabled

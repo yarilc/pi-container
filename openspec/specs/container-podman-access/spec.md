@@ -36,7 +36,7 @@ The wrapper SHALL retain query exit failures and complete record boundaries, all
 
 ### Requirement: Exact delegation opt-in
 
-Host service delegation and conditional Podman client installation SHALL be enabled only by exact `PI_CONTAINER_PODMAN=1`, or by the deprecated `PI_ENABLE_PODMAN=1` when the new name is unset. Disabled delegation SHALL omit the socket bind and explicitly remove session `CONTAINER_HOST`, including requests through `PI_ENV_VARS`. Native Pi permissions and Bun selection SHALL remain independent.
+Host service delegation and conditional Podman client installation SHALL be enabled only by exact `PI_CONTAINER_PODMAN=1`, or by the deprecated `PI_ENABLE_PODMAN=1` when the new name is unset. Disabled delegation SHALL omit the socket bind and explicitly remove session `CONTAINER_HOST`, including requests through `PI_ENV_VARS`. Native Pi permissions SHALL remain independent.
 
 #### Scenario: Non-enabling values
 

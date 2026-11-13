@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Provide a reproducible Pi runtime image with the common toolset, pinned inputs, optional pinned Bun, an explicit update procedure and a default-deny build context.
+Provide a reproducible Pi runtime image with the common toolset, pinned inputs, an explicit update procedure and a default-deny build context.
 
 ## Requirements
 
@@ -22,12 +22,13 @@ The image SHALL be built on `docker.io/library/node:22-bookworm-slim` referenced
 
 ### Requirement: Runtime image inputs are pinned
 
-The recipe SHALL install the exact Pi version recorded in `.version`, an exact `@fission-ai/openspec` version and, when Bun is selected, an exact `bun` version, all recorded in the repository and installed from the npm registry. It SHALL reference the base image by digest. No floating tag, `latest` specifier, version range or remote install script SHALL select an image input. Sessions SHALL NOT change installed versions.
+The recipe SHALL install the exact Pi version recorded in `.version` and an exact `@fission-ai/openspec` version, both recorded in the repository and installed from the npm registry. It SHALL reference the base image by digest. No floating tag, `latest` specifier, version range or remote install script SHALL select an image input. Sessions SHALL NOT change installed versions.
 
 #### Scenario: Build uses recorded versions
 
 - **WHEN** the image is built with `--container-build`
-- **THEN** `pi --version`, `openspec --version` and, with Bun selected, `bun --version` report exactly the recorded versions
+- **THEN** `pi --version` and `openspec --version` report exactly the recorded versions
+- **AND** `bun` is not installed
 
 #### Scenario: Unpinned input is rejected by tests
 
@@ -38,7 +39,7 @@ The recipe SHALL install the exact Pi version recorded in `.version`, an exact `
 
 Documentation SHALL describe the update procedure:
 
-- record the new Pi version in `.version`, or the new OpenSpec, Bun or base digest in the recipe;
+- record the new Pi version in `.version`, or the new OpenSpec version or base digest in the recipe;
 - rebuild explicitly with `--container-build`;
 - rerun the credential-free and real-engine checks;
 - record the tested versions with the date in the validation record.

@@ -624,7 +624,7 @@ above). This closes the open Bun decision recorded there.
 | `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 359 tests, 69 skipped (the runtime tests are opt-in) |
 | `./test.sh` (disposable image built without Bun, then `tests/run-runtime.sh`) | Passed: 16 tests, including `test_native_pi_help_version_npm_git_and_no_bun` (`bun` absent) and `test_pseudo_terminals_and_device_masks`; the test image was removed |
 | `grep -rni bun` over live files | Remaining hits: existing dated records, existing changelog entries, the removal notes in `README.md` and `CHANGELOG.md`, and test assertions that Bun is absent or inert |
-| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Passed (operator-reported, 2026-11-13) on all three hosts, provider mode with the `openrouter-api` profile |
 
 Qualification digests the launcher and the runtime image changes, so every
 installation reruns `--container-setup`.
