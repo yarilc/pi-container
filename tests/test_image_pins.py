@@ -8,7 +8,7 @@ import re
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGES = ('@earendil-works/pi-coding-agent', '@fission-ai/openspec', 'bun')
+PACKAGES = ('@earendil-works/pi-coding-agent', '@fission-ai/openspec')
 TOOLSET = ('bash', 'bubblewrap', 'bzip2', 'ca-certificates', 'coreutils', 'curl', 'diffutils',
            'file', 'findutils', 'gawk', 'git', 'grep', 'jq', 'less', 'nano', 'patch', 'podman',
            'procps', 'python3', 'ripgrep', 'sed', 'tar', 'unzip', 'util-linux', 'xz-utils', 'zip')
@@ -55,6 +55,8 @@ def violations(recipe):
         if not VERSION.fullmatch(version) and version != '${PI_VERSION}':
             found.append('package is not pinned to an exact version: ' + spec)
         seen[name] = version
+        if name not in PACKAGES:
+            found.append('unexpected package is installed: ' + spec)
     for package in PACKAGES:
         if package not in seen:
             found.append('required package is not installed with a pinned version: ' + package)
@@ -139,7 +141,6 @@ class ImagePinTests(unittest.TestCase):
     def test_shipped_recipe_is_pinned(self):
         self.assertEqual(violations(self.recipe), [])
         _, args, _ = pins(self.recipe)
-        self.assertRegex(args['BUN_VERSION'], VERSION)
         self.assertRegex((ROOT / '.version').read_text().strip(), VERSION)
         self.assertRegex(args['OPENSPEC_VERSION'], VERSION)
 
@@ -156,11 +157,16 @@ class ImagePinTests(unittest.TestCase):
             'tag-only base': self.recipe.replace(digest[0], '') if digest else self.recipe,
             'latest package': self.recipe.replace('"@fission-ai/openspec@${OPENSPEC_VERSION}"',
                                                   '@fission-ai/openspec@latest'),
-            'unversioned package': self.recipe.replace('"bun@${BUN_VERSION}"', 'bun'),
+            'unversioned package': self.recipe.replace('"@fission-ai/openspec@${OPENSPEC_VERSION}"',
+                                                       '@fission-ai/openspec'),
             'version range': self.recipe.replace('ARG OPENSPEC_VERSION=1.16.0', 'ARG OPENSPEC_VERSION=^1.16.0'),
             'missing package': self.recipe.replace('"@fission-ai/openspec@${OPENSPEC_VERSION}" \\\n', ''),
-            'remote installer': self.recipe.replace('npm install --global --omit=dev "bun@${BUN_VERSION}"',
-                                                    'curl -fsSL https://bun.sh/install | bash'),
+            'remote installer': self.recipe.replace('RUN npm install --global --omit=dev \\\n',
+                                                    'RUN curl -fsSL https://example.invalid/install.sh | bash \\\n'
+                                                    '    && npm install --global --omit=dev \\\n'),
+            'unexpected package': self.recipe.replace('"@fission-ai/openspec@${OPENSPEC_VERSION}" \\\n',
+                                                      '"@fission-ai/openspec@${OPENSPEC_VERSION}" \\\n'
+                                                      '        "bun@1.3.14" \\\n'),
             'missing toolset package': self.recipe.replace('        nano \\\n', ''),
         }
         for name, recipe in cases.items():

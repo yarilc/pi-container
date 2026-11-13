@@ -192,8 +192,8 @@ Delegation gives control over the service user's containers and permits host
 mounts beyond the workspace. It removes the project-only access boundary.
 Without it no socket is mounted and session CONTAINER_HOST is explicitly
 unset, including PI_ENV_VARS requests. Connection forwarding cannot override
-the selected endpoint. Bun and native Pi permission flags do not enable
-socket access.
+the selected endpoint. Native Pi permission flags do not enable socket
+access.
 
 ### Owned Cleanup and Residual Resources
 
@@ -214,8 +214,7 @@ or unresolved creation rather than attempting wider deletion.
 
 Every image input is pinned: the base image `node:22-bookworm-slim` by
 digest, `@earendil-works/pi-coding-agent` at the version in `.version`,
-`@fission-ai/openspec` and the optional `bun` at versions recorded in the
-Containerfile. npm verifies each package's registry integrity; no remote
+`@fission-ai/openspec` at the version recorded in the Containerfile. npm verifies each package's registry integrity; no remote
 install script is piped to a shell, and `tests/test_image_pins.py` rejects
 floating inputs. A stale image is never rebuilt silently. Weekly CI scans
 (Trivy) monitor the built image for known vulnerabilities.

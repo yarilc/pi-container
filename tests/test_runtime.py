@@ -112,7 +112,7 @@ class RuntimeTests(unittest.TestCase):
 
     def shell(self, script, *options, **env):
         return terminal_shell(['bash', str(WRAPPER), '--container-shell', *options],
-                              script, self.env | env, self.project, timeout=360 if env.get('PI_CONTAINER_PODMAN') == '1' or env.get('PI_ENABLE_BUN') else 90)
+                              script, self.env | env, self.project, timeout=360 if env.get('PI_CONTAINER_PODMAN') == '1' else 90)
 
     def assert_success(self, result):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -289,7 +289,7 @@ NODE
         self.assertEqual((self.state / 'sentinel').read_text(), 'persistent')
         self.assert_success(self.pipe_shell('set -e\nfor d in /tmp /var/tmp /run "$HOME/.npm"; do test ! -e "$d/sentinel"; done\ntest "$(cat "$HOME/.pi/sentinel")" = persistent\n'))
 
-    def test_native_pi_help_version_npm_git_and_optional_bun(self):
+    def test_native_pi_help_version_npm_git_and_no_bun(self):
         for arg in ('--version', '--help'):
             result = subprocess.run(['bash', str(WRAPPER), arg], env=self.env,
                                     cwd=self.project, capture_output=True, text=True, timeout=60)
@@ -307,23 +307,6 @@ NODE
             self.assertEqual(path.stat().st_uid, os.getuid(), str(path))
         self.assert_success(self.shell('set -e\ngit worktree add -qb test-worktree ../sibling\ntest -d ../sibling/.git || test -f ../sibling/.git', '--container-git-worktree'))
         self.assert_success(self.pipe_shell('test ! -e ../sibling/.git\n'))
-        if os.environ.get('PI_TEST_BUN') == '1':
-            # A disposable Bun image is built explicitly; a stale image never rebuilds itself.
-            bun_image = f'{IMAGE}-bun-{os.getpid()}'
-            self.assertNotEqual(self.engine('image', 'exists', bun_image).returncode, 0)
-            try:
-                result = self.piped('set -e\ntest "$(bun --version)" = 1.3.14\n'
-                                    'printf \'console.log("bun-ok")\\n\' > bun-test.js\nbun bun-test.js\n',
-                                    timeout=900, args=('--container-build',), PI_ENABLE_BUN='1',
-                                    PI_CONTAINER_IMAGE=bun_image)
-                self.assert_success(result)
-                self.assertIn('bun-ok', result.stdout)
-                result = self.piped('exit 0', PI_CONTAINER_IMAGE=bun_image)
-                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-                self.assertIn('is stale for the current inputs', result.stderr)
-                self.assertIn('--container-build', result.stderr)
-            finally:
-                self.engine('rmi', '--force', bun_image, timeout=60)
 
     def test_home_layout_tools_and_isolated_state(self):
         result = self.piped('''set -e

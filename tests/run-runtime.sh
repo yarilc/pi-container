@@ -76,6 +76,6 @@ podman run --rm --interactive --userns=keep-id --user "$(id -u):$(id -g)" \
     --env CONTAINER_HOST=unix:///run/podman/podman.sock \
     --env "PI_TEST_RUNNER_IMAGE=$runner" "${selection_env[@]}" --env "PI_TEST_ROOT=$native_root" \
     --env "SANDBOX_TEST_STATE_ROOT=$native_root" "${guard_environment[@]}" \
-    --env "PI_CONTAINER_IMAGE=$image" --env "PI_TEST_BUN=${PI_TEST_BUN:-0}" \
+    --env "PI_CONTAINER_IMAGE=$image" \
     --tmpfs /tmp:rw,exec,nosuid,nodev,mode=1777 \
     --entrypoint python3 "$runner" -B -m unittest "${selection[@]}" "$@"

@@ -6,7 +6,7 @@ image="localhost/pi-container-test-$$"
 while (($#)); do
     case "$1" in
         --image) [[ $# -ge 2 ]] || { printf '%s\n' '--image needs a value' >&2; exit 1; }; image=$2; shift 2 ;;
-        --help|-h) printf 'Usage: test.sh [--image IMAGE]\nBuild a disposable image and run credential-free rootless acceptance, including Bun.\n'; exit 0 ;;
+        --help|-h) printf 'Usage: test.sh [--image IMAGE]\nBuild a disposable image and run credential-free rootless acceptance.\n'; exit 0 ;;
         *) printf 'Unknown option: %s\n' "$1" >&2; exit 1 ;;
     esac
 done
@@ -27,12 +27,12 @@ info=$(podman info --format '{{.Host.Security.Rootless}} {{.Host.OS}}')
 [[ "$info" == 'true linux' ]] || { printf 'Linux rootless Podman is required\n' >&2; exit 1; }
 version=$(head -1 "$root/.version" | tr -d '[:space:]')
 [[ -n "$version" ]] || exit 1
-hash=$({ cat "$root/Containerfile" "$root/.containerignore" "$root/.version" "$root/network/relay.py" "$root/network/mux.py"; printf 'INSTALL_BUN=0\n'; } | sha256sum)
+hash=$(cat "$root/Containerfile" "$root/.containerignore" "$root/.version" "$root/network/relay.py" "$root/network/mux.py" | sha256sum)
 hash=${hash%% *}
 podman build --format docker --tag "$image" --file "$root/Containerfile" \
-    --build-arg "PI_VERSION=$version" --build-arg INSTALL_BUN=0 \
+    --build-arg "PI_VERSION=$version" \
     --label "build-inputs-hash=$hash" "$root"
 owned=1
 # Actual wrapper acceptance verifies the built image, installation, ownership,
 # temp mounts, worktrees, delegated children, native timeout, and bounded signals.
-PI_CONTAINER_IMAGE="$image" PI_TEST_BUN=1 bash "$root/tests/run-runtime.sh"
+PI_CONTAINER_IMAGE="$image" bash "$root/tests/run-runtime.sh"

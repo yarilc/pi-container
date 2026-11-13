@@ -56,8 +56,8 @@ pic --version
 
 Building the image, including the first build, needs exact
 `PI_CONTAINER_MAINTENANCE=1`. When `Containerfile`, `.containerignore`,
-`.version`, `network/relay.py`, `network/mux.py` or the Bun choice changes, the
-image is stale: the launch stops until `--container-build` is run again under
+`.version`, `network/relay.py` or `network/mux.py` changes, the image is
+stale: the launch stops until `--container-build` is run again under
 maintenance. For restricted networking, see [Network modes](#network-modes).
 
 ## Optional host Podman API access
@@ -106,8 +106,8 @@ and state paths. Use a same-host service; a Unix URI alone does not establish
 host identity. Client/server version compatibility is still required.
 
 Delegation gives the service user's authority over host containers and allows
-further host mounts beyond the workspace. It is independent of Bun and native
-Pi permission controls.
+further host mounts beyond the workspace. It is independent of native Pi
+permission controls.
 
 ## Usage
 
@@ -305,7 +305,6 @@ forward host proxy or CA variables.
 | `PI_DEBUG` | Set to any value to enable verbose debug output |
 | `PI_CONTAINER_PODMAN` | Only exact `1` enables the client and verified host socket; all other values disable delegation |
 | `PI_CONTAINER_PODMAN_SOCKET` | Absolute accessible socket override; then Unix `CONTAINER_HOST`, then `${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock` |
-| `PI_ENABLE_BUN` | Nonempty enables Bun (legacy behavior); use `1` to bake the Bun runtime into the image (opt-in). See [Bun runtime](#bun-runtime-opt-in) |
 | `PI_CONTAINER_STATE_DIR` | Private host directory holding `.pi` and `.agents` instead of `~/.pi` and `~/.agents`; see [Isolated state](#isolated-state) |
 | `PI_CONTAINER_MEMORY_LIMIT` | Container memory limit (default: `4g`); see [Session hardening](#session-hardening-budgets-and-lifetime) |
 | `PI_CONTAINER_CPU_LIMIT` | Container CPU limit (default: `2`) |
@@ -355,8 +354,8 @@ Run `--container-qualify` alone after preparation or relevant updates:
 PI_CONTAINER_NETWORK=offline ./pi-container.sh --container-qualify
 ```
 
-Qualification is bound to the boot, engine, security policy, code, images
-(including the Bun choice), policy, profile, CA trust and hardening settings. A
+Qualification is bound to the boot, engine, security policy, code, images,
+policy, profile, CA trust and hardening settings. A
 reboot therefore requires requalification. An active SELinux or AppArmor policy
 that cannot be identified forces the full gate on every launch. The shipped
 release acceptance inventory is empty, so installations report
@@ -365,10 +364,9 @@ release acceptance inventory is empty, so installations report
 Restricted sessions receive no host proxy or CA variables, and
 `PI_OFFLINE=1`, `PI_SKIP_VERSION_CHECK=1` and `PI_TELEMETRY=0` are set after
 forwarding. Writable `~/.pi` settings cannot re-enable Pi's startup network
-operations. Runtime `npm`/`pi install` package downloads, Bun installs and
-named Unix sockets are unavailable: preinstall extensions in unrestricted mode
-or during maintenance. Pi's tools, its TUI and Bun were verified under the
-guard; see [the validation record](docs/validation.md).
+operations. Runtime `npm`/`pi install` package downloads and named Unix
+sockets are unavailable: preinstall extensions in unrestricted mode or during
+maintenance. Pi's tools and its TUI were verified under the guard; see [the validation record](docs/validation.md).
 
 ### Provider mode
 
@@ -642,41 +640,10 @@ build fails unless `pi --version` and `openspec --version` report the recorded
 versions. The Podman client is part of every image; host socket access stays
 the separate `PI_CONTAINER_PODMAN=1` opt-in.
 
-### Bun runtime (opt-in)
-
-[Bun](https://bun.sh/) is a fast JavaScript runtime, bundler, test runner,
-and package manager. Skills, extensions, or projects may require it. The
-runtime is **off by default** and added only when requested.
-
-Build the Bun image explicitly, then use it with `PI_ENABLE_BUN=1`:
-
-```bash
-PI_ENABLE_BUN=1 pic --container-build --version
-PI_ENABLE_BUN=1 pic "Run the test suite with bun"
-```
-
-Bun is installed from npm as exactly `bun@1.3.14` (`ARG BUN_VERSION` in
-`Containerfile`), whose platform binaries are exact-version dependencies.
-It lives in `/usr/local/bin`, on `PATH`, and needs **no writes to `$HOME`
-at runtime**. `PI_BUN_VERSION` is ignored with a warning; change the recorded
-version through the update procedure below. Switching `PI_ENABLE_BUN` on or
-off changes the image inputs, so the next launch asks for `--container-build`.
-
-The npm install selects the x64 AVX2 or baseline Bun binary from the build
-host's CPU: build the image on the host that runs it.
-
-```bash
-# Inside pi:
-bun --version    # Bun version
-bun install      # Install project dependencies
-bun test         # Run tests via Bun's test runner
-```
-
 ### Image build policy
 
 The script computes a SHA-256 hash of `Containerfile`, `.containerignore`,
-`.version`, `network/relay.py`, `network/mux.py` and the Bun selection, and
-stores it as the `build-inputs-hash` label on the built image. The build
+`.version`, `network/relay.py` and `network/mux.py`, and stores it as the `build-inputs-hash` label on the built image. The build
 context contains only those five files.
 
 - A missing image is built only under exact `PI_CONTAINER_MAINTENANCE=1`.
@@ -720,13 +687,12 @@ pi-container/
 
 ### Updating pinned image inputs
 
-`.version` records Pi's version; `Containerfile` records `OPENSPEC_VERSION`,
-`BUN_VERSION` and the base image digest. `tests/test_image_pins.py` rejects
+`.version` records Pi's version; `Containerfile` records `OPENSPEC_VERSION`
+and the base image digest. `tests/test_image_pins.py` rejects
 floating inputs, `@latest`, version ranges and piped install scripts. To update:
 
 1. Change `.version`, or the recorded version or digest in `Containerfile`.
-2. Rebuild explicitly with `pic --container-build --version` (and once with
-   `PI_ENABLE_BUN=1` when you use Bun).
+2. Rebuild explicitly with `pic --container-build --version`.
 3. Rerun `./test-wrapper.sh` and `./test.sh`.
 4. Record the tested versions with the date in `docs/validation.md`.
 
@@ -764,7 +730,7 @@ ask for `--container-build`.
 | `.version` missing or empty | Version file absent | Ensure `.version` contains the Pi version (e.g., `0.79.8`); the wrapper now fails hard if absent |
 | Slow first start | apt + npm install during build | One-time cost; subsequent runs use cached image |
 | API key not recognized | Empty key forwarded | Script now only forwards keys that are set and non-empty |
-| `Image pi-container is stale for the current inputs` | `Containerfile`, `.version` or `PI_ENABLE_BUN` changed | Run `pic --container-build --version` |
+| `Image pi-container is stale for the current inputs` | `Containerfile`, `.version`, `network/relay.py` or `network/mux.py` changed | Run `pic --container-build --version` |
 | Permission denied on volume | Rootful Podman (sudo) | Run without `sudo` (rootless mode) |
 | Read-only config error | `PI_READONLY_CONFIG=1` and Pi needs to write | Disable `PI_READONLY_CONFIG` for tasks that install extensions |
 | `npm error ENOENT ... mkdir '~/.npm'` during `pi install` | npm cache dir on the read-only rootfs | Fixed: the wrapper mounts an ephemeral tmpfs at `~/.npm`. Raise the cap with `PI_NPM_CACHE_SIZE=512M` for large extensions |
@@ -813,8 +779,7 @@ Network egress port (`add-network-egress`):
   previous networking.
 - `PI_NETWORK` is no longer supported: `PI_NETWORK=none` becomes
   `PI_CONTAINER_NETWORK=offline`; other values become `unrestricted`.
-- Image builds, including the first and Bun changes, need
-  `PI_CONTAINER_MAINTENANCE=1`.
+- Image builds, including the first, need `PI_CONTAINER_MAINTENANCE=1`.
 - The default image name is `localhost/pi-container`, the same local image.
 - An empty `PI_CONTAINER_STATE_DIR` now selects shared state.
 
@@ -827,6 +792,14 @@ Guided setup (`add-container-setup`):
   arguments, such as `--version`, to rebuild and then start a session.
 - `PI_CONTAINER_YOLO` accepts only `0`, `1`, `true`, `false`, `yes` or `no`;
   other values fail. Disabled values no longer print a warning.
+
+Bun removal (`remove-bun`):
+
+- The image no longer offers Bun. `PI_ENABLE_BUN` and `PI_BUN_VERSION` have
+  no effect and print no warning; projects that need Bun run it outside the
+  sandbox.
+- The staleness hash changed: rerun `--container-setup`, or
+  `pic --container-build --version` for a direct launch.
 
 Behavior changes:
 
@@ -843,9 +816,9 @@ Behavior changes:
   directories, and other files written in the home are ephemeral.
 - The image is pinned and built once more after upgrading: run
   `pic --container-build --version`. A stale image no longer rebuilds
-  automatically, and toggling `PI_ENABLE_BUN` also needs `--container-build`.
-- `PI_BUN_VERSION` and `PI_PULL_ALWAYS` are ignored with warnings; Bun is
-  installed from npm at the version recorded in `Containerfile`.
+  automatically.
+- `PI_PULL_ALWAYS` is ignored with a warning; image inputs are recorded in
+  `Containerfile`.
 
 ## Security
 
