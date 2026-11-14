@@ -70,9 +70,9 @@ def main():
     for name in (profile.wrapper, 'network/control.py', 'network/policy.py', 'network/agent_profile.py', 'network/session.py',
                  'network/revisions.py', 'network/relay.py', 'network/mux.py', 'network/resolv.conf', agent_profile.POLICY):
         trusted_path(installation / name, args.writable)
-    diagnostics = installation / 'setup/diagnostics.py'
-    if diagnostics.exists() or diagnostics.is_symlink():
-        trusted_path(diagnostics, args.writable)
+    for optional in ('setup/diagnostics.py', 'setup/toolchains.py'):
+        if (installation / optional).exists() or (installation / optional).is_symlink():
+            trusted_path(installation / optional, args.writable)
     for target in args.mount_target:
         target = Path(target)
         if not target.is_absolute() or '..' in target.parts:

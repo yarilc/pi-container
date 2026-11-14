@@ -42,7 +42,7 @@ bash tests/run-runtime.sh --guard      # guard fixtures (toolchain image require
 ```
 
 `network/`, `setup/` and the shared tests are copied unchanged
-from `claude-container` (tag `sandbox-ref-12`); never edit them here. Fix a
+from `claude-container` (tag `sandbox-ref-16`); never edit them here. Fix a
 defect in `claude-container` first, then copy the files again and update the
 manifest in `tests/test_reference_copy.py`.
 

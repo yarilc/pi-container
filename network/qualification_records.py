@@ -26,7 +26,7 @@ SHARED_CODE = ('network/control.py', 'network/platform_check.py', 'network/agent
                'network/qualification_probe.py', 'network/qualification_peer.py',
                'network/qualification_proxy.py', 'network/relay.py', 'network/mux.py',
                'network/resolv.conf', 'network/bin/' + GUARD, 'network/bin/' + GUARD + '.sha256',
-               agent_profile.PROFILE, agent_profile.POLICY)
+               'setup/toolchains.py', agent_profile.PROFILE, agent_profile.POLICY)
 
 
 def code_files(profile):

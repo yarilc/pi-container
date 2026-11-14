@@ -90,8 +90,10 @@ class RuntimeTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.base)
         self.project = self.base / 'project with spaces'
         self.project.mkdir()
-        self.home = self.base / 'home'
-        self.home.mkdir(mode=0o700)
+        # The synthetic home, with the default toolchain library, stays outside
+        # the base so a worktree launch never exposes it through the workspace.
+        self.home = Path(tempfile.mkdtemp(prefix='pi-home-', dir=parent)).resolve()
+        self.addCleanup(shutil.rmtree, self.home)
         self.state = self.home / '.pi'
         self.state.mkdir(mode=0o700)
         (self.home / '.agents').mkdir(mode=0o700)
@@ -422,6 +424,7 @@ setTimeout(()=>{ kids.forEach(k=>{ try{k.kill()}catch(e){} }); console.log(refus
         runner_image = os.environ['PI_TEST_RUNNER_IMAGE']
         command = ['podman','run','--rm','--interactive','--tty','--userns=keep-id','--user',f'{os.getuid()}:{os.getgid()}',
                    '--volume',f'{ROOT}:{ROOT}:ro','--volume',f'{self.base}:{self.base}:rw',
+                   '--volume',f'{self.home}:{self.home}:rw',
                    '--volume',f'{host.stdout.strip()}:{visible}:rw','--workdir',str(self.project),
                    '--env','CONTAINER_HOST=unix://'+visible,'--env','HOME='+str(self.home),
                    '--env','PI_CONTAINER_IMAGE='+IMAGE,'--env','PI_CONTAINER_PODMAN=1','--env','PI_CONTAINER_NETWORK=unrestricted',
@@ -472,6 +475,92 @@ setTimeout(()=>{ kids.forEach(k=>{ try{k.kill()}catch(e){} }); console.log(refus
         out,err=process.communicate(timeout=30)
         self.assertEqual(process.returncode,0,out+err)
         self.assertEqual(self.engine('container','exists',cid).returncode,1)
+
+    # Toolchain library
+
+    def toolchain(self, *args, **env):
+        return subprocess.run(['bash', str(WRAPPER), '--container-toolchain', *args], cwd=self.project,
+                              env=self.env | env, text=True, capture_output=True, timeout=300)
+
+    def archive_recipe(self, name, commands, **values):
+        import hashlib, io, tarfile
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode='w:gz') as archive:
+            for directory in (name + '-1', name + '-1/bin'):
+                info = tarfile.TarInfo(directory)
+                info.type, info.mode = tarfile.DIRTYPE, 0o755
+                archive.addfile(info)
+            for command, output in commands.items():
+                data = ('#!/bin/sh\necho ' + output + '-"$*"\n').encode()
+                info = tarfile.TarInfo(name + '-1/bin/' + command)
+                info.size, info.mode = len(data), 0o755
+                archive.addfile(info, io.BytesIO(data))
+        path = self.base / (name + '.tar.gz')
+        path.write_bytes(buffer.getvalue())
+        recipe = {'schema': 1, 'name': name, 'version': '1', 'default': True, 'path': ['bin'],
+                  'env': {name.upper() + '_HOME': {'toolchain': ''}}, 'check': [next(iter(commands)), 'check'],
+                  'source': {'archive': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+                             'strip_components': 1}}
+        recipe.update(values)
+        recipe_path = self.base / (name + '.json')
+        recipe_path.write_text(json.dumps(recipe))
+        return recipe_path
+
+    def test_toolchain_library_sources_environment_and_read_only_mount(self):
+        import uuid
+        library = self.home / '.local/share/sandbox-toolchains'
+        self.assert_success(self.toolchain('add', str(self.archive_recipe('hello', {'hello': 'hello'}))))
+        # A default toolchain providing node and python3 never replaces the runtime's own.
+        self.assert_success(self.toolchain('add', str(self.archive_recipe(
+            'shadow', {'node': 'fake-node', 'python3': 'fake-python'}, env={}))))
+        failing = self.archive_recipe('broken', {'broken': 'broken'}, check=['false'], env={})
+        result = self.toolchain('add', str(failing))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('toolchain check failed for broken', result.stderr)
+        self.assertFalse((library / 'broken').exists())
+        context = self.base / 'image-context'
+        (context / 'opt/imgtool/bin').mkdir(parents=True)
+        (context / 'opt/imgtool/bin/imgtool').write_text('#!/bin/sh\necho image-tool\n')
+        (context / 'opt/imgtool/bin/imgtool').chmod(0o755)
+        (context / 'Containerfile').write_text('FROM scratch\nCOPY opt /opt\n')
+        image = 'localhost/pi-toolchain-test-' + uuid.uuid4().hex
+        self.addCleanup(self.engine, 'image', 'rm', '--force', '--ignore', image + ':latest', timeout=60)
+        self.assert_success(self.engine('build', '--tag', image + ':latest', str(context), timeout=120))
+        digest = self.engine('image', 'inspect', '--format', '{{.Digest}}', image + ':latest').stdout.strip()
+        recipe = self.base / 'imgtool.json'
+        recipe.write_text(json.dumps({'schema': 1, 'name': 'imgtool', 'version': '1', 'default': False,
+                                      'source': {'image': image + '@' + digest, 'path': '/opt/imgtool'},
+                                      'check': ['imgtool']}))
+        self.assert_success(self.toolchain('add', str(recipe)))
+        listing = self.toolchain('list')
+        self.assert_success(listing)
+        for name in ('hello', 'shadow', 'imgtool'):
+            self.assertIn(name + '\t', listing.stdout)
+        result = self.piped('''set -e
+test "$(hello a)" = hello-a
+test "$HELLO_HOME" = /toolchains/hello
+test "$(command -v node)" = /usr/local/bin/node
+test "$(command -v python3)" = /usr/bin/python3
+test "$(. /toolchains/shadow/env.sh && node b)" = fake-node-b
+test "$(. /toolchains/imgtool/env.sh && imgtool)" = image-tool
+if command -v imgtool; then exit 9; fi
+grep -q 'hello 1' /toolchains/toolchains.md
+python3 -c 'import json; assert [t["name"] for t in json.load(open("/toolchains/index.json"))["toolchains"]] == ["hello", "imgtool", "shadow"]'
+if touch /toolchains/new 2>/dev/null; then exit 10; fi
+if rm /toolchains/hello/bin/hello 2>/dev/null; then exit 11; fi
+test -x /toolchains/hello/bin/hello
+echo toolchains-ok
+''')
+        self.assert_success(result)
+        self.assertIn('toolchains-ok', result.stdout)
+        self.assert_success(self.toolchain('remove', 'imgtool'))
+        self.assertFalse((library / 'imgtool').exists())
+
+    def test_toolchain_library_can_be_omitted(self):
+        result = self.piped('test ! -e /toolchains\necho omitted\n', PI_CONTAINER_TOOLCHAINS='0')
+        self.assert_success(result)
+        self.assertIn('omitted', result.stdout)
+
 
 if __name__ == '__main__':
     unittest.main()

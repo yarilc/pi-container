@@ -18,6 +18,8 @@ elif args[0] == 'info' and args[-1] == '{{.Host.CgroupControllers}}':
     print(os.environ.get('FAKE_CONTROLLERS', '[cpu memory pids]'))
 elif args[0] == 'version':
     print(os.environ.get('FAKE_SERVER_VERSION', '4.9.3'))
+elif args[:2] == ['image', 'inspect'] and any('.Config.Env' in a for a in args):
+    print(os.environ.get('FAKE_IMAGE_ENV', 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'))
 elif args[:2] == ['image', 'inspect'] and '{{.Id}}' in args:
     print(os.environ.get('FAKE_IMAGE_ID', 'd' * 64))
 elif args[:2] == ['image', 'exists'] and args[-1] == os.environ.get('FAKE_EGRESS_IMAGE', '-'):

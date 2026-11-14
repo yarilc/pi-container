@@ -1,7 +1,7 @@
 # Interactive sandbox setup
 
 The durable contract is [container-setup](../openspec/specs/container-setup/spec.md).
-It is copied unchanged from `claude-container` at tag `sandbox-ref-12`
+It is copied unchanged from `claude-container` at tag `sandbox-ref-16`
 (`setup/`); Pi values come from `agent/profile.json`. The archived change
 `openspec/changes/archive/<date>-add-container-setup/` retains the design, tasks
 and delta specifications.
@@ -139,6 +139,12 @@ Existing managed installations must rerun setup. Manually prepared installations
 can invoke `--container-qualify` alone with their existing explicit environment
 configuration; this command never starts an ordinary Pi session or grants
 maintenance. Help and unrestricted launches do not require a report.
+
+The toolchain library (`adopt-sandbox-ref-16`) changes the wrapper and adds
+`setup/toolchains.py` to the installed and qualified code, so rerun
+`--container-setup` after upgrading. Setup does not manage toolchains: the
+operator adds them with `--container-toolchain`, and every session mounts the
+library read-only at `/toolchains` (see the README "Toolchains" section).
 
 For the provider idle-channel fix, rerun setup from the updated reviewed checkout
 and explicitly approve maintenance and image refresh so both the runtime and

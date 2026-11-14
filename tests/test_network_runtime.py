@@ -58,6 +58,9 @@ class NetworkRuntime(unittest.TestCase):
         # The Pi wrapper also reads its recipe and version for the staleness hash.
         for name in ('.version', 'Containerfile', '.containerignore'):
             shutil.copyfile(ROOT / name, self.install / name)
+        (self.install / 'setup').mkdir(mode=0o700, exist_ok=True)
+        for name in ('setup/common.py', 'setup/toolchains.py'):
+            shutil.copyfile(ROOT / name, self.install / name)
         binary_dir = self.install / 'network/bin'
         binary_dir.mkdir(mode=0o700, exist_ok=True)
         for name in ('sandbox-egress-guard', 'sandbox-egress-guard.sha256'):
@@ -107,6 +110,48 @@ class NetworkRuntime(unittest.TestCase):
         return subprocess.run([str(self.wrapper), '--container-shell'], cwd=self.project,
                               env=self.env | environment, input='set -Eeuo pipefail\n' + script,
                               text=True, capture_output=True, timeout=45)
+
+    def test_toolchain_added_during_offline_session_without_network(self):
+        # The library is a read-only directory bind: a toolchain the operator adds
+        # on the host appears in a running session, which keeps its restrictions.
+        import io, tarfile
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode='w:gz') as archive:
+            for directory in ('live-1', 'live-1/bin'):
+                info = tarfile.TarInfo(directory)
+                info.type, info.mode = tarfile.DIRTYPE, 0o755
+                archive.addfile(info)
+            data = b'#!/bin/sh\necho live-tool\n'
+            info = tarfile.TarInfo('live-1/bin/live')
+            info.size, info.mode = len(data), 0o755
+            archive.addfile(info, io.BytesIO(data))
+        source = self.base / 'live.tar.gz'
+        source.write_bytes(buffer.getvalue())
+        recipe = self.base / 'live.json'
+        recipe.write_text(json.dumps({'schema': 1, 'name': 'live', 'version': '1', 'default': True, 'check': ['live'],
+                                      'source': {'archive': str(source), 'strip_components': 1,
+                                                 'sha256': hashlib.sha256(source.read_bytes()).hexdigest()}}))
+        self.ensure_qualification({})
+        proc = subprocess.Popen([str(self.wrapper), '--container-shell'], cwd=self.project, env=self.env,
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+        proc.stdin.write("""echo network-ready
+for attempt in $(seq 1 300); do test -f /toolchains/live/env.sh && break; sleep 0.2; done
+. /toolchains/live/env.sh && live
+if python3 -c 'import socket; socket.create_connection(("1.1.1.1", 443), timeout=3)' 2>/dev/null; then echo direct-network; fi
+exit 0
+""")
+        proc.stdin.flush()
+        ready, _, _ = select.select([proc.stdout], [], [], 60)
+        self.assertTrue(ready, 'session readiness timed out')
+        self.assertEqual(proc.stdout.readline().strip(), 'network-ready')
+        added = subprocess.run([str(self.wrapper), '--container-toolchain', 'add', str(recipe)], cwd=self.project,
+                               env=self.env, capture_output=True, text=True, timeout=300)
+        self.assert_success(added)
+        output, errors = proc.communicate(timeout=60)
+        self.assertEqual(proc.returncode, 0, output + errors)
+        self.assertIn('live-tool', output)
+        self.assertNotIn('direct-network', output)
 
     def assert_success(self, result):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
