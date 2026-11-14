@@ -15,8 +15,8 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-REFERENCE_TAG = 'sandbox-ref-16'
-REFERENCE_COMMIT = '1fa091e171ffc5826ed4eccbbc8321bf30cc9ec1'
+REFERENCE_TAG = 'sandbox-ref-17'
+REFERENCE_COMMIT = 'a23f155b6c4af393e96c9496ea2025d2b59c1380'
 SIBLING = ROOT.parent / 'claude-container'
 # Shared directories whose complete file set is fixed by the manifest.
 CLOSED_DIRECTORIES = ('network', 'setup')
@@ -55,7 +55,7 @@ MANIFEST = {
     'setup/launch.py': '72182ed789a6349fe3d660af88315c4665aa892bba4799b6a4e4969965baefc6',
     'setup/setup.py': '0b7d2c01f2d25a8d3ae11b933d34c21e801614a7f64c98d88409955ae1f7b0f2',
     'setup/smoke.py': '041031e22511f4373e20e32807605385c5964b34dc2533a58e8f63ebb2c5eb49',
-    'setup/toolchains.py': '989493581fdd8994d71015c9a8bbfea9726b7ca55032299413f48b3b60ebd2c8',
+    'setup/toolchains.py': '6fe5e751326dad22648450f586a2390cb5d7df15248b470b23b2764917d90ee3',
     'tests/guard_bind_fixture.py': 'd6e4eb85cedb249ec9c6b4f2a026d14acbd5e1309a63ac036647be06781287cc',
     'tests/guard_mux_fixture.py': 'c641e419f5f2939c0c0af34d8a19dfcbcdf42302e0686e2d446bfad1bfc85f3d',
     'tests/guard_runtime_fixture.py': '73461452420305dfbacdb24ccb2336c490667f961e816f5b285ef15d35455597',
@@ -78,7 +78,7 @@ MANIFEST = {
     'tests/test_setup.py': '8436a333b1c42fc294ce9ae0b947171cbed8e179fcc59c9006c89c2b5c30d9e5',
     'tests/test_tls_client_hello.py': '7d8f889af0c4a8f6d40038bdbda915f3afa3adc08c47b5506a02180b595b7ccc',
     'tests/test_tls_proxy.py': '77f9dda900a8ee28ef76d018d862bd0475193f5b90840fd29005a04fe4403e83',
-    'tests/test_toolchains.py': '019a21d4cf13617655ffc42cf16f965765ea714ac92857217088d0f62bbadc72',
+    'tests/test_toolchains.py': '830e0340e35573aff40a3cb5401e73137320b5a9255880d78225baf7f130ce30',
     'tests/tls_binding_fixture.py': '062fe63ec1fc8ad399199a5f5823515070d5d1fa4ac62607f8722a61347f3331',
 }
 

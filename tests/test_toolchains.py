@@ -180,6 +180,7 @@ class ToolchainTests(unittest.TestCase):
             'loader variable': ({'env': {'LD_PRELOAD': {'value': '/tmp/x.so'}}}, 'protected'),
             'proxy variable': ({'env': {'https_proxy': {'value': 'http://x'}}}, 'protected'),
             'xdg variable': ({'env': {'XDG_DATA_HOME': {'value': '/tmp/data'}}}, 'protected'),
+            'bus variable': ({'env': {'DBUS_SESSION_BUS_ADDRESS': {'value': 'unix:path=/tmp/bus'}}}, 'protected'),
             'bad env form': ({'env': {'TOOL_HOME': ''}}, 'env'),
             'empty check': ({'check': []}, 'check'),
             'default not boolean': ({'default': 'yes'}, 'default'),
@@ -404,6 +405,34 @@ class ToolchainTests(unittest.TestCase):
         with self.assertRaises(common.SetupError) as raised:
             toolchains.launch_env(self.library, BASE)
         self.assertIn('XDG_CONFIG_HOME', str(raised.exception))
+
+    def test_launch_env_rejects_the_bus_variable_in_the_index(self):
+        # No wrapper provides a session bus, and --unsetenv does not remove a
+        # value given with --env, so the variable is neutral and fails launches.
+        self.add(name='java', env={'JAVA_HOME': {'toolchain': ''}}, archive_bytes=tool_archive(command='java'),
+                 check=['java'])
+        index = json.loads((self.library / 'index.json').read_text())
+        index['toolchains'][0]['env']['DBUS_SESSION_BUS_ADDRESS'] = 'unix:path=/tmp/bus'
+        (self.library / 'index.json').write_text(json.dumps(index))
+        with self.assertRaises(common.SetupError) as raised:
+            toolchains.launch_env(self.library, BASE)
+        self.assertIn('DBUS_SESSION_BUS_ADDRESS', str(raised.exception))
+
+    def test_launch_env_leaves_out_profile_variables_from_the_shared_index(self):
+        # Another wrapper may have installed a toolchain that sets a variable
+        # this profile protects: the session starts without that variable only.
+        self.add(name='java', env={'JAVA_HOME': {'toolchain': ''}}, archive_bytes=tool_archive(command='java'),
+                 check=['java'])
+        variable = (PROFILE.credential_envs or (PROFILE.config_dir_env,))[0]
+        index = json.loads((self.library / 'index.json').read_text())
+        index['toolchains'][0]['env'][variable] = 'from-another-wrapper'
+        index['toolchains'][0]['env'][PROFILE.env('IMAGE')] = 'from-another-wrapper'
+        (self.library / 'index.json').write_text(json.dumps(index))
+        lines, warnings = toolchains.launch_env(self.library, BASE)
+        self.assertEqual(lines, [('path', '/toolchains/java/bin'), ('env', 'JAVA_HOME', '/toolchains/java')])
+        self.assertEqual(len(warnings), 2)
+        for name in (variable, PROFILE.env('IMAGE')):
+            self.assertTrue(any(name in warning and 'toolchain java' in warning for warning in warnings), warnings)
 
     def test_launch_env_command_output(self):
         self.add()

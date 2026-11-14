@@ -36,16 +36,24 @@ FROM = re.compile(r'^\s*FROM\s+(\S+)', re.IGNORECASE | re.MULTILINE)
 BASE = re.compile(r'\S+@sha256:[a-f0-9]{64}')
 RECIPE_REQUIRED = {'schema', 'name', 'version', 'source', 'check', 'default'}
 RECIPE_OPTIONAL = {'path', 'env', 'requires', 'notes'}
-# Session variables that a toolchain must never replace: identity, shell
-# startup, the agent's own runtimes, wrapper settings, proxies and CA trust.
+# Session variables that a toolchain must never replace, in two groups. The
+# neutral group is the same for every wrapper: identity, shell startup, the
+# agent's own runtimes, proxies, CA trust and the (absent) session bus, which
+# --unsetenv cannot remove once --env sets it. XDG base-directory variables can
+# place a wrapper's state (a wrapper may set them).
 PROTECTED = {name.lower() for name in (
     'HOME', 'PATH', 'USER', 'LOGNAME', 'SHELL', 'TERM', 'EDITOR', 'VISUAL', 'PWD', 'OLDPWD', 'TMPDIR',
     'BASH_ENV', 'ENV', 'IFS', 'CONTAINER_HOST', 'CONTAINER_CONNECTION', 'NODE_OPTIONS', 'NODE_PATH',
     'PYTHONPATH', 'PYTHONHOME', 'PYTHONSTARTUP', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
     'SSL_CERT_FILE', 'SSL_CERT_DIR', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS',
+    'DBUS_SESSION_BUS_ADDRESS')}
+PROTECTED_PREFIXES = ('ld_', 'xdg_', 'sandbox_')
+# The profile group belongs to the wrapper running this module. The library is
+# shared, so another wrapper may have installed a toolchain that sets one of
+# these: launch-env then leaves it out of this wrapper's sessions with a warning.
+PROFILE_PROTECTED = {name.lower() for name in (
     PROFILE.config_dir_env, PROFILE.approval_bypass_env, *PROFILE.credential_envs)}
-# XDG base-directory variables can place a wrapper's state (a wrapper may set them).
-PROTECTED_PREFIXES = ('ld_', 'xdg_', PROFILE.env_prefix.lower() + '_', 'sandbox_')
+PROFILE_PREFIX = PROFILE.env_prefix.lower() + '_'
 CHECK_TIMEOUT = 300
 PREFIX = PROFILE.message_prefix
 
@@ -162,9 +170,18 @@ def relative(value, where):
     return value
 
 
-def protected(variable):
+def neutral_protected(variable):
     lowered = variable.lower()
     return lowered in PROTECTED or lowered.startswith(PROTECTED_PREFIXES)
+
+
+def profile_protected(variable):
+    lowered = variable.lower()
+    return lowered in PROFILE_PROTECTED or lowered.startswith(PROFILE_PREFIX)
+
+
+def protected(variable):
+    return neutral_protected(variable) or profile_protected(variable)
 
 
 def validate_recipe(value):
@@ -625,8 +642,13 @@ def launch_env(library, base):
         lines += [('path', path) for path in by_name[name]['path']]
     for name in ordered:
         for variable, value in by_name[name]['env'].items():
-            if not ENV_NAME.fullmatch(variable) or protected(variable) or not control_free(value) or '\t' in value:
+            if not ENV_NAME.fullmatch(variable) or neutral_protected(variable) or not control_free(value) \
+                    or '\t' in value:
                 raise SetupError('Invalid toolchain environment in the index: ' + variable)
+            if profile_protected(variable):
+                warnings.append('toolchain ' + name + ' sets ' + variable + ', which this wrapper protects; '
+                                'it is left out of this session')
+                continue
             lines.append(('env', variable, value))
     return lines, warnings
 
