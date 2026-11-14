@@ -334,7 +334,7 @@ networking. `PI_NETWORK` is rejected with migration guidance.
 | `unrestricted` | Ordinary runtime networking, the previous behavior | Exact `PI_CONTAINER_PODMAN=1` |
 
 The restricted implementation is shared with `claude-container` and copied
-unchanged from its tag `sandbox-ref-16`; see
+unchanged from its tag `sandbox-ref-17`; see
 [docs/network-contract.md](docs/network-contract.md) and
 [network/README.md](network/README.md).
 
@@ -497,9 +497,16 @@ A recipe is a JSON file that the operator keeps and reviews:
 | `check` | command run in the runtime image before the toolchain is accepted |
 | `default` | `true` adds the toolchain to new sessions' environment |
 
-- **Protected variables:** recipes cannot set `PATH`, `HOME`, loader, proxy,
-  CA, `PI_CONTAINER_*`, configuration or credential variables, or any `XDG_`
-  variable. Pi's own session settings (`PI_OFFLINE`, `PI_SKIP_VERSION_CHECK`,
+- **Protected variables:** recipes cannot set `PATH`, `HOME`, loader, proxy
+  or CA variables, any `XDG_` variable (a wrapper may place its state with
+  them) or `DBUS_SESSION_BUS_ADDRESS` (no session has a bus). These rules are
+  the same in every wrapper. Each wrapper also protects its own variables:
+  its prefix, configuration, approval and credential variables, such as
+  `PI_CONTAINER_*`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`
+  and `OPENROUTER_API_KEY` here. `add` rejects them. If another wrapper
+  installed a toolchain that sets one, this wrapper leaves that variable out
+  of its sessions and prints a warning naming the toolchain; the rest of the
+  toolchain stays available. Pi's own session settings (`PI_OFFLINE`, `PI_SKIP_VERSION_CHECK`,
   `PI_TELEMETRY` in restricted sessions) are set after the toolchain
   environment, so a toolchain cannot override them.
 - **Default toolchains:** in new sessions, their `PATH` entries come **after**
