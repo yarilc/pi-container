@@ -24,11 +24,14 @@ English. Communicate with the user in the language and style the user asks for.
   `test_agent_profile.py`, `test_network_policy.py`, `test_mux.py`,
   `test_tls_client_hello.py`, `test_tls_proxy.py`, `test_platform.py`,
   `test_qualification.py`, `test_guard.py`, `test_session.py`,
-  `test_network_feasibility.py` and their fixtures) are copied unchanged from
-  `claude-container` at tag `sandbox-ref-12`. Never edit them here, and never
+  `test_network_feasibility.py`, `test_toolchains.py` and their fixtures) are copied unchanged from
+  `claude-container` at tag `sandbox-ref-16`. Never edit them here, and never
   add a profile identifier (`pi-container`, `anthropic`, `openai`, `gemini`,
   `openrouter`) to them; fix a defect in `claude-container` first, then copy the
   files again and update `tests/test_reference_copy.py`.
+- The shared `setup/toolchains.py` manages the operator toolchain library,
+  mounted read-only at `/toolchains`; the launcher owns only its dispatch,
+  mount and environment.
 - `README.md` documents setup, usage and security; `SECURITY.md`,
   `CONTRIBUTING.md` and `CHANGELOG.md` complement it.
 - `openspec/specs/` contains current behavior contracts; `openspec/changes/`

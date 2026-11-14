@@ -19,6 +19,8 @@ Container options:
   --container-shell      start Bash instead of Pi (discard Pi arguments)
   --container-git-worktree expose the physical workspace's immediate parent
                          read/write; retain the original working directory
+  --container-toolchain  manage the shared read-only toolchain library; must be first:
+                         add <recipe.json> | list | remove <name> | verify [<name>]
   --container-help       show this help without runtime prerequisites
   --wrapper-help         alias for --container-help
 
@@ -63,6 +65,10 @@ Environment:
                          (default: 0, disabled); independent from shutdown budgets
   PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE exact 1 permits a refused sensitive
                          workspace with a warning (default: disabled)
+  PI_CONTAINER_TOOLCHAINS 0, false, or no omits the read-only /toolchains
+                         library mount (default: mounted)
+  PI_CONTAINER_TOOLCHAINS_DIR toolchain library shared by the wrappers (default:
+                         ${XDG_DATA_HOME:-~/.local/share}/sandbox-toolchains)
   PI_CONTAINER_GITCONFIG exactly 1 mounts ~/.gitconfig read-only (default: not
                          mounted; it may hold credential helpers or tokens)
   PI_CONTAINER_STATE_DIR private host directory holding .pi and .agents instead
@@ -189,6 +195,13 @@ for arg in "$@"; do
     fi
 done
 
+# Toolchain management runs on the host and never starts a session.
+if [[ "${1:-}" == --container-toolchain ]]; then
+    [[ "${2:-}" != launch-env ]] || die 'usage: --container-toolchain add <recipe.json> | list | remove <name> | verify [<name>]'
+    command -v python3 >/dev/null || die 'host Python 3 is required for the toolchain library'
+    toolchain_script=$(readlink -f -- "${BASH_SOURCE[0]}")
+    exec python3 -I "$(dirname -- "$toolchain_script")/setup/toolchains.py" "${@:2}"
+fi
 for arg in "$@"; do
     if [[ "$arg" == --container-setup ]]; then
         [[ $# == 1 ]] || die '--container-setup must be used alone'
@@ -212,6 +225,7 @@ for arg in "$@"; do
         --container-build) build_image=1 ;;
         --container-shell) shell_mode=1 ;;
         --container-git-worktree) git_worktree=1 ;;
+        --container-toolchain) die '--container-toolchain must be the first argument' ;;
         *) args+=("$arg") ;;
     esac
 done
@@ -244,6 +258,12 @@ case "${PI_CONTAINER_TRUST_HOST_CA:-}" in
     [Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|1) trust_host_ca=1 ;;
     ''|0|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]) ;;
     *) die 'PI_CONTAINER_TRUST_HOST_CA must be 0, 1, true, false, yes, or no' ;;
+esac
+toolchains_enabled=0
+case "${PI_CONTAINER_TOOLCHAINS:-1}" in
+    [Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|1) toolchains_enabled=1 ;;
+    0|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]) ;;
+    *) die 'PI_CONTAINER_TOOLCHAINS must be 0, 1, true, false, yes, or no' ;;
 esac
 # The host CA bundle is selected from the environment alone, before any build:
 # the build-only refresh (used by setup) exits before state validation, and its
@@ -620,6 +640,35 @@ if ((trust_host_ca)); then
     fi
 fi
 
+# The operator's toolchain library is mounted read-only; the shared module
+# checks it stays private and outside every state mount (in both state modes),
+# the workspace and the installation, and lists the default toolchains
+# verified for this runtime recipe.
+toolchain_library=''
+toolchain_path=''
+toolchain_env=()
+if ((toolchains_enabled && ! qualification_probe)); then
+    command -v python3 >/dev/null \
+        || die 'host Python 3 is required for the toolchain library; set PI_CONTAINER_TOOLCHAINS=0 to omit it'
+    toolchain_avoid=(--avoid "$workspace_mount")
+    if [[ -n "$isolated_home" ]]; then
+        toolchain_avoid+=(--avoid "$isolated_home")
+    else
+        toolchain_avoid+=(--avoid "$pi_state" --avoid "$agents_state")
+    fi
+    toolchain_output=$(python3 -I "$script_dir/setup/toolchains.py" launch-env "${toolchain_avoid[@]}") \
+        || die 'toolchain library check failed; set PI_CONTAINER_TOOLCHAINS=0 to start without it'
+    while IFS=$'\t' read -r toolchain_kind toolchain_first toolchain_second; do
+        case "$toolchain_kind" in
+            library) toolchain_library=$toolchain_first ;;
+            path) toolchain_path+=":$toolchain_first" ;;
+            env) toolchain_env+=(--env "$toolchain_first=$toolchain_second") ;;
+            *) die 'unexpected toolchain library output' ;;
+        esac
+    done <<<"$toolchain_output"
+    [[ "$toolchain_library" == /* ]] || die 'toolchain library check returned no library'
+fi
+
 # Restricted sessions use the shared helper; this wrapper keeps only the
 # agent-specific command, environment, state and credentials.
 session_helper=(python3 -I "$script_dir/network/session.py")
@@ -629,6 +678,7 @@ guard_digest=''
 if ((restricted)); then
     network_inputs=(--installation "$script_dir" --writable "$workspace_mount"
         --mount-target "$workspace_mount" --mount-target "$CONTAINER_HOME")
+    [[ -z "$toolchain_library" ]] || network_inputs+=(--mount-target /toolchains)
     if [[ -n "$isolated_home" ]]; then
         network_inputs+=(--writable "$isolated_home")
     elif [[ "$state_mode" == rw ]]; then
@@ -723,6 +773,24 @@ else
         --volume "$agents_state:$CONTAINER_HOME/.agents:$state_mode")
 fi
 podman_args+=(--tmpfs "$CONTAINER_HOME/.npm:rw,noexec,nosuid,nodev,mode=0700,U,size=${PI_NPM_CACHE_SIZE:-256M}")
+# Default toolchain entries follow the image PATH, so they never replace the
+# runtime's own node or python3; env.sh puts a toolchain first explicitly. The
+# toolchain environment precedes every value this launcher sets: Podman keeps
+# the last --env, so Pi's own settings (PI_OFFLINE, PI_TELEMETRY...) win.
+if [[ -n "$toolchain_library" ]]; then
+    podman_args+=(--volume "$toolchain_library:/toolchains:ro,nosuid,nodev")
+    if [[ -n "$toolchain_path" ]]; then
+        capture_engine_info image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$session_image" \
+            || die 'cannot inspect the runtime image environment'
+        image_path=''
+        while IFS= read -r image_variable; do
+            [[ "$image_variable" != PATH=* ]] || { image_path=${image_variable#PATH=}; break; }
+        done <<<"$engine_response"
+        [[ -n "$image_path" ]] || image_path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        toolchain_env=(--env "PATH=$image_path$toolchain_path" "${toolchain_env[@]}")
+    fi
+    podman_args+=("${toolchain_env[@]}")
+fi
 if [[ -t 0 && -t 1 ]]; then
     podman_args+=(--tty)
     [[ -z "${TERM:-}" ]] || podman_args+=(--env TERM)

@@ -24,9 +24,17 @@ import qualify
 
 QUALIFICATION_LABEL = PROFILE.label('qualification')
 WORK_GLOB = '.' + PROFILE.name + '-qualification-*'
+# Setup modules the installed runtime fixture needs: qualification digests the
+# shared ones, and ordinary launches run the toolchain module.
+FIXTURE_SETUP_FILES = ('setup/common.py', 'setup/toolchains.py')
 
 
 class QualificationContracts(unittest.TestCase):
+    def test_runtime_fixture_installs_every_shared_setup_module(self):
+        shared = {path for path in records.SHARED_CODE if path.startswith('setup/')}
+        self.assertTrue(shared)
+        self.assertLessEqual(shared, set(FIXTURE_SETUP_FILES))
+
     def identity(self):
         return dict(mode='provider', revision=records.REVISION, runtime='a'*64, proxy='b'*64,
                     policy='c'*64, platform=dict(abi=3), code={'guard':'d'*64},
@@ -500,6 +508,9 @@ class QualificationRuntime(unittest.TestCase):
         for source in (ROOT/'network').glob('*.py'):
             shutil.copyfile(source, self.install/'network'/source.name)
         shutil.copyfile(ROOT/'network/resolv.conf', self.install/'network/resolv.conf')
+        (self.install/'setup').mkdir(mode=0o700)
+        for relative in FIXTURE_SETUP_FILES:
+            shutil.copyfile(ROOT/relative, self.install/relative)
         shutil.copytree(self.guard.name, self.install/'network/bin')
         self.project=self.base/'project'; self.project.mkdir()
         self.home=self.base/'home'; self.home.mkdir(mode=0o700)

@@ -25,7 +25,7 @@ SHARED_TESTS = (
     'tests/guard_bind_fixture.py', 'tests/guard_mux_fixture.py', 'tests/guard_runtime_fixture.py',
     'tests/guard_syscall_mock.c', 'tests/idle_mux_fixture.py', 'tests/mux_failure_fixture.py',
     'tests/mux_fault_boundary.py', 'tests/network_fixture.py', 'tests/proxy_budget_fixture.py',
-    'tests/tls_binding_fixture.py', 'tests/test_session.py',
+    'tests/tls_binding_fixture.py', 'tests/test_session.py', 'tests/test_toolchains.py',
 )
 SKIPPED_PARTS = ('__pycache__', 'bin')
 # Exact (path, line) exceptions. Keep empty unless a reviewed reason exists.

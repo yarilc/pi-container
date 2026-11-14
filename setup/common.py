@@ -23,6 +23,7 @@ class SetupError(ValueError):
 MANIFEST = (
     PROFILE.wrapper, 'Containerfile', '.containerignore', agent_profile.PROFILE, agent_profile.POLICY,
     'setup/common.py', 'setup/setup.py', 'setup/launch.py', 'setup/smoke.py', 'setup/diagnostics.py',
+    'setup/toolchains.py',
     'network/Containerfile', 'network/.containerignore',
     'network/guard-build.Containerfile', 'network/build-guard.sh',
     'network/guard.c', 'network/guard_landlock.h', 'network/guard_seccomp.h',

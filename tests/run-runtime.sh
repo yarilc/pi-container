@@ -70,6 +70,8 @@ podman build --tag "$runner" --file "$root/tests/Containerfile.runner" "$root/te
 runner_created=1
 volume=$(podman volume create)
 native_root=$(podman volume inspect --format '{{.Mountpoint}}' "$volume")
+# Wrapper fixtures need private, executable temporary storage: the runner's
+# /tmp is world-writable, and the toolchain library refuses such ancestors.
 podman run --rm --interactive --userns=keep-id --user "$(id -u):$(id -g)" \
     --volume "$root:$root:$project_mode" --volume "$native_root:$native_root:rw" \
     --volume "$host_socket:/run/podman/podman.sock:rw" --workdir "$root" \
@@ -78,4 +80,6 @@ podman run --rm --interactive --userns=keep-id --user "$(id -u):$(id -g)" \
     --env "SANDBOX_TEST_STATE_ROOT=$native_root" "${guard_environment[@]}" \
     --env "PI_CONTAINER_IMAGE=$image" \
     --tmpfs /tmp:rw,exec,nosuid,nodev,mode=1777 \
+    --mount type=tmpfs,destination=/sandbox-test-tmp,tmpfs-mode=0700,U=true,tmpfs-size=1g \
+    --env SANDBOX_TEST_TMPDIR=/sandbox-test-tmp \
     --entrypoint python3 "$runner" -B -m unittest "${selection[@]}" "$@"

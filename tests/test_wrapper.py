@@ -7,7 +7,9 @@ import pty
 import signal
 import shutil
 import socket
+import stat
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -20,7 +22,7 @@ FAKE = (ROOT / 'tests/fake_podman.py').read_text()
 
 class WrapperTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(prefix='pi-wrapper-')
+        self.tmp = tempfile.TemporaryDirectory(prefix='pi-wrapper-', dir=os.environ.get('SANDBOX_TEST_TMPDIR'))
         self.addCleanup(self.tmp.cleanup)
         self.base = Path(self.tmp.name)
         self.bin = self.base / 'bin'
@@ -34,6 +36,7 @@ class WrapperTests(unittest.TestCase):
         self.home.mkdir()
         self.state = self.home / '.pi'
         self.agents = self.home / '.agents'
+        self.library = self.home / '.local/share/sandbox-toolchains'
         self.log = self.base / 'calls.jsonl'
         self.env = {k: v for k, v in os.environ.items()
                     if not k.startswith(('PI_', 'CONTAINER_', 'FAKE_'))
@@ -1245,10 +1248,130 @@ reap_client
                 self.assertEqual(launch(self.home, **env).returncode, 1)
         for env in ({'PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE': '1'}, {'PI_ALLOW_UNSAFE_PWD': '1'}):
             with self.subTest(env=env):
+                # An exposed home contains the default toolchain library, which
+                # must never be writable through the workspace: the launch stops.
                 result = launch(self.home, **env)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn('overlaps ' + str(self.home), result.stderr)
+                self.assertFalse(any(c[0] in ('create', 'build') for c in self.calls()))
+                result = launch(self.home, PI_CONTAINER_TOOLCHAINS='0', **env)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn('WARNING: sensitive workspace explicitly exposed read/write', result.stderr)
         self.assertEqual(launch(child).returncode, 0)
+
+    # Toolchain library
+
+    def volumes(self):
+        create = self.run_args()
+        return [create[i + 1] for i, a in enumerate(create) if a == '--volume']
+
+    def environment(self):
+        create = self.run_args()
+        return [create[i + 1] for i, a in enumerate(create) if a == '--env']
+
+    def toolchain_index(self, entries):
+        sys.path.insert(0, str(ROOT / 'setup'))
+        import toolchains
+        base = toolchains.base_reference(ROOT)
+        self.library.mkdir(parents=True, mode=0o700, exist_ok=True)
+        entry = {'version': '1', 'default': True, 'commands': ['tool'], 'requires': [], 'notes': [],
+                 'check': ['tool'], 'source': {}, 'verified': {'base': base, 'date': '2026-11-14'}}
+        (self.library / 'index.json').write_text(json.dumps(
+            {'schema': 1, 'toolchains': [{**entry, **value} for value in entries]}))
+
+    def test_toolchain_command_dispatch(self):
+        env = {k: v for k, v in self.env.items() if k != 'PI_CONTAINER_NETWORK'}
+        result = subprocess.run(['bash', str(WRAPPER), '--container-toolchain', 'list'], cwd=self.project, env=env,
+                                text=True, capture_output=True, timeout=25)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Toolchain library: ' + str(self.library), result.stdout)
+        self.assertIn('No toolchains are installed.', result.stdout)
+        self.assertEqual(self.calls(), [])
+        for args, message in ((('--version', '--container-toolchain', 'list'), 'must be the first argument'),
+                              (('--container-toolchain', 'launch-env'), 'usage'),
+                              (('--container-toolchain',), 'usage')):
+            with self.subTest(args=args):
+                result = self.run_wrapper(*args)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+                self.assertFalse(any(c[0] in ('create', 'build') for c in self.calls()))
+
+    def test_toolchain_library_created_private_and_mounted_read_only(self):
+        self.assertFalse(self.library.exists())
+        result = self.run_wrapper()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(stat.S_IMODE(self.library.stat().st_mode), 0o700)
+        self.assertIn('No toolchains are installed', (self.library / 'toolchains.md').read_text())
+        self.assertIn(f'{self.library}:/toolchains:ro,nosuid,nodev', self.volumes())
+        self.assertFalse(any(e.startswith('PATH=') for e in self.environment()))
+
+    def test_unsafe_toolchain_library_stops_before_engine_operations(self):
+        self.library.mkdir(parents=True, mode=0o700)
+        os.chmod(self.library, 0o755)
+        isolated = self.base / 'isolated'
+        cases = [({}, str(self.library))]
+        cases += [({'PI_CONTAINER_TOOLCHAINS_DIR': str(path)}, str(path))
+                  for path in (self.project / 'tools', self.base, self.state / 'tools', self.agents / 'tools')]
+        cases.append(({'PI_READONLY_CONFIG': '1', 'PI_CONTAINER_TOOLCHAINS_DIR': str(self.state / 'ro-tools')},
+                      str(self.state / 'ro-tools')))
+        cases.append(({'PI_CONTAINER_STATE_DIR': str(isolated),
+                       'PI_CONTAINER_TOOLCHAINS_DIR': str(isolated / 'tools')}, str(isolated / 'tools')))
+        self.state.mkdir(mode=0o700, exist_ok=True)
+        self.agents.mkdir(mode=0o700, exist_ok=True)
+        for env, path in cases:
+            with self.subTest(env=env):
+                result = self.run_wrapper(**env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(path, result.stderr)
+                self.assertFalse(any(c[0] in ('create', 'build', 'image', 'pull') for c in self.calls()))
+
+    def test_toolchain_mount_can_be_disabled(self):
+        for value in ('0', 'false', 'no'):
+            with self.subTest(value=value):
+                result = self.run_wrapper(PI_CONTAINER_TOOLCHAINS=value)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(any(v.endswith(':/toolchains:ro,nosuid,nodev') for v in self.volumes()))
+                self.assertFalse(self.library.exists())
+        result = self.run_wrapper(PI_CONTAINER_TOOLCHAINS='maybe')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('PI_CONTAINER_TOOLCHAINS', result.stderr)
+
+    def test_default_toolchain_environment_is_appended(self):
+        self.toolchain_index([
+            {'name': 'current', 'path': ['/toolchains/current/bin'], 'env': {'CURRENT_HOME': '/toolchains/current'}},
+            {'name': 'stale', 'path': ['/toolchains/stale/bin'], 'env': {},
+             'verified': {'base': 'docker.io/library/other@sha256:' + 'e' * 64, 'date': '2026-11-14'}}])
+        result = self.run_wrapper(FAKE_IMAGE_ENV='PATH=/usr/bin:/bin\nNODE_VERSION=22')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        environment = self.environment()
+        self.assertIn('PATH=/usr/bin:/bin:/toolchains/current/bin', environment)
+        self.assertIn('CURRENT_HOME=/toolchains/current', environment)
+        self.assertFalse(any('/toolchains/stale' in e for e in environment))
+        self.assertEqual(result.stderr.count('toolchain stale was verified on another base image'), 1)
+        self.assertIn('verify stale', result.stderr)
+
+    def test_restricted_sessions_declare_the_toolchain_mount_and_keep_pi_settings(self):
+        values = self.restricted_fixture()
+        # A toolchain may name a Pi setting outside the protected prefix; the
+        # launcher's own values come later and win.
+        self.toolchain_index([{'name': 'noisy', 'path': ['/toolchains/noisy/bin'],
+                               'env': {'PI_TELEMETRY': '1', 'PI_OFFLINE': '0'}}])
+        for mode in ('offline', 'provider'):
+            with self.subTest(mode=mode):
+                result = self.run_wrapper(**(values | {'PI_CONTAINER_NETWORK': mode}))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                agent = next(c for c in self.calls() if c[0] == 'create'
+                             and not any(a.startswith('io.pi-container.egress=') for a in c))
+                volumes = [agent[i + 1] for i, a in enumerate(agent) if a == '--volume']
+                self.assertIn(f'{self.library}:/toolchains:ro,nosuid,nodev', volumes)
+                environment = self.env_values(agent)
+                for name, toolchain_value, wrapper_value in (('PI_TELEMETRY', '1', '0'), ('PI_OFFLINE', '0', '1')):
+                    self.assertIn(f'{name}={toolchain_value}', environment)
+                    last = [e for e in environment if e.startswith(name + '=')][-1]
+                    self.assertEqual(last, f'{name}={wrapper_value}')
+                control = [c for c in self.calls() if c[0] == 'control.py']
+                self.assertTrue(any(c[i:i + 2] == ['--mount-target', '/toolchains']
+                                    for c in control for i in range(len(c) - 1)), control)
 
     # Restricted modes. Argument and lifecycle instrumentation only: the real
     # guard, platform and protected-path acceptance live in the runtime suites.
@@ -1265,7 +1388,8 @@ reap_client
         guard.chmod(0o700)
         (guard.parent / 'sandbox-egress-guard.sha256').write_text('c' * 64 + '  sandbox-egress-guard\n')
         for name in ('network/session.py', 'network/agent_profile.py', 'network/agent_budgets.py', 'network/policy.py', 'network/revisions.py',
-                     'network/platform_check.py', 'network/proxy_hardening.py', 'agent/profile.json'):
+                     'network/platform_check.py', 'network/proxy_hardening.py', 'agent/profile.json',
+                     'setup/common.py', 'setup/toolchains.py'):
             (install / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, install / name)
         record = ("import json,os,pathlib,sys\n"
@@ -1338,7 +1462,8 @@ reap_client
         for name in ('.version', 'Containerfile', '.containerignore', 'network/relay.py', 'network/mux.py'):
             (install / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, install / name)
-        result = self.run_wrapper(FAKE_START_STDERR=restart)
+        # The bare copy has no setup/ module, so the toolchain library is omitted.
+        result = self.run_wrapper(FAKE_START_STDERR=restart, PI_CONTAINER_TOOLCHAINS='0')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('level=error msg="Should restart: false"', result.stderr)
 

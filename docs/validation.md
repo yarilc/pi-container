@@ -628,3 +628,82 @@ above). This closes the open Bun decision recorded there.
 
 Qualification digests the launcher and the runtime image changes, so every
 installation reruns `--container-setup`.
+
+## Adoption of `sandbox-ref-16` and the toolchain library (`adopt-sandbox-ref-16`): 2026-11-14
+
+Copied from `claude-container` tag `sandbox-ref-16` (commit `1fa091e`),
+adopted directly from `sandbox-ref-12`:
+`network/agent_profile.py`, `network/control.py`,
+`network/qualification_records.py`, `setup/common.py`,
+`tests/test_alignment.py`, `tests/test_qualification.py`,
+`setup/toolchains.py`, `tests/test_toolchains.py`.
+The `tests/test_reference_copy.py` manifest moved to the tag.
+
+Wrapper port of the reference toolchain library (claude-container
+`add-toolchain-library`; Codex `adopt-sandbox-ref-14`, OpenCode
+`adopt-sandbox-ref-16`):
+
+- `--container-toolchain add|list|remove|verify`, dispatched before the
+  network mode and accepted only as the first argument;
+- `PI_CONTAINER_TOOLCHAINS`, parsed like the other boolean settings, and
+  `PI_CONTAINER_TOOLCHAINS_DIR`;
+- the library checked against the workspace and every writable state
+  directory (`~/.pi` and `~/.agents`, or the isolated
+  `PI_CONTAINER_STATE_DIR`) before any image or container operation;
+- the read-only `/toolchains` mount (`ro,nosuid,nodev`), with
+  `--mount-target /toolchains` in restricted modes;
+- default toolchain `PATH` entries appended after the image `PATH`, read from
+  the session image's `.Config.Env`;
+- the toolchain environment placed before the launcher's own `--env` values,
+  so `PI_OFFLINE=1`, `PI_SKIP_VERSION_CHECK=1` and `PI_TELEMETRY=0` win over a
+  toolchain that names them. Since `sandbox-ref-15`, toolchains cannot set
+  `LD_`, `XDG_`, `PI_CONTAINER_` or `SANDBOX_` variables.
+
+The README has a "Toolchains" section with the `AGENTS.md` instruction line;
+the example recipes are linked in claude-container.
+
+`tests/run-runtime.sh` mounts a private executable tmpfs at
+`/sandbox-test-tmp` as `SANDBOX_TEST_TMPDIR`, and `tests/test_wrapper.py`
+creates its fixtures there. `./test-wrapper.sh` creates a private
+`SANDBOX_TEST_TMPDIR` below `XDG_RUNTIME_DIR` (or `~/.cache`) when it is
+unset, and removes it on exit, because the library refuses a world-writable
+ancestor such as `/tmp`.
+
+Fixture adaptations required by the new mount:
+
+- `tests/test_wrapper.py`:
+  - a workspace that contains the library (sensitive-workspace cases) runs
+    with the library moved outside it;
+  - the bare wrapper copy without the diagnostics filter runs with
+    `PI_CONTAINER_TOOLCHAINS=0`, since it has no `setup/`;
+  - the restricted fixture installs `setup/common.py`, `setup/toolchains.py`
+    and `Containerfile`;
+- `tests/fake_podman.py` answers the image `.Config.Env` inspection;
+- `tests/test_runtime.py`: the home moved outside the worktree base, which
+  otherwise overlaps the library, and the nested-caller check also mounts
+  that home;
+- `tests/test_network_runtime.py`: the synthetic installation gains
+  `setup/common.py`, `setup/toolchains.py` and `Containerfile`.
+
+| Check | Result |
+| --- | --- |
+| New `tests/test_wrapper.py` cases with the previous launcher | Failed as intended (dispatch, mount, private creation, unsafe library including state overlap, disabled mount, appended `PATH`, restricted `--mount-target` and Pi settings order) |
+| `python3 -m unittest tests.test_reference_copy tests.test_toolchains` (private tmpfs), including the agent-identifier scans | Passed |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 391 tests, 72 skipped (the runtime tests are opt-in) |
+| `./test-wrapper.sh` | Passed: 87 tests |
+| `bash tests/run-runtime.sh --shared` | Passed: 160 tests, 28 skipped |
+| `bash tests/run-runtime.sh --setup` | Passed: 71 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 4 tests |
+| `bash tests/run-runtime.sh --qualification` | Passed: 28 tests |
+| `bash tests/run-runtime.sh --guard` | Passed: 20 tests, 1 skipped (the 305-second idle check) |
+| `bash tests/run-runtime.sh --network` | Passed: 22 tests, including a toolchain added on the host during an offline session, usable without direct network |
+| `bash tests/run-runtime.sh --wrapper` | 87 tests. An earlier run passed. In the full sequence, `test_lifetime_notice` failed once: exit status 255 without the lifetime notice. The test and the timing code are unchanged. It is timing-sensitive: the fake engine sleeps 2.2 s against a 2-second limit, measured in whole `SECONDS`. Three isolated reruns passed |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 18 tests, including archive and image sources, a failing check, the read-only mount, the image's `node` and `python3` kept first, and the omitted mount |
+| `./test.sh` (disposable image, then `tests/run-runtime.sh`) | Passed: 18 tests; the test image was removed |
+| Five-wrapper parity table | Identical to claude-container's (`sandbox-ref-16`) |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host, `java -version` with the Temurin 21 toolchain, and `--container-toolchain verify java21` | Pending |
+
+Runtime image: `localhost/pi-container:setup-c027176512b2430e8df55d80e3ea170a`
+as `PI_CONTAINER_IMAGE`, with `PI_ENABLE_BUN` unset. Qualification digests
+the launcher and `setup/toolchains.py`, so restricted installations rerun
+`--container-setup`.
