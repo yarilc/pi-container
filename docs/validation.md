@@ -701,7 +701,7 @@ Fixture adaptations required by the new mount:
 | `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 18 tests, including archive and image sources, a failing check, the read-only mount, the image's `node` and `python3` kept first, and the omitted mount |
 | `./test.sh` (disposable image, then `tests/run-runtime.sh`) | Passed: 18 tests; the test image was removed |
 | Five-wrapper parity table | Identical to claude-container's (`sandbox-ref-16`) |
-| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host, `java -version` with the Temurin 21 toolchain, and `--container-toolchain verify java21` | Pending |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host, `java -version` with the Temurin 21 toolchain, and `--container-toolchain verify java21` | Passed (operator-reported, 2026-11-14): `main` pushed; `java -version` reports Temurin `21.0.13+9` LTS |
 
 Runtime image: `localhost/pi-container:setup-c027176512b2430e8df55d80e3ea170a`
 as `PI_CONTAINER_IMAGE`, with `PI_ENABLE_BUN` unset. Qualification digests
