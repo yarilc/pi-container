@@ -740,7 +740,7 @@ wrapper tests are therefore unchanged.
 | `bash tests/run-runtime.sh --wrapper` | Passed: 87 tests |
 | `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 18 tests |
 | Five-wrapper parity table | Identical to claude-container's (`sandbox-ref-17`) |
-| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Passed (operator-reported, 2026-11-14); `main` pushed |
 
 Runtime image: `localhost/pi-container:setup-c027176512b2430e8df55d80e3ea170a`
 as `PI_CONTAINER_IMAGE`, with `PI_ENABLE_BUN` unset. `setup/toolchains.py`
