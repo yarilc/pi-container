@@ -577,6 +577,23 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
             with self.assertRaisesRegex(common.SetupError, 'overlaps'):
                 common.protect_mounts(value, self.env)
 
+    def test_isolated_state_must_not_overlap_the_workspace(self):
+        project = self.workspace / 'project'
+        (project / 'sub').mkdir(parents=True)
+        (self.base / 'outer').mkdir()
+        alias = self.base / 'alias'
+        alias.symlink_to(project / 'sub')
+        cases = {'workspace': (project, project, False), 'inside': (project / 'sub', project, False),
+                 'containing': (self.workspace, project, False), 'symlink': (alias, project, False),
+                 'worktree parent': (self.workspace / 'sibling', project, True)}
+        for case, (state, workspace, worktree) in cases.items():
+            with self.subTest(case=case), self.assertRaisesRegex(common.SetupError, 'must not overlap the workspace'):
+                common.writable_mounts(self.env | {name('STATE_DIR'): str(state)}, worktree=worktree,
+                                       workspace=workspace)
+        state = self.base / 'outer'
+        mounts = common.writable_mounts(self.env | {name('STATE_DIR'): str(state)}, workspace=project)
+        self.assertEqual(mounts, [project.resolve(), state.resolve()])
+
     def test_private_creation_preserves_umask_and_existing_permissions(self):
         before = os.umask(0o027)
         try:

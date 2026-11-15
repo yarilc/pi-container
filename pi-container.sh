@@ -872,6 +872,9 @@ qualification_check_pid=''
 session_start_pid=''
 diagnostics_pid=''
 diagnostics_fd=''
+session_token=''
+ownership_label=io.pi-container.session
+owned_collision=0
 
 # shellcheck disable=SC2329 # Invoked through signal/EXIT cleanup.
 record_signal() {
@@ -975,6 +978,28 @@ recover_container_id() {
 }
 
 # shellcheck disable=SC2329 # Invoked through signal/EXIT cleanup.
+recover_container_by_label() {
+    local ids owner
+    [[ -z "$container_id" && -n "$session_token" ]] || return 0
+    if ! ids=$(timeout --kill-after=1s 5s podman ps --all --no-trunc \
+        --filter "label=$ownership_label=$session_token" --format '{{.ID}}'); then
+        printf 'pi-container: Cannot look up the containers of session %s by label\n' "$session_token" >&2
+        return 1
+    fi
+    [[ -n "$ids" ]] || return 1
+    if [[ ! "$ids" =~ ^[a-f0-9]{64}$ ]]; then
+        printf 'pi-container: Unexpected containers for session %s; inspect the engine explicitly\n' "$session_token" >&2
+        return 1
+    fi
+    if ! owner=$(timeout --kill-after=1s 5s podman inspect --type container \
+        --format "{{index .Config.Labels \"$ownership_label\"}}" "$ids") || [[ "$owner" != "$session_token" ]]; then
+        printf 'pi-container: Cannot confirm ownership of container %s\n' "$ids" >&2
+        return 1
+    fi
+    container_id=$ids
+}
+
+# shellcheck disable=SC2329 # Invoked through signal/EXIT cleanup.
 cleanup() {
     local status=$? control_status shutdown_deadline
     trap '' TERM INT HUP
@@ -1000,7 +1025,9 @@ cleanup() {
         fi
         # The client can publish its CID while responding to cancellation.
         recover_container_id || true
-        if ((pending_status)) && [[ -z "$container_id" ]]; then
+        # The engine can create the container before the client publishes an ID.
+        [[ -n "$container_id" ]] || recover_container_by_label || true
+        if { ((pending_status)) || ((owned_collision)); } && [[ -z "$container_id" ]]; then
             printf 'pi-container: Creation outcome unresolved for %s (no verified owned ID); inspect the engine explicitly\n' "$name" >&2
         fi
     fi
@@ -1049,6 +1076,7 @@ if [[ "$network_mode" == provider ]]; then
 else
     session_tmp=$(umask 077; mktemp -d) || die "Cannot create private session bookkeeping directory"
 fi
+session_token=${session_tmp##*/}
 ((pending_status == 0)) || exit "$pending_status"
 printf 'pi-container: network mode=%s\n' "$network_mode" >&2
 if ((restricted && qualification_probe == 0)); then
@@ -1101,7 +1129,7 @@ for ((attempt=0; attempt<20; attempt++)); do
     name="$container_prefix-$next_index"
     rm -f -- "$session_tmp/cid"
     creating=1
-    podman create --name "$name" --cidfile "$session_tmp/cid" --label "io.pi-container.session=${session_tmp##*/}" "${podman_args[@]}" --env "CONTAINER_NAME=$name" "$session_image" "${args[@]}" \
+    podman create --name "$name" --cidfile "$session_tmp/cid" --label "$ownership_label=$session_token" "${podman_args[@]}" --env "CONTAINER_NAME=$name" "$session_image" "${args[@]}" \
         </dev/null >"$session_tmp/output" 2>"$session_tmp/error" &
     client_pid=$!
     create_status=0
@@ -1120,7 +1148,20 @@ for ((attempt=0; attempt<20; attempt++)); do
     podman container exists "$name" || exists_status=$?
     ((pending_status == 0)) || exit "$pending_status"
     case "$exists_status" in
-        0) next_index=$((next_index + 1)) ;;
+        0)
+            # Only another session's container is a collision; this session's own
+            # is reported as the creation failure and removed during cleanup.
+            owner_status=0
+            owner=$(podman inspect --type container --format "{{index .Config.Labels \"$ownership_label\"}}" "$name") \
+                || owner_status=$?
+            ((pending_status == 0)) || exit "$pending_status"
+            ((owner_status == 0)) || die "Cannot verify container name collision for $name (status $owner_status)"
+            if [[ "$owner" == "$session_token" ]]; then
+                owned_collision=1
+                creating=1
+                exit "$create_status"
+            fi
+            next_index=$((next_index + 1)) ;;
         1) exit "$create_status" ;;
         *) die "Cannot verify container name collision for $name (status $exists_status)" ;;
     esac

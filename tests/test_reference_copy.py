@@ -15,8 +15,8 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-REFERENCE_TAG = 'sandbox-ref-17'
-REFERENCE_COMMIT = 'a23f155b6c4af393e96c9496ea2025d2b59c1380'
+REFERENCE_TAG = 'sandbox-ref-18'
+REFERENCE_COMMIT = '958465bcd220dbb6cc0fe0f233306cca1d58616c'
 SIBLING = ROOT.parent / 'claude-container'
 # Shared directories whose complete file set is fixed by the manifest.
 CLOSED_DIRECTORIES = ('network', 'setup')
@@ -26,7 +26,7 @@ MANIFEST = {
     'network/Containerfile': 'b909198e5027bc58ceca4e6076ea4b1a54faa592083e4c0190b2c671cc5b2f36',
     'network/README.md': '03be044e55cd4b173cce4a88b2793b6c7b10d33c136ff93cec86f1468095a5be',
     'network/agent_budgets.py': '36db8257878ca96c8a8968a5755b6ffd5cd9e794e8c72015252dba7d019862f8',
-    'network/agent_profile.py': '71d035f6b346d16a50b9beace9265756f7f210183a899351cf2ca8592e7997bd',
+    'network/agent_profile.py': '2df6c95b35e6b8c772ea2d6fa0e5442914d404f91665387f293adc6dab9828b6',
     'network/build-guard.sh': 'e0cc2fce71feb01c447dcb4daf5194f65f098b8a4c9837f756de7e12345cc611',
     'network/control.py': '9415b70232d0869aa92eb70e3bb32ba5fcc5e33644c9d1e4031302b8f199d0f3',
     'network/guard-build.Containerfile': '7c882fff4fe515aa07219392388a084fd972188d549e47be416730f9153f60ad',
@@ -50,12 +50,12 @@ MANIFEST = {
     'network/revisions.py': 'fa35bcac26f5590c0d0b9477fea2773faa1f1eb285215e735e5cb8aa6b2b9cb1',
     'network/session.py': '6822d8b7e403c545ba1f28dbcc522ace0c0e0ac76f4a361dc709a96a08a9182e',
     'network/tls_client_hello.py': 'a4ce71c1710cb1dba7c9ad5889b16549b5d7ebb4a7ae7c2edbf96eab32771e80',
-    'setup/common.py': '71ea3e4bc94fa543e14935654b757ea36e0e4c2a8d5f37bb037ca506c6c50e38',
+    'setup/common.py': '79bbb8ff443011765a1c0ad5b9398eb663de1a0be5383da5ac79425de412cc33',
     'setup/diagnostics.py': 'd6f2a81010f115f5631c829ccc70c39ba329b1baf44b393e34a33a884a3bdc3d',
     'setup/launch.py': '72182ed789a6349fe3d660af88315c4665aa892bba4799b6a4e4969965baefc6',
     'setup/setup.py': '0b7d2c01f2d25a8d3ae11b933d34c21e801614a7f64c98d88409955ae1f7b0f2',
     'setup/smoke.py': '041031e22511f4373e20e32807605385c5964b34dc2533a58e8f63ebb2c5eb49',
-    'setup/toolchains.py': '6fe5e751326dad22648450f586a2390cb5d7df15248b470b23b2764917d90ee3',
+    'setup/toolchains.py': '88a7fbc357c8c3e454247a0fa1359b3bd298e79bafd7b32617af66daba0b33b0',
     'tests/guard_bind_fixture.py': 'd6e4eb85cedb249ec9c6b4f2a026d14acbd5e1309a63ac036647be06781287cc',
     'tests/guard_mux_fixture.py': 'c641e419f5f2939c0c0af34d8a19dfcbcdf42302e0686e2d446bfad1bfc85f3d',
     'tests/guard_runtime_fixture.py': '73461452420305dfbacdb24ccb2336c490667f961e816f5b285ef15d35455597',
@@ -66,8 +66,8 @@ MANIFEST = {
     'tests/network_fixture.py': '90311f5240f14c373dc83ce0d2c4d023c4aa247adcf361ccebfaa2009c3e3675',
     'tests/proxy_budget_fixture.py': 'cde9c888d3842045752a93ec1963110749a3d9cd4d48ef76d199e0b4847fea67',
     'tests/sandbox_profile.py': 'adf6dd51417ec62cf6c2ccc84b8789e41a4f8b8ba46d1be1635d3ab2445fa60e',
-    'tests/test_agent_profile.py': '2c05729712341a6481390aadf775f573651d99ed6ec9243cc669863923727b1e',
-    'tests/test_alignment.py': '63e7f2541d9fc57b138c8bdc19c4f8cfbf5fa093051799cf76ff5b24f36fd2a0',
+    'tests/test_agent_profile.py': 'c8944c4298b669701e49eaeeb62a5f6925860eae47212d93cd330d7161cc1c13',
+    'tests/test_alignment.py': '27e6560b1e75b21e5c6b697722a69952f7a2cc9f46685a961013f76dda9ffbbf',
     'tests/test_guard.py': 'd2555a8dd8e24c8fa0a375aa5733ee327b47e7fa4e6e0304006e8d50de52d028',
     'tests/test_mux.py': 'fb3a7cf8675d247c6609a337d56682d484cde6296e14ea939bfde70537cc8446',
     'tests/test_network_feasibility.py': '4cff9c50b996fd38f2b21b75abe73de77531e554522b04641fcb5288178d1e1c',
@@ -75,10 +75,10 @@ MANIFEST = {
     'tests/test_platform.py': 'e5e30cbb9edb3561e0a6cac67641ab27986ce9e6bd425e5be96976c39fb5fecf',
     'tests/test_qualification.py': '31da50f5ff2d7a476782d00940c318ceba3d5aa8af97bd5e3276619fc11f5733',
     'tests/test_session.py': '047b1cefb75302ca833d13190c921e5767cbe322905835d3f2958bdaaec709e9',
-    'tests/test_setup.py': '8436a333b1c42fc294ce9ae0b947171cbed8e179fcc59c9006c89c2b5c30d9e5',
+    'tests/test_setup.py': '5efff3b033b86eb5c3a1eeb5eb6f57308c60a5c8b91f998e04154e3c835ecac2',
     'tests/test_tls_client_hello.py': '7d8f889af0c4a8f6d40038bdbda915f3afa3adc08c47b5506a02180b595b7ccc',
     'tests/test_tls_proxy.py': '77f9dda900a8ee28ef76d018d862bd0475193f5b90840fd29005a04fe4403e83',
-    'tests/test_toolchains.py': '830e0340e35573aff40a3cb5401e73137320b5a9255880d78225baf7f130ce30',
+    'tests/test_toolchains.py': '1d9934b4ba5d23b4d071c69815a9036b40f432dee44235831bfa14ad8997e13c',
     'tests/tls_binding_fixture.py': '062fe63ec1fc8ad399199a5f5823515070d5d1fa4ac62607f8722a61347f3331',
 }
 

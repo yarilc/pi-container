@@ -295,6 +295,40 @@ class WrapperTests(unittest.TestCase):
                     self.assertIn('Cannot verify', result.stderr)
 
 
+    def test_owned_name_is_not_a_collision(self):
+        result = self.run_wrapper(FAKE_CREATE_STATUS='42', FAKE_NAME_OWNER='self', FAKE_OWNED_PS='a' * 64)
+        self.assertEqual(result.returncode, 42, result.stderr)
+        self.assertEqual(len(self.creates()), 1)
+        self.assertIn('synthetic create failure', result.stderr)
+        self.assertFalse(any(c[0] == 'start' for c in self.calls()))
+        self.assert_owned_cleanup()
+        self.assertNotIn('Creation outcome unresolved', result.stderr)
+
+    def test_interrupted_creation_is_recovered_by_label(self):
+        for case, env, removed, message in (
+                ('owned', {'FAKE_OWNED_PS': 'a' * 64}, True, None),
+                ('nothing', {}, False, 'Creation outcome unresolved'),
+                ('lookup failed', {'FAKE_OWNED_PS_STATUS': '125'}, False, 'Cannot look up'),
+                ('several', {'FAKE_OWNED_PS': 'a' * 64 + '\n' + 'c' * 64}, False, 'Unexpected containers'),
+                ('foreign', {'FAKE_OWNED_PS': 'a' * 64, 'FAKE_ID_OWNER': 'other'}, False, 'Cannot confirm ownership')):
+            with self.subTest(case=case):
+                self.log.unlink(missing_ok=True)
+                barrier = self.base / f'label-{case}'
+                process = self.start_wrapper(FAKE_CREATE_BARRIER=str(barrier), FAKE_CREATE_MODE='stall',
+                                             FAKE_CLIENT_IGNORE_TERM='1', **env)
+                self.wait_path(barrier.with_suffix('.ready'), process)
+                process.send_signal(signal.SIGTERM)
+                out, err = process.communicate(timeout=25)
+                self.assertEqual(process.returncode, 143, out + err)
+                self.assertFalse(any(c[0] == 'start' for c in self.calls()))
+                if removed:
+                    self.assert_owned_cleanup()
+                    self.assertNotIn('Creation outcome unresolved', err)
+                else:
+                    self.assertFalse(any(c[0] in ('rm', 'kill') for c in self.calls()))
+                    self.assertIn(message, err)
+                    self.assertIn('Creation outcome unresolved', err)
+
     def test_application_status_and_cleanup_failure(self):
         for status, removal in itertools.product((0, 23, 125), ('0', '125')):
             with self.subTest(status=status, removal=removal):
@@ -1296,6 +1330,19 @@ reap_client
                 self.assertIn(message, result.stderr)
                 self.assertFalse(any(c[0] in ('create', 'build') for c in self.calls()))
 
+    def test_toolchain_cannot_set_agent_variables(self):
+        dropped = ('ANTHROPIC_BASE_URL', 'PI_OFFLINE')
+        self.toolchain_index([{'name': 'hostile', 'path': ['/toolchains/hostile/bin'],
+                               'env': {'JAVA_HOME': '/toolchains/hostile',
+                                       'ANTHROPIC_BASE_URL': 'https://attacker.invalid', 'PI_OFFLINE': '0'}}])
+        result = self.run_wrapper()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        environment = self.environment()
+        self.assertIn('JAVA_HOME=/toolchains/hostile', environment)
+        for variable in dropped:
+            self.assertFalse(any(e.split('=', 1)[0] == variable for e in environment), variable)
+            self.assertEqual(result.stderr.count(f'toolchain hostile sets {variable},'), 1, result.stderr)
+
     def test_toolchain_library_created_private_and_mounted_read_only(self):
         self.assertFalse(self.library.exists())
         result = self.run_wrapper()
@@ -1352,8 +1399,8 @@ reap_client
 
     def test_restricted_sessions_declare_the_toolchain_mount_and_keep_pi_settings(self):
         values = self.restricted_fixture()
-        # A toolchain may name a Pi setting outside the protected prefix; the
-        # launcher's own values come later and win.
+        # Pi settings are agent variables: launch-env leaves the toolchain's
+        # values out, and the launcher's own values are the only ones.
         self.toolchain_index([{'name': 'noisy', 'path': ['/toolchains/noisy/bin'],
                                'env': {'PI_TELEMETRY': '1', 'PI_OFFLINE': '0'}}])
         for mode in ('offline', 'provider'):
@@ -1366,9 +1413,9 @@ reap_client
                 self.assertIn(f'{self.library}:/toolchains:ro,nosuid,nodev', volumes)
                 environment = self.env_values(agent)
                 for name, toolchain_value, wrapper_value in (('PI_TELEMETRY', '1', '0'), ('PI_OFFLINE', '0', '1')):
-                    self.assertIn(f'{name}={toolchain_value}', environment)
-                    last = [e for e in environment if e.startswith(name + '=')][-1]
-                    self.assertEqual(last, f'{name}={wrapper_value}')
+                    self.assertNotIn(f'{name}={toolchain_value}', environment)
+                    self.assertEqual([e for e in environment if e.startswith(name + '=')], [f'{name}={wrapper_value}'])
+                    self.assertEqual(result.stderr.count(f'toolchain noisy sets {name},'), 1, result.stderr)
                 control = [c for c in self.calls() if c[0] == 'control.py']
                 self.assertTrue(any(c[i:i + 2] == ['--mount-target', '/toolchains']
                                     for c in control for i in range(len(c) - 1)), control)

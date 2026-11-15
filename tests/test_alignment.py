@@ -84,20 +84,45 @@ class SharedComponentAlignment(unittest.TestCase):
             self.assertTrue((ROOT / name).is_file(), name)
 
 
+# The usage() function is a quoted heredoc: a name there documents a control
+# but proves nothing about the launcher's code.
+USAGE = re.compile(r"^usage\(\) \{\n\s*cat <<'(?P<end>[A-Z]+)'\n.*?^(?P=end)\n\}\n", re.M | re.S)
+# Derived variables that shared code reads itself; the wrapper only documents them.
+SHARED_READ = ('TOOLCHAINS_DIR',)
+# Derived variables set by setup for the wrapper, never by the operator.
+INTERNAL = ('QUALIFICATION_INPUT',)
+
+
+def usage_text(wrapper):
+    match = USAGE.search(wrapper)
+    return match.group(0) if match else ''
+
+
+def without_usage(wrapper):
+    return USAGE.sub('', wrapper, count=1)
+
+
+def names_in(text, names):
+    return [name for name in names if re.search(r'(?<![A-Za-z0-9_])' + re.escape(name) + r'(?![A-Za-z0-9_])', text)]
+
+
+def missing_profile_names(wrapper):
+    """Profile variables the launcher's code or its help text fails to name."""
+    coded = [PROFILE.env(suffix) for suffix in agent_profile.SUFFIXES if suffix not in SHARED_READ]
+    coded += [PROFILE.config_dir_env, PROFILE.approval_bypass_env, *PROFILE.credential_envs]
+    documented = [PROFILE.env(suffix) for suffix in agent_profile.SUFFIXES if suffix not in INTERNAL]
+    code, usage = without_usage(wrapper), usage_text(wrapper)
+    missing = [name for name in coded if name not in names_in(code, coded)]
+    missing += [name for name in documented if name not in names_in(usage, documented) and name not in missing]
+    return missing
+
 class WrapperConsistency(unittest.TestCase):
     def setUp(self):
         self.wrapper = (ROOT / PROFILE.wrapper).read_text()
         self.image = (ROOT / 'Containerfile').read_text()
 
     def test_wrapper_uses_every_profile_variable(self):
-        for suffix in agent_profile.SUFFIXES:
-            with self.subTest(suffix=suffix):
-                self.assertIn(PROFILE.env(suffix), self.wrapper)
-        for name in (PROFILE.config_dir_env, PROFILE.approval_bypass_env, *PROFILE.credential_envs):
-            self.assertIn(name, self.wrapper)
-        used = set(re.findall(r'\b' + re.escape(PROFILE.env_prefix) + r'_([A-Z0-9_]+)', self.wrapper))
-        # Wrapper-only controls are allowed; derived names must be complete above.
-        self.assertTrue(set(agent_profile.SUFFIXES) <= used)
+        self.assertEqual(missing_profile_names(self.wrapper), [])
 
     def test_wrapper_uses_profile_labels_images_and_home(self):
         # Egress and qualification labels are applied by the shared helper.
@@ -126,8 +151,17 @@ class WrapperConsistency(unittest.TestCase):
         self.assertEqual(legacy.findall(self.image), [])
 
     def test_consistency_check_detects_a_mismatch(self):
-        changed = self.wrapper.replace(PROFILE.env('NETWORK_POLICY'), PROFILE.env_prefix + '_POLICY_RENAMED')
-        self.assertNotIn(PROFILE.env('NETWORK_POLICY'), changed)
+        self.assertTrue(usage_text(self.wrapper))
+        renamed = PROFILE.env('NETWORK_POLICY')
+        changed = self.wrapper.replace(renamed, PROFILE.env_prefix + '_POLICY_RENAMED')
+        self.assertEqual(missing_profile_names(changed), [renamed])
+        # A name that survives only in the help text is still missing from the code.
+        usage = usage_text(self.wrapper)
+        help_only = usage + without_usage(self.wrapper).replace(renamed, PROFILE.env_prefix + '_POLICY_RENAMED')
+        self.assertEqual(missing_profile_names(help_only), [renamed])
+        # A name used in the code but absent from the help text is undocumented.
+        undocumented = usage.replace(renamed, PROFILE.env_prefix + '_POLICY_RENAMED') + without_usage(self.wrapper)
+        self.assertEqual(missing_profile_names(undocumented), [renamed])
 
 
 if __name__ == '__main__':
