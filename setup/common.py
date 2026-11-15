@@ -274,6 +274,9 @@ def writable_mounts(env, args=(), worktree=False, workspace=None):
         if env.get(config_name):
             raise SetupError(state_name + ' conflicts with ' + config_name + '; unset the shared override.')
         state = Path(env[state_name]).resolve()
+        # Isolated credentials and history must never land in, or contain, the workspace.
+        if overlap(state, workspace):
+            raise SetupError(state_name + ' must not overlap the workspace: ' + str(state) + ' and ' + str(workspace))
         for relative in (PROFILE.config_home, *PROFILE.shared_dirs):
             child = (state / relative).resolve()
             if child != state and state not in child.parents:

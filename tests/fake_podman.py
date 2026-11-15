@@ -35,6 +35,10 @@ elif args[0] == 'exec' and args[1] == proxy:
     print(os.environ.get('FAKE_PROXY_EFFECTIVE', '{"pids":128,"memory":268435456,"capabilities":[0,0,0,0,0],"no_new_privs":1,"seccomp":2}'))
 elif args[0] in ('start', 'rm') and args[-1] == proxy:
     sys.exit(0)
+elif args[0] == 'ps' and any(a.startswith('label=io.pi-container.session=') for a in args):
+    # Containers this session owns, looked up when no ID was published.
+    print(os.environ.get('FAKE_OWNED_PS', ''))
+    sys.exit(int(os.environ.get('FAKE_OWNED_PS_STATUS', '0')))
 elif args[0] == 'ps' and '--filter' in args:
     print('')
 elif args[0] == 'info':
@@ -54,6 +58,14 @@ elif args[:2] == ['image', 'inspect']:
                                                                  'network/relay.py', 'network/mux.py'))
     print(os.environ.get('FAKE_LABEL_HASH', hashlib.sha256(inputs).hexdigest()))
     sys.exit(int(os.environ.get('FAKE_INSPECT_STATUS', '0')))
+elif args[0] == 'inspect' and any('.Config.Labels' in a for a in args):
+    # Owner label: a name defaults to another session, a full ID to this one.
+    calls = [json.loads(line) for line in pathlib.Path(os.environ['FAKE_LOG']).read_text().splitlines()]
+    token = next(a.split('=', 1)[1] for c in calls if c[0] == 'create' for a in c
+                 if a.startswith('io.pi-container.session='))
+    is_id = len(args[-1]) == 64
+    owner = os.environ.get('FAKE_ID_OWNER' if is_id else 'FAKE_NAME_OWNER', 'self' if is_id else 'other')
+    print(token if owner == 'self' else 'other-session')
 elif args[:3] == ['inspect', '--type', 'container']:
     if 'FAKE_AGENT_BUDGETS' in os.environ:
         print(os.environ['FAKE_AGENT_BUDGETS'])

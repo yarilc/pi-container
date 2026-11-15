@@ -24,8 +24,22 @@ SUFFIXES = (
     'TOOLCHAINS', 'TOOLCHAINS_DIR',
 )
 LABELS = ('session', 'egress', 'qualification')
+# Session variables that a toolchain must never replace, the same for every
+# wrapper: identity, shell startup, the agent's own runtimes, proxies, CA trust
+# and the (absent) session bus, which --unsetenv cannot remove once --env sets
+# it. XDG base-directory variables can place a wrapper's state (a wrapper may
+# set them). A profile's protected_env may not repeat them.
+NEUTRAL_ENV = frozenset((
+    'HOME', 'PATH', 'USER', 'LOGNAME', 'SHELL', 'TERM', 'EDITOR', 'VISUAL', 'PWD', 'OLDPWD', 'TMPDIR',
+    'BASH_ENV', 'ENV', 'IFS', 'CONTAINER_HOST', 'CONTAINER_CONNECTION', 'NODE_OPTIONS', 'NODE_PATH',
+    'PYTHONPATH', 'PYTHONHOME', 'PYTHONSTARTUP', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
+    'SSL_CERT_FILE', 'SSL_CERT_DIR', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS',
+    'DBUS_SESSION_BUS_ADDRESS'))
+NEUTRAL_ENV_PREFIXES = ('LD_', 'XDG_', 'SANDBOX_')
 NAME = re.compile(r'[a-z][a-z0-9]*(?:-[a-z0-9]+)*')
 ENV = re.compile(r'[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*')
+# An agent variable, or a prefix when it ends in '_'.
+AGENT_ENV = re.compile(r'[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_?')
 IMAGE = re.compile(r'localhost/[a-z0-9][a-z0-9.-]*[a-z0-9]')
 RELATIVE = re.compile(r'\.?[a-z0-9][a-z0-9._-]*(?:/[a-z0-9][a-z0-9._-]*)*')
 ARGUMENT = re.compile(r'[A-Za-z0-9][A-Za-z0-9._=-]{0,63}|--?[a-z][a-z0-9-]{0,62}')
@@ -86,6 +100,8 @@ class Profile:
         self.shared_dirs = tuple(native['shared_dirs'])
         # Wrappers that refuse non-private shared directories declare it here.
         self.private_shared_dirs = native.get('private_shared_dirs', False)
+        # Variables (and '_'-terminated prefixes) the agent itself reads; toolchains cannot set them.
+        self.protected_env = tuple(native.get('protected_env', ()))
         self.auth = {key: dict(item) for key, item in value['auth'].items()}
 
     def env(self, suffix):
@@ -151,9 +167,14 @@ def validate(value):
         fail('install.files must be distinct agent files outside network/, setup/ and agent/')
     native = value['native']
     fields(native, ('home', 'command', 'config_dir_env', 'approval_bypass_env', 'config_home', 'shared_dirs'),
-           ('private_shared_dirs',), where='native')
+           ('private_shared_dirs', 'protected_env'), where='native')
     if type(native.get('private_shared_dirs', False)) is not bool:
         fail('native.private_shared_dirs must be a boolean')
+    for entry in strings(native.get('protected_env', []), AGENT_ENV, 'native.protected_env', minimum=0, maximum=32):
+        if entry.endswith('_') and len(entry) < 3:
+            fail('native.protected_env prefixes need at least three characters')
+        if entry in NEUTRAL_ENV or entry.startswith(NEUTRAL_ENV_PREFIXES):
+            fail('native.protected_env repeats a neutral protected variable: ' + entry)
     string(native['home'], re.compile(r'/[a-z0-9][a-z0-9._-]*'), 'native.home')
     string(native['command'], NAME, 'native.command')
     for key in ('config_dir_env', 'approval_bypass_env'):

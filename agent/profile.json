@@ -23,7 +23,8 @@
     "approval_bypass_env": "PI_CONTAINER_YOLO",
     "config_home": ".pi",
     "shared_dirs": [".agents"],
-    "private_shared_dirs": true
+    "private_shared_dirs": true,
+    "protected_env": ["PI_", "ANTHROPIC_", "OPENAI_", "GEMINI_", "OPENROUTER_", "GOOGLE_API_KEY"]
   },
   "auth": {
     "anthropic": {

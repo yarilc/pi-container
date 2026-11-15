@@ -21,6 +21,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import PROFILE, SetupError, absolute, overlap, private  # noqa: E402
+import agent_profile  # noqa: E402  (on the path through common)
 
 INSTALLATION = Path(__file__).resolve().parents[1]
 LIBRARY_NAME = 'sandbox-toolchains'
@@ -37,23 +38,27 @@ BASE = re.compile(r'\S+@sha256:[a-f0-9]{64}')
 RECIPE_REQUIRED = {'schema', 'name', 'version', 'source', 'check', 'default'}
 RECIPE_OPTIONAL = {'path', 'env', 'requires', 'notes'}
 # Session variables that a toolchain must never replace, in two groups. The
-# neutral group is the same for every wrapper: identity, shell startup, the
-# agent's own runtimes, proxies, CA trust and the (absent) session bus, which
-# --unsetenv cannot remove once --env sets it. XDG base-directory variables can
-# place a wrapper's state (a wrapper may set them).
-PROTECTED = {name.lower() for name in (
-    'HOME', 'PATH', 'USER', 'LOGNAME', 'SHELL', 'TERM', 'EDITOR', 'VISUAL', 'PWD', 'OLDPWD', 'TMPDIR',
-    'BASH_ENV', 'ENV', 'IFS', 'CONTAINER_HOST', 'CONTAINER_CONNECTION', 'NODE_OPTIONS', 'NODE_PATH',
-    'PYTHONPATH', 'PYTHONHOME', 'PYTHONSTARTUP', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
-    'SSL_CERT_FILE', 'SSL_CERT_DIR', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS',
-    'DBUS_SESSION_BUS_ADDRESS')}
-PROTECTED_PREFIXES = ('ld_', 'xdg_', 'sandbox_')
+# neutral group is the same for every wrapper and is defined with the profile
+# loader (agent_profile.NEUTRAL_ENV).
+PROTECTED = {name.lower() for name in agent_profile.NEUTRAL_ENV}
+PROTECTED_PREFIXES = tuple(prefix.lower() for prefix in agent_profile.NEUTRAL_ENV_PREFIXES)
 # The profile group belongs to the wrapper running this module. The library is
 # shared, so another wrapper may have installed a toolchain that sets one of
 # these: launch-env then leaves it out of this wrapper's sessions with a warning.
-PROFILE_PROTECTED = {name.lower() for name in (
-    PROFILE.config_dir_env, PROFILE.approval_bypass_env, *PROFILE.credential_envs)}
-PROFILE_PREFIX = PROFILE.env_prefix.lower() + '_'
+# The group covers the prefix, configuration, approval and credential variables
+# and the agent's own variables and prefixes (native.protected_env).
+
+
+def profile_protection(profile):
+    """Return the lowercase protected names and prefixes of one profile."""
+    agent = profile.protected_env
+    names = {name.lower() for name in (profile.config_dir_env, profile.approval_bypass_env,
+                                       *profile.credential_envs, *(e for e in agent if not e.endswith('_')))}
+    prefixes = (profile.env_prefix.lower() + '_', *(e.lower() for e in agent if e.endswith('_')))
+    return names, prefixes
+
+
+PROFILE_PROTECTED, PROFILE_PREFIXES = profile_protection(PROFILE)
 CHECK_TIMEOUT = 300
 PREFIX = PROFILE.message_prefix
 
@@ -177,7 +182,7 @@ def neutral_protected(variable):
 
 def profile_protected(variable):
     lowered = variable.lower()
-    return lowered in PROFILE_PROTECTED or lowered.startswith(PROFILE_PREFIX)
+    return lowered in PROFILE_PROTECTED or lowered.startswith(PROFILE_PREFIXES)
 
 
 def protected(variable):
@@ -461,7 +466,8 @@ def check(library, name, root, value, toolchains, image):
     for required in closure(value['requires'], toolchains):
         mounts += ['--volume', str(Path(library) / required) + ':' + MOUNT + '/' + required + ':ro,nosuid,nodev']
     mounts += ['--volume', str(root) + ':' + MOUNT + '/' + name + ':ro,nosuid,nodev']
-    result = run(['run', '--rm', '--network=none', '--read-only', '--pull=never', '--userns=keep-id',
+    # Start in /: the engine must never create or chown the image's WORKDIR.
+    result = run(['run', '--rm', '--network=none', '--read-only', '--pull=never', '--userns=keep-id', '--workdir', '/',
                   '--user', f'{os.getuid()}:{os.getgid()}', '--cap-drop=all', '--security-opt=no-new-privileges',
                   '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,size=256m',
                   '--mount', 'type=tmpfs,destination=' + MOUNT + ',tmpfs-size=1m', *mounts,

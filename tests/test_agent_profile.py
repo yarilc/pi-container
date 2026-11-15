@@ -88,6 +88,15 @@ class ProfileSchemaTests(unittest.TestCase):
             lambda v: v['native'].update(private_shared_dirs=1),
             lambda v: v['native'].update(private_shared_dirs='true'),
             lambda v: v['native'].update(private_shared_dirs=None),
+            lambda v: v['native'].update(protected_env='AGENT_'),
+            lambda v: v['native'].update(protected_env=['agent_flag']),
+            lambda v: v['native'].update(protected_env=['AGENT FLAG']),
+            lambda v: v['native'].update(protected_env=['AGENT_FLAG', 'AGENT_FLAG']),
+            lambda v: v['native'].update(protected_env=['A_']),
+            lambda v: v['native'].update(protected_env=['PATH']),
+            lambda v: v['native'].update(protected_env=['XDG_']),
+            lambda v: v['native'].update(protected_env=['SANDBOX_AGENT']),
+            lambda v: v['native'].update(protected_env=[1]),
             lambda v: v['native'].update(unknown=True),
         ):
             value = copy.deepcopy(self.value)
@@ -111,6 +120,15 @@ class ProfileSchemaTests(unittest.TestCase):
         for flag in (True, False):
             value['native']['private_shared_dirs'] = flag
             self.assertIs(agent_profile.validate(value).private_shared_dirs, flag)
+
+    def test_optional_protected_env(self):
+        self.assertEqual(agent_profile.validate(self.value).protected_env,
+                         tuple(self.value['native'].get('protected_env', ())))
+        value = copy.deepcopy(self.value)
+        value['native'].pop('protected_env', None)
+        self.assertEqual(agent_profile.validate(value).protected_env, ())
+        value['native']['protected_env'] = ['AGENT_CODE_', 'DISABLE_TELEMETRY']
+        self.assertEqual(agent_profile.validate(value).protected_env, ('AGENT_CODE_', 'DISABLE_TELEMETRY'))
 
     def test_optional_runtime_build(self):
         self.assertEqual(agent_profile.validate(self.value).runtime_build,

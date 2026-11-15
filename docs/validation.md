@@ -745,3 +745,63 @@ wrapper tests are therefore unchanged.
 Runtime image: `localhost/pi-container:setup-c027176512b2430e8df55d80e3ea170a`
 as `PI_CONTAINER_IMAGE`, with `PI_ENABLE_BUN` unset. `setup/toolchains.py`
 is qualified code, so restricted installations rerun `--container-setup`.
+
+## Adoption of `sandbox-ref-18`: 2026-11-15
+
+Copied from `claude-container` tag `sandbox-ref-18` (commit `958465b`):
+`network/agent_profile.py`, `setup/common.py`, `setup/toolchains.py`,
+`tests/test_agent_profile.py`, `tests/test_alignment.py`, `tests/test_setup.py`,
+`tests/test_toolchains.py`.
+The `tests/test_reference_copy.py` manifest moved to the tag.
+
+`sandbox-ref-18` adds the optional profile field `native.protected_env`, runs
+the toolchain check in `/`, refuses an isolated state directory that overlaps
+the workspace on managed launches, and makes the alignment test check the
+launcher's code and its help text separately. The shared tests passed
+without adapting a Pi fixture.
+
+Pi changes, from the cross-wrapper review of 2026-11-14:
+
+- **Agent variables:** `agent/profile.json` declares `PI_`, `ANTHROPIC_`,
+  `OPENAI_`, `GEMINI_`, `OPENROUTER_` and `GOOGLE_API_KEY`. A default
+  toolchain could previously set `ANTHROPIC_BASE_URL` in Pi sessions;
+  `launch-env` now leaves it out with a warning. Pi's own settings
+  (`PI_OFFLINE`, `PI_SKIP_VERSION_CHECK`, `PI_TELEMETRY`) are now dropped from
+  the toolchain environment instead of only being overridden later, so
+  `test_restricted_sessions_declare_the_toolchain_mount_and_keep_pi_settings`
+  now expects the toolchain values to be absent and one warning each.
+- **Name collisions (M2):** after a failed create without an ID, an existing
+  container with the candidate name is a collision only when its session
+  label differs. This session's own container is reported as the creation
+  failure and removed in cleanup, instead of being left behind while the
+  wrapper tried the next name.
+- **Label recovery (M2):** when creation was interrupted or failed without a
+  published ID, cleanup looks up the session label (`ps --all --no-trunc
+  --filter label=…`), confirms exactly one ID by inspecting its label, and
+  removes it. A failed lookup, several IDs or an unconfirmed label keep the
+  "Creation outcome unresolved" report.
+
+`tests/fake_podman.py` now answers the session-label lookup and label
+inspection. The new tests (`test_toolchain_cannot_set_agent_variables`,
+`test_owned_name_is_not_a_collision`,
+`test_interrupted_creation_is_recovered_by_label`) fail on `main` and pass on
+the branch.
+
+| Check | Result |
+| --- | --- |
+| `shellcheck pi-container.sh` | Same warning as on `main` (SC2054) |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 400 tests, 74 skipped |
+| `bash tests/run-runtime.sh --shared` | Passed: 161 tests, 28 skipped |
+| `bash tests/run-runtime.sh --setup` | Passed: 72 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 4 tests |
+| `bash tests/run-runtime.sh --qualification` (not in the tool's checklist; shared `setup/` modules are qualified code) | Passed: 28 tests |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 90 tests |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 18 tests |
+| Five-wrapper parity table | Identical to claude-container's (`sandbox-ref-18`) |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending |
+
+Runtime image: setup image `2fe240ad73ed`
+(`localhost/pi-container:setup-c0271765…`), tagged
+`localhost/pi-container:latest` only for the runs and untagged by name
+afterwards. Shared qualified code changes, so restricted installations rerun
+`--container-setup`.

@@ -259,6 +259,7 @@ class ToolchainTests(unittest.TestCase):
                      '--security-opt=no-new-privileges', '--pull=never'):
             self.assertIn(flag, run)
         self.assertIn(f'{os.getuid()}:{os.getgid()}', run)
+        self.assertEqual(run[run.index('--workdir') + 1], '/')
         self.assertIn('localhost/runtime:test', run)
         mounts = [run[i + 1] for i, arg in enumerate(run) if arg == '--volume']
         self.assertTrue(any(m.endswith(':/toolchains/tool:ro,nosuid,nodev') for m in mounts), mounts)
@@ -433,6 +434,40 @@ class ToolchainTests(unittest.TestCase):
         self.assertEqual(len(warnings), 2)
         for name in (variable, PROFILE.env('IMAGE')):
             self.assertTrue(any(name in warning and 'toolchain java' in warning for warning in warnings), warnings)
+
+    @contextlib.contextmanager
+    def agent_variables(self, *entries):
+        # The shared tests declare their own agent variables, whatever this profile lists.
+        value = json.loads(json.dumps(PROFILE.value))
+        value['native']['protected_env'] = list(entries)
+        names, prefixes = toolchains.profile_protection(toolchains.agent_profile.validate(value))
+        with patch.multiple(toolchains, PROFILE_PROTECTED=names, PROFILE_PREFIXES=prefixes):
+            yield
+
+    def test_add_rejects_agent_variables(self):
+        with self.agent_variables('AGENT_FLAG', 'AGENT_CODE_'):
+            for variable in ('AGENT_FLAG', 'AGENT_CODE_MODE', 'agent_code_mode'):
+                with self.subTest(variable=variable), self.assertRaises(common.SetupError) as raised:
+                    self.add(name='java', env={variable: {'value': 'x'}}, archive_bytes=tool_archive(command='java'),
+                             check=['java'])
+                self.assertIn('protected', str(raised.exception))
+                self.assertFalse((self.library / 'java').exists())
+            # A name that only shares the start of an agent variable is not protected.
+            self.add(name='java', env={'AGENT_FLAGS': {'value': 'x'}}, archive_bytes=tool_archive(command='java'),
+                     check=['java'])
+
+    def test_launch_env_leaves_out_agent_variables_from_the_shared_index(self):
+        self.add(name='java', env={'JAVA_HOME': {'toolchain': ''}}, archive_bytes=tool_archive(command='java'),
+                 check=['java'])
+        index = json.loads((self.library / 'index.json').read_text())
+        index['toolchains'][0]['env'].update(AGENT_FLAG='1', AGENT_CODE_MODE='allow')
+        (self.library / 'index.json').write_text(json.dumps(index))
+        with self.agent_variables('AGENT_FLAG', 'AGENT_CODE_'):
+            lines, warnings = toolchains.launch_env(self.library, BASE)
+        self.assertEqual(lines, [('path', '/toolchains/java/bin'), ('env', 'JAVA_HOME', '/toolchains/java')])
+        self.assertEqual(len(warnings), 2)
+        for variable in ('AGENT_FLAG', 'AGENT_CODE_MODE'):
+            self.assertTrue(any(variable in warning and 'toolchain java' in warning for warning in warnings), warnings)
 
     def test_launch_env_command_output(self):
         self.add()
