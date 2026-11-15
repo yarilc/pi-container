@@ -798,7 +798,7 @@ the branch.
 | `bash tests/run-runtime.sh --wrapper` | Passed: 90 tests |
 | `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 18 tests |
 | Five-wrapper parity table | Identical to claude-container's (`sandbox-ref-18`) |
-| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Passed (2026-11-15, reported by the operator after the push) |
 
 Runtime image: setup image `2fe240ad73ed`
 (`localhost/pi-container:setup-c0271765…`), tagged
