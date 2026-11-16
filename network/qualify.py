@@ -346,6 +346,8 @@ def main():
         raise platform.PlatformError('qualification requires an explicit same-host Unix endpoint, without named connections')
     if (env.get(name('NETWORK')) or 'offline') not in ('offline', 'provider'):
         raise GateError('qualification requires offline or provider mode')
+    if (env.get(name('NETWORK')) or 'offline') == 'provider' and not PROFILE.auth:
+        raise GateError(agent_profile.NO_METHODS)
     if env.get(name('PODMAN')) == '1':
         raise GateError('qualification rejects Podman delegation')
     paths = writable(env)

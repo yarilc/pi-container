@@ -170,6 +170,8 @@ def validate(value):
         raise SetupError('Invalid network/authentication choice.')
     if value['network'] == 'provider' and value['auth'] == 'none':
         raise SetupError('Provider mode requires an authentication profile.')
+    if value['yolo'] and not PROFILE.approval_bypass_env:
+        raise SetupError('The agent profile declares no permission bypass.')
     if value['network'] != 'unrestricted' and (value['podman'] or value['endpoint'] == 'local'):
         raise SetupError('Restricted modes require a Unix service and prohibit delegation.')
     if value['state_dir'] and value['config_dir']:
@@ -221,7 +223,8 @@ def save(path, value):
 def defaults(root=None):
     home = Path(os.environ['HOME'])
     return dict(schema_version=SCHEMA_VERSION, installation=str(root or home / '.local/lib' / PROFILE.name),
-                command=str(home / '.local/bin' / PROFILE.name), network='provider', auth=next(iter(PROFILE.auth)),
+                command=str(home / '.local/bin' / PROFILE.name),
+                network='provider' if PROFILE.auth else 'offline', auth=next(iter(PROFILE.auth), 'none'),
                 state_dir='', config_dir='', runtime_dir=str(home / '.local/state' / PROFILE.state_name),
                 endpoint='default', delegation_socket='', podman=False, yolo=False,
                 worktree=False, trust_ca=False, ca_bundle='',
@@ -245,16 +248,21 @@ def runtime_environment(value, release, *, overrides=True):
         name('STATE_DIR'): value['state_dir'], PROFILE.config_dir_env: value['config_dir'],
         name('IMAGE'): value['image'], name('PODMAN'): '1' if value['podman'] else '0',
         name('PODMAN_SOCKET'): value['delegation_socket'],
-        PROFILE.approval_bypass_env: '1' if value['yolo'] else '0',
         name('TRUST_HOST_CA'): '1' if value['trust_ca'] else '0',
         name('CA_BUNDLE'): value['ca_bundle'],
-        name('NETWORK_RUNTIME_DIR'): value['runtime_dir'],
-        name('NETWORK_PROFILE'): PROFILE.policy_profile(value['auth']) if value['auth'] != 'none' else '',
-        name('NETWORK_POLICY'): str(release / agent_profile.POLICY),
-        name('EGRESS_IMAGE'): value['proxy_image'],
         'CONTAINER_HOST': endpoint_url(value['endpoint']),
         **{name(suffix): value[key] for key, suffix in BUDGETS.items()},
     }
+    if PROFILE.approval_bypass_env:
+        selected[PROFILE.approval_bypass_env] = '1' if value['yolo'] else '0'
+    # Provider inputs exist only for a profile with authentication methods.
+    if PROFILE.auth:
+        selected.update({
+            name('NETWORK_RUNTIME_DIR'): value['runtime_dir'],
+            name('NETWORK_PROFILE'): PROFILE.policy_profile(value['auth']) if value['auth'] != 'none' else '',
+            name('NETWORK_POLICY'): str(release / agent_profile.POLICY),
+            name('EGRESS_IMAGE'): value['proxy_image'],
+        })
     if not overrides:
         for name in (*selected, 'CONTAINER_CONNECTION', PROFILE.env('MAINTENANCE'), *PROFILE.credential_envs):
             env.pop(name, None)

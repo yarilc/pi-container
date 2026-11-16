@@ -27,7 +27,7 @@ Claude made the same adoption in its change `adopt-sandbox-ref-20`.
    - the `Sandbox (reference)` row is added;
    - the Claude row is copied from `claude-container`;
    - the Pi row reads `Ported from sandbox-ref-20`.
-3. **The lifetime notice is measured with `EPOCHREALTIME`**, as in the reference. The boundary test runs eight failing sessions of 0.3 s with a 1 s limit; it fails with the old launcher.
+3. **The lifetime notice is measured with a monotonic clock from just before container creation**, as in the reference. Bash `SECONDS` and `EPOCHREALTIME` follow the wall clock, which WSL2 steps backwards by seconds when it resynchronises with the host; `/proc/uptime` does not move. The boundary test runs eight failing sessions of 0.3 s with a 1 s limit; it fails with the old launcher.
 4. **The `network-egress` requirements are MODIFIED in place.** The two requirements naming `claude-container` change only that name, so no scenario is renamed.
 
 ## Risks / Trade-offs

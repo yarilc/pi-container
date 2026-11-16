@@ -805,3 +805,41 @@ Runtime image: setup image `2fe240ad73ed`
 `localhost/pi-container:latest` only for the runs and untagged by name
 afterwards. Shared qualified code changes, so restricted installations rerun
 `--container-setup`.
+
+## Adoption of `sandbox-ref-20`: 2026-11-16
+
+`sandbox-container` is now the reference (it replaced `claude-container`).
+Copied from `sandbox-container` tag `sandbox-ref-20` (commit `d4fd4ca`) with
+`tools/propagate.py`: `network/README.md`, `network/agent_profile.py`,
+`network/policy.py`, `network/qualification_records.py`, `network/qualify.py`,
+`network/session.py`, `setup/common.py`, `setup/setup.py`, `setup/toolchains.py`,
+`tests/sandbox_profile.py`, `tests/test_agent_profile.py`, `tests/test_alignment.py`,
+`tests/test_guard.py`, `tests/test_qualification.py`, `tests/test_session.py`,
+`tests/test_setup.py` and the fixture profiles in `tests/fixtures/`. The
+`tests/test_reference_copy.py` manifest moved to the tag and names
+`sandbox-container` as its sibling. Per-agent: `tests/test_setup_wrapper.py`
+(copied from Claude), the lifetime notice measured with a monotonic clock
+(`/proc/uptime`, since WSL2 steps the wall clock backwards) from just before
+container creation plus a boundary test (failed with the old launcher),
+documents pointing at `sandbox-container`, parity table fixed by hand.
+
+Runtime image: setup image `2fe240ad73ed`
+(`localhost/pi-container:setup-3705f13b…`), tagged `localhost/pi-container:latest`
+only for the runs and untagged by name afterwards; `PI_ENABLE_BUN` unset; WSL2
+6.6.87.2, Podman 4.9.3.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 418 tests, 72 skipped |
+| `bash tests/run-runtime.sh --setup` | Passed: 66 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 4 tests |
+| `bash tests/run-runtime.sh --qualification` | Passed: 28 tests |
+| `bash tests/run-runtime.sh --guard` | Passed: 20 tests, 1 skipped |
+| `bash tests/run-runtime.sh --network` | Passed: 22 tests |
+| `bash tests/run-runtime.sh --network-policy` | Passed: 15 tests |
+| `bash tests/run-runtime.sh --network-feasibility` | Passed: 1 test |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 91 tests |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 18 tests |
+| `./test.sh` | Passed |
+| `git diff --check`, `bash -n pi-container.sh` | Passed |
+| Operator `--container-setup` on the three hosts | Pending (operator, after the `sandbox-ref-21` adoption) |

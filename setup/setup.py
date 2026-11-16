@@ -86,10 +86,15 @@ def residual_notice():
     print('Only offline mode removes this channel. See docs/network-contract.md (Residual exfiltration).')
 
 
+# Provider mode needs an authentication method; a profile without one offers
+# only offline and unrestricted networking.
+NETWORK_MODES = ('offline', 'provider', 'unrestricted') if PROFILE.auth else ('offline', 'unrestricted')
+
+
 def choose_network(default):
     """Ask for the network mode; provider mode requires an explicit acknowledgement each time."""
     while True:
-        mode = ask('Network mode', default, ('offline', 'provider', 'unrestricted'))
+        mode = ask('Network mode', default, NETWORK_MODES)
         if mode != 'provider':
             return mode
         residual_notice()
@@ -102,7 +107,8 @@ def questionnaire():
     print(NAME + ' sandbox setup — no host packages will be installed. Ctrl+C cancels.')
     print('Podman must already be installed. Setup uses host Python 3 and GNU coreutils.')
     ambient = sorted(k for k in os.environ if k.startswith(PROFILE.env_prefix + '_') or k in
-                     (PROFILE.config_dir_env, PROFILE.approval_bypass_env, 'CONTAINER_HOST', 'CONTAINER_CONNECTION'))
+                     (PROFILE.config_dir_env, PROFILE.approval_bypass_env, 'CONTAINER_HOST', 'CONTAINER_CONNECTION')
+                     if k)
     if ambient:
         print('Existing environment controls (values are not recorded): ' + ', '.join(ambient))
         print('Review choices below; setup checks use these choices. Explicit environment overrides apply on later launches.')
@@ -113,12 +119,15 @@ def questionnaire():
     previous = load(old / 'setup.json') if old else defaults(root)
     value = previous.copy()
     value['installation'] = str(root)
-    print('offline: no external network; provider: approved CONNECT hosts with initial and retried TLS SNI binding; unrestricted: ordinary network access.')
-    print('Provider mode rejects ECH/GREASE and unverifiable TLS names; encrypted Host/shared-service routing is not filtered.')
+    if PROFILE.auth:
+        print('offline: no external network; provider: approved CONNECT hosts with initial and retried TLS SNI binding; unrestricted: ordinary network access.')
+        print('Provider mode rejects ECH/GREASE and unverifiable TLS names; encrypted Host/shared-service routing is not filtered.')
+    else:
+        print('offline: no external network; unrestricted: ordinary network access. The profile declares no authentication method, so provider mode is unavailable.')
     value['network'] = choose_network(value['network'])
-    default_auth = next(iter(PROFILE.auth))
+    default_auth = next(iter(PROFILE.auth), 'none')
     value['auth'] = 'none'
-    if value['network'] != 'offline':
+    if value['network'] != 'offline' and PROFILE.auth:
         print('; '.join(method + ' ' + item['description'] for method, item in PROFILE.auth.items())
               + '. No secret is requested here.')
         value['auth'] = ask('Authentication method', previous['auth'] if previous['auth'] != 'none' else default_auth, tuple(PROFILE.auth))
@@ -142,12 +151,15 @@ def questionnaire():
             value['podman'] = False
         else:
             value['network'] = choose_network(value['network'])
-            if value['network'] != 'offline' and value['auth'] == 'none':
+            if value['network'] != 'offline' and value['auth'] == 'none' and PROFILE.auth:
                 value['auth'] = ask('Authentication method', default_auth, tuple(PROFILE.auth))
     if value['network'] == 'offline':
         value['auth'] = 'none'
-    print('Permission bypass skips ' + NAME + ' approvals; it does not change network enforcement or grant Podman.')
-    value['yolo'] = yes('Enable ' + NAME + ' permission bypass (YOLO)?', value['yolo'])
+    if PROFILE.approval_bypass_env:
+        print('Permission bypass skips ' + NAME + ' approvals; it does not change network enforcement or grant Podman.')
+        value['yolo'] = yes('Enable ' + NAME + ' permission bypass (YOLO)?', value['yolo'])
+    else:
+        value['yolo'] = False
     print('Worktree mode mounts the entire current directory parent read/write, including sibling projects.')
     value['worktree'] = yes('Use parent-directory worktree scope by default?', value['worktree'])
     print('Agent containers always run with memory, CPU and process budgets; they do not limit workspace or state storage.')
@@ -688,8 +700,9 @@ def smoke_in(value, release, workspace):
 
 
 def authenticate(value, release):
-    status = 'not applicable' if value['network'] == 'offline' else 'pending'
-    if value['network'] == 'offline':
+    # Offline sessions reach no provider, and a profile without methods has none.
+    status = 'not applicable' if value['network'] == 'offline' or value['auth'] == 'none' else 'pending'
+    if status == 'not applicable':
         return status
     command = shlex.quote(value['command'])
     method = value['auth']

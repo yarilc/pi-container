@@ -1250,6 +1250,19 @@ reap_client
                 self.assertIn(['rm', '--force', '--ignore', '--time', '0', 'a' * 64], self.calls())
         self.assertIn('cgroup v2', self.run_wrapper(FAKE_AGENT_BUDGETS='0 0 0').stderr)
 
+    def test_short_failure_across_a_second_boundary_has_no_lifetime_notice(self):
+        # Whole-second clocks would report a 0.3 s failing session crossing a
+        # second boundary as a reached lifetime limit.
+        script = self.bin / 'podman'
+        script.write_text(script.read_text().replace(
+            'args = sys.argv[1:]\n', "args = sys.argv[1:]\nif os.environ.get('FAKE_SHORT_FAIL') and args"
+            " and args[0] in ('run', 'start'):\n    time.sleep(0.3); sys.exit(3)\n", 1))
+        for attempt in range(8):
+            with self.subTest(boundary_attempt=attempt):
+                result = self.run_wrapper(PI_CONTAINER_RUN_TIMEOUT='1', FAKE_SHORT_FAIL='1')
+                self.assertEqual(result.returncode, 3, result.stderr)
+                self.assertNotIn('lifetime limit', result.stderr)
+
     def test_lifetime_notice(self):
         result = self.run_wrapper(PI_CONTAINER_RUN_TIMEOUT='2', FAKE_SLOW='2.2')
         self.assertEqual(result.returncode, 255, result.stderr)

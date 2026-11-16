@@ -1,7 +1,7 @@
 # Interactive sandbox setup
 
 The durable contract is [container-setup](../openspec/specs/container-setup/spec.md).
-It is copied unchanged from `claude-container` at tag `sandbox-ref-18`
+It is copied unchanged from `sandbox-container` at tag `sandbox-ref-20`
 (`setup/`); Pi values come from `agent/profile.json`. The archived change
 `openspec/changes/archive/<date>-add-container-setup/` retains the design, tasks
 and delta specifications.

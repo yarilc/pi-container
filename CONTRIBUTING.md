@@ -36,14 +36,14 @@ PI_CONTAINER_IMAGE=localhost/pi-container ./tests/run-runtime.sh
 
 # Restricted-mode and shared sandbox suites
 bash tests/run-runtime.sh --wrapper    # wrapper contracts in the runner
-bash tests/run-runtime.sh --shared     # suites copied from claude-container
+bash tests/run-runtime.sh --shared     # suites copied from sandbox-container
 bash tests/run-runtime.sh --network    # restricted modes with real rootless Podman
 bash tests/run-runtime.sh --guard      # guard fixtures (toolchain image required)
 ```
 
 `network/`, `setup/` and the shared tests are copied unchanged
-from `claude-container` (tag `sandbox-ref-18`); never edit them here. Fix a
-defect in `claude-container` first, then copy the files again and update the
+from `sandbox-container` (tag `sandbox-ref-20`); never edit them here. Fix a
+defect in `sandbox-container` first, then copy the files again and update the
 manifest in `tests/test_reference_copy.py`.
 
 Run synthetic tests and credential-free real wrapper/image acceptance before a PR.

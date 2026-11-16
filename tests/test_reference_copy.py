@@ -1,8 +1,8 @@
-"""Per-agent check that the shared components equal the Claude reference copy.
+"""Per-agent check that the shared components equal the sandbox-container reference copy.
 
 Complements the shared ``tests/test_alignment.py`` (identifier scan and
 wrapper consistency) with a byte-identity check: ``network/``, ``setup/`` and
-the shared tests must stay byte-identical to ``claude-container`` at the reference
+the shared tests must stay byte-identical to ``sandbox-container`` at the reference
 tag; a defect is fixed there first and copied afterwards.
 """
 import hashlib
@@ -15,18 +15,18 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-REFERENCE_TAG = 'sandbox-ref-18'
-REFERENCE_COMMIT = '958465bcd220dbb6cc0fe0f233306cca1d58616c'
-SIBLING = ROOT.parent / 'claude-container'
+REFERENCE_TAG = 'sandbox-ref-20'
+REFERENCE_COMMIT = 'd4fd4ca88050e1090ba9898d161100d4de87815e'
+SIBLING = ROOT.parent / 'sandbox-container'
 # Shared directories whose complete file set is fixed by the manifest.
 CLOSED_DIRECTORIES = ('network', 'setup')
 SKIPPED_PARTS = ('__pycache__', 'bin')
 MANIFEST = {
     'network/.containerignore': '938d84510789e940b804c8062c45c257d4a119ad55d21f60db57d6290590187c',
     'network/Containerfile': 'b909198e5027bc58ceca4e6076ea4b1a54faa592083e4c0190b2c671cc5b2f36',
-    'network/README.md': '03be044e55cd4b173cce4a88b2793b6c7b10d33c136ff93cec86f1468095a5be',
+    'network/README.md': 'a383c9e4d49f1f97843e1459123ad562bc76ab780915487098f1fc1342173c82',
     'network/agent_budgets.py': '36db8257878ca96c8a8968a5755b6ffd5cd9e794e8c72015252dba7d019862f8',
-    'network/agent_profile.py': '2df6c95b35e6b8c772ea2d6fa0e5442914d404f91665387f293adc6dab9828b6',
+    'network/agent_profile.py': '5a0ca6e1376ec8c52fd06d04c6f3463f511ce093fb7c00bdf9ab9cfa5df41f68',
     'network/build-guard.sh': 'e0cc2fce71feb01c447dcb4daf5194f65f098b8a4c9837f756de7e12345cc611',
     'network/control.py': '9415b70232d0869aa92eb70e3bb32ba5fcc5e33644c9d1e4031302b8f199d0f3',
     'network/guard-build.Containerfile': '7c882fff4fe515aa07219392388a084fd972188d549e47be416730f9153f60ad',
@@ -35,27 +35,31 @@ MANIFEST = {
     'network/guard_seccomp.h': 'c158d67589d1ba5e3b0e5188974865d881e31bd2eee19ec9a08f1993f4ca4e16',
     'network/mux.py': '1f30d2016f2d9463a1c23d9e3007a2cc14b66de931dd86229df73961d65bc72c',
     'network/platform_check.py': 'c8372fdf47e7036f3d34190074678a17d33dc68e21384a0571db5fc00185f4cd',
-    'network/policy.py': 'fc6c97073505e55d2f4081b799723055cfff9618fbc0e169cfbf5724ac234ca6',
+    'network/policy.py': '9b300a3052254993c9f4149a540d4565193c0dba09a34ac2350dada7b4cf097a',
     'network/proxy.py': '73b4ea218a50512a23eaf9d7e3eec606fcadb7e14b91097a0593af5cc19494e2',
     'network/proxy_hardening.py': '4b473682a17f3f8812b507279cf8d760b9eb3857ea3c4f45115acdc5279090d8',
     'network/qualification_peer.py': 'eaea202213ca9466dd8c904732b8a635bcfd20dcbcfcd5fe0a031cb9dd4dca0c',
     'network/qualification_probe.py': '32cf37eb0f997e800776916e21fa73e4715ce94d35188bb102c47f8f9e263260',
     'network/qualification_proxy.py': 'fea115190b81f5c7bd4ddaa6be825e3a50d3c7cc44c0ae30b1e70d66f36d48ab',
-    'network/qualification_records.py': '94c1debef5cddf8f888e20bb2adc45e78b9ecedc82ef415651b582e1483a7e87',
+    'network/qualification_records.py': 'de40dc465b938dcfedf98056166e94c87a6a9c4800fa9426c8aaf2bedf83cc8e',
     'network/qualification_runtime.py': 'a9395438a6ee7c3dcdcc74d366ca3f00b92c5c55c248687e25c96ac735b37ada',
-    'network/qualify.py': '6ac7e03aa1a243a1f43e5b86bbaf1e6998a828b6ee3c7d6e63ea2fa573200f94',
+    'network/qualify.py': '96b33d6f83de1a0e8cb5da9987c2a2d5512e61159bc582e8fbed6974be491d30',
     'network/relay.py': '67f64f5a83994770f3bbac249d541f193dae3f494e20aa15a21cf2a44c0ce0ef',
     'network/release_acceptance.json': '50c7caa261f64c534af10d02d6420d5b08ffd20d1a8cc25a6321350bf186cefe',
     'network/resolv.conf': '8e40d95c29f83fe652b8a5d0dfda2ecfd94f9b51e0f406a517de1a3aa3fc6ad5',
     'network/revisions.py': 'fa35bcac26f5590c0d0b9477fea2773faa1f1eb285215e735e5cb8aa6b2b9cb1',
-    'network/session.py': '6822d8b7e403c545ba1f28dbcc522ace0c0e0ac76f4a361dc709a96a08a9182e',
+    'network/session.py': 'be4675c7155b070115492a26c7f4629bc2b709803092b6784ba9d7cb3e80ade6',
     'network/tls_client_hello.py': 'a4ce71c1710cb1dba7c9ad5889b16549b5d7ebb4a7ae7c2edbf96eab32771e80',
-    'setup/common.py': '79bbb8ff443011765a1c0ad5b9398eb663de1a0be5383da5ac79425de412cc33',
+    'setup/common.py': '2a27d2db43cd8b28befe01cb0e78579e4e45f599db18f050ff99488773e81ade',
     'setup/diagnostics.py': 'd6f2a81010f115f5631c829ccc70c39ba329b1baf44b393e34a33a884a3bdc3d',
     'setup/launch.py': '72182ed789a6349fe3d660af88315c4665aa892bba4799b6a4e4969965baefc6',
-    'setup/setup.py': '0b7d2c01f2d25a8d3ae11b933d34c21e801614a7f64c98d88409955ae1f7b0f2',
+    'setup/setup.py': 'eaccfdb9df67cff4cf511ebb20243a1496d15e0ed9cd0410120cfcf3f70634be',
     'setup/smoke.py': '041031e22511f4373e20e32807605385c5964b34dc2533a58e8f63ebb2c5eb49',
-    'setup/toolchains.py': '88a7fbc357c8c3e454247a0fa1359b3bd298e79bafd7b32617af66daba0b33b0',
+    'setup/toolchains.py': '91e32207ee4ba116852eafd0690a95ca935f7668d03e5baabf0c224848b59ae8',
+    'tests/fixtures/agent/policies/default.json': '4a990d9c90c90401c019faf5c7a96c083ae510b7a3507af584fec1f5bef8bb6f',
+    'tests/fixtures/agent/profile.json': '68e3666cfe7cab0f4b96bc458467b33b57ce6a1160d7474ce5d26d14a3893d53',
+    'tests/fixtures/shell-agent/policies/default.json': 'a4a765ecaa63acb1f3aed3838b3f409a3c19dca57346ab284ce5ceda96b5f1fc',
+    'tests/fixtures/shell-agent/profile.json': 'd254b6c0fdc5531c7fef98de074b206a753f4313394c4bfb2f0217134072376b',
     'tests/guard_bind_fixture.py': 'd6e4eb85cedb249ec9c6b4f2a026d14acbd5e1309a63ac036647be06781287cc',
     'tests/guard_mux_fixture.py': 'c641e419f5f2939c0c0af34d8a19dfcbcdf42302e0686e2d446bfad1bfc85f3d',
     'tests/guard_runtime_fixture.py': '73461452420305dfbacdb24ccb2336c490667f961e816f5b285ef15d35455597',
@@ -65,17 +69,17 @@ MANIFEST = {
     'tests/mux_fault_boundary.py': 'faf7aaa356dabd64306df8f5c0cb4054f9d267263db653bc0359c3d2cf2672fd',
     'tests/network_fixture.py': '90311f5240f14c373dc83ce0d2c4d023c4aa247adcf361ccebfaa2009c3e3675',
     'tests/proxy_budget_fixture.py': 'cde9c888d3842045752a93ec1963110749a3d9cd4d48ef76d199e0b4847fea67',
-    'tests/sandbox_profile.py': 'adf6dd51417ec62cf6c2ccc84b8789e41a4f8b8ba46d1be1635d3ab2445fa60e',
-    'tests/test_agent_profile.py': 'c8944c4298b669701e49eaeeb62a5f6925860eae47212d93cd330d7161cc1c13',
-    'tests/test_alignment.py': '27e6560b1e75b21e5c6b697722a69952f7a2cc9f46685a961013f76dda9ffbbf',
-    'tests/test_guard.py': 'd2555a8dd8e24c8fa0a375aa5733ee327b47e7fa4e6e0304006e8d50de52d028',
+    'tests/sandbox_profile.py': 'c7f7912c2d82ab45429b9d5dbdb8f1cfd20a39e920feee88ff4db0feaae4cb06',
+    'tests/test_agent_profile.py': '3ea02e2a6b2fad10b3b249378b6d9567842ee9a0ea5c94351b53e5043c72fb6e',
+    'tests/test_alignment.py': '092bcf2d7d94f9ef6881cd5e0acd701649ace2ca7e8e5e89d2a5bfdf70286493',
+    'tests/test_guard.py': '3d372ed56be6d08f319d28c45697c17407175b7e81079990bda0c6c3ee402249',
     'tests/test_mux.py': 'fb3a7cf8675d247c6609a337d56682d484cde6296e14ea939bfde70537cc8446',
     'tests/test_network_feasibility.py': '4cff9c50b996fd38f2b21b75abe73de77531e554522b04641fcb5288178d1e1c',
     'tests/test_network_policy.py': '0f41877604a904904f5b4b27ba7386ca8629c260de9fbcbdfe60d2af0f0238a5',
     'tests/test_platform.py': 'e5e30cbb9edb3561e0a6cac67641ab27986ce9e6bd425e5be96976c39fb5fecf',
-    'tests/test_qualification.py': '31da50f5ff2d7a476782d00940c318ceba3d5aa8af97bd5e3276619fc11f5733',
-    'tests/test_session.py': '047b1cefb75302ca833d13190c921e5767cbe322905835d3f2958bdaaec709e9',
-    'tests/test_setup.py': '5efff3b033b86eb5c3a1eeb5eb6f57308c60a5c8b91f998e04154e3c835ecac2',
+    'tests/test_qualification.py': '7a485dd31996c4a5ded2213566c119a7c981ad9da9ed955482b31a2a0f8857d5',
+    'tests/test_session.py': 'cf1a3ea3ea86be4a218eda0326437a36673400c27868f7bfe3c8c5b8b228752d',
+    'tests/test_setup.py': 'a19e4e498e5201a11767c9e2b72071e6e1b5838bc3b44d7f199e5c9edbcea991',
     'tests/test_tls_client_hello.py': '7d8f889af0c4a8f6d40038bdbda915f3afa3adc08c47b5506a02180b595b7ccc',
     'tests/test_tls_proxy.py': '77f9dda900a8ee28ef76d018d862bd0475193f5b90840fd29005a04fe4403e83',
     'tests/test_toolchains.py': '1d9934b4ba5d23b4d071c69815a9036b40f432dee44235831bfa14ad8997e13c',
@@ -160,7 +164,7 @@ class ReferenceCopy(unittest.TestCase):
 
     def test_sibling_checkout_at_the_reference_tag_matches(self):
         if not (SIBLING / '.git').exists():
-            self.skipTest('no sibling claude-container checkout')
+            self.skipTest('no sibling sandbox-container checkout')
         commit = subprocess.run(['git', '-C', str(SIBLING), 'rev-parse', '--verify', '-q',
                                  REFERENCE_TAG + '^{commit}'], capture_output=True, text=True)
         if commit.returncode:

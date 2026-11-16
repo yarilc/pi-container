@@ -1124,6 +1124,20 @@ while IFS= read -r name; do
     ((numeric < next_index)) || next_index=$((numeric + 1))
 done <<< "$names"
 
+# Measure the session from just before the container is created, so the
+# engine's lifetime limit cannot have started earlier, with a monotonic clock:
+# WSL2 steps the wall clock to resynchronise with the host, which moves
+# EPOCHREALTIME and SECONDS by seconds at a time, and whole-second SECONDS would
+# also report a short failing session crossing a second boundary as a reached
+# limit. /proc/uptime counts centiseconds since boot.
+elapsed_centiseconds() {
+    local now=''
+    read -r now _ 2>/dev/null </proc/uptime || now=''
+    now=${now//[!0-9]/}
+    [[ -n "$now" ]] || now=$((SECONDS * 100))
+    printf '%s' "$((10#$now - ${1:-0}))"
+}
+started_at=$(elapsed_centiseconds)
 for ((attempt=0; attempt<20; attempt++)); do
     ((pending_status == 0)) || exit "$pending_status"
     name="$container_prefix-$next_index"
@@ -1189,7 +1203,6 @@ fi
 
 # Explicit redirection retains redirected stdin for the background client.
 attached=1
-started_at=$SECONDS
 if [[ -f "$script_dir/setup/diagnostics.py" ]] && command -v python3 >/dev/null; then
     # Optional for unrestricted installs without host Python. Only the exact
     # successful Podman 4.3 restart-check line changes level; errors pass.
@@ -1212,7 +1225,7 @@ status=0
 wait "$client_pid" || status=$?
 ((pending_status == 0)) || exit "$pending_status"
 client_pid=''
-if ((run_timeout > 0 && status != 0 && SECONDS - started_at >= run_timeout)); then
+if ((run_timeout > 0 && status != 0 && $(elapsed_centiseconds "$started_at") >= run_timeout * 100)); then
     printf 'pi-container: session lifetime limit reached (%s s); exit status %s\n' "$run_timeout" "$status" >&2
 fi
 exit "$status"

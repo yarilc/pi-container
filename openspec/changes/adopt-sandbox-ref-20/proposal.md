@@ -13,7 +13,7 @@
 
   It also points `tests/test_reference_copy.py` at `sandbox-container` (`SIBLING`, docstring and skip message) and moves the tag in the current-state documents.
 - Add the per-agent `tests/test_setup_wrapper.py` with the eight setup tests that launch this wrapper. These tests left the shared `tests/test_setup.py`. The file is the same as Claude's, because the tests read only the checkout's profile.
-- Fix the session lifetime notice in `pi-container.sh`, as in the reference and in Claude. Bash `SECONDS` counts whole seconds, so a short failing session that crossed a second boundary was reported as a reached lifetime limit. Add a boundary test.
+- Fix the session lifetime notice in `pi-container.sh`, as in the reference and in Claude. Bash `SECONDS` counts whole seconds, so a short failing session that crossed a second boundary was reported as a reached lifetime limit. Bash `SECONDS` and `EPOCHREALTIME` also follow the wall clock, which WSL2 steps backwards, so a reached limit could miss the notice; measure with `/proc/uptime` from just before container creation. Add a boundary test.
 - Documents:
   - README, `AGENTS.md` and `docs/setup.md` name `sandbox-container` as the reference.
   - In the `docs/network-contract.md` parity table, the reference row and the Claude and Pi rows read `sandbox-ref-20`; rows of wrappers that have not adopted yet keep their tag.

@@ -91,7 +91,10 @@ def validate(value, rules=None):
     fields(value['tested'], ('cli', 'node', 'authentication'))
     if any(not isinstance(s, str) or len(s) > 120 for s in value['tested'].values()):
         fail('invalid tested-version metadata')
-    if not isinstance(value['profiles'], dict) or not value['profiles'] or len(value['profiles']) > 32:
+    # Only a profile without authentication methods may ship a policy without profiles.
+    empty_allowed = rules is not None and not rules['methods']
+    if not isinstance(value['profiles'], dict) or len(value['profiles']) > 32 or (
+            not value['profiles'] and not empty_allowed):
         fail('invalid profiles')
     for name, profile in value['profiles'].items():
         if not re.fullmatch(r'[a-z][a-z0-9-]{0,63}', name):

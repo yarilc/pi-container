@@ -53,7 +53,8 @@ def profile_protection(profile):
     """Return the lowercase protected names and prefixes of one profile."""
     agent = profile.protected_env
     names = {name.lower() for name in (profile.config_dir_env, profile.approval_bypass_env,
-                                       *profile.credential_envs, *(e for e in agent if not e.endswith('_')))}
+                                       *profile.credential_envs, *(e for e in agent if not e.endswith('_')))
+             if name}
     prefixes = (profile.env_prefix.lower() + '_', *(e.lower() for e in agent if e.endswith('_')))
     return names, prefixes
 

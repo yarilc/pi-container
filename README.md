@@ -333,8 +333,8 @@ networking. `PI_NETWORK` is rejected with migration guidance.
 | `provider` | As offline, plus the exact HTTPS host of one protected provider profile through an external proxy | Rejected |
 | `unrestricted` | Ordinary runtime networking, the previous behavior | Exact `PI_CONTAINER_PODMAN=1` |
 
-The restricted implementation is shared with `claude-container` and copied
-unchanged from its tag `sandbox-ref-18`; see
+The restricted implementation is shared with `sandbox-container` and copied
+unchanged from its tag `sandbox-ref-20`; see
 [docs/network-contract.md](docs/network-contract.md) and
 [network/README.md](network/README.md).
 
@@ -531,9 +531,9 @@ A recipe is a JSON file that the operator keeps and reviews:
 
 The verified example recipes (Temurin 21, Maven 3.9, Go, Node.js 24,
 Python 3.13 and Rust) are kept in the reference repository, in
-[`claude-container/docs/toolchains/`](https://github.com/yarilc/claude-container/tree/main/docs/toolchains),
+[`sandbox-container/docs/toolchains/`](https://github.com/yarilc/sandbox-container/tree/main/docs/toolchains),
 with their versions, digests, checksums and usage notes in its
-[README "Toolchains" section](https://github.com/yarilc/claude-container#toolchains).
+[README "Toolchains" section](https://github.com/yarilc/sandbox-container#toolchains).
 They do not depend on the agent.
 
 ### Telling the agent
@@ -869,10 +869,10 @@ ask for `--container-build`.
 ./test-wrapper.sh                      # synthetic wrapper tests, no engine or credentials
 bash tests/run-runtime.sh              # unrestricted real rootless checks
 bash tests/run-runtime.sh --wrapper    # wrapper tests in the runner (executable /tmp)
-bash tests/run-runtime.sh --shared     # shared sandbox suites from claude-container
+bash tests/run-runtime.sh --shared     # shared sandbox suites from sandbox-container
 bash tests/run-runtime.sh --network    # restricted modes with real rootless Podman
 bash tests/run-runtime.sh --guard      # guard fixtures (needs the toolchain image)
-bash tests/run-runtime.sh --setup      # shared setup tests from claude-container
+bash tests/run-runtime.sh --setup      # shared setup tests from sandbox-container
 bash tests/run-runtime.sh --setup-runtime  # real setup acceptance, no credentials
 ./test.sh                              # builds a disposable image, then runs the real checks
 ```

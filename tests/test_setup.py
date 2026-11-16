@@ -18,7 +18,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sandbox_profile import GUARD, PROFILE, ROOT, env as name, test_setting
+from sandbox_profile import GUARD, PROFILE, ROOT, SHELL_FIXTURE, env as name, fixture_root, test_setting
 sys.path.insert(0, str(ROOT / 'setup'))
 import common
 import diagnostics
@@ -92,7 +92,7 @@ def pty_run(command, env, cwd, answers, timeout=30):
         os.close(master)
 
 
-FAKE_PODMAN = r'''#!/usr/bin/env python3
+FAKE_PODMAN_TEMPLATE = r'''#!/usr/bin/env python3
 import json, os, sys
 args=sys.argv[1:]
 with open(os.environ['SETUP_TEST_LOG'], 'a') as output:
@@ -119,7 +119,8 @@ elif args[0]=='run' and '--cidfile' in args:
     sys.exit(17)
 elif args[0]=='rm': sys.exit(0)
 else: sys.exit(125)
-'''.replace('@MAINTENANCE@', MAINTENANCE)
+'''
+FAKE_PODMAN = FAKE_PODMAN_TEMPLATE.replace('@MAINTENANCE@', MAINTENANCE)
 
 
 class SetupTests(unittest.TestCase):
@@ -176,56 +177,6 @@ class SetupTests(unittest.TestCase):
             result += [('Private native egress runtime directory', str(self.base / 'egress'))]
         return result
 
-    def test_setup_entry_rejects_pipes_and_mixed_arguments_but_help_is_independent(self):
-        for args in (['--container-setup'], ['--container-setup', '--version'],
-                     ['--container-shell', '--container-setup']):
-            result = subprocess.run(['bash', str(ROOT / WRAPPER), *args],
-                                    env=self.env, capture_output=True, text=True, cwd=self.workspace)
-            self.assertNotEqual(result.returncode, 0)
-        for args in (['--container-setup', '--container-help'], ['--container-help', '--container-setup']):
-            result = subprocess.run(['bash', str(ROOT / WRAPPER), *args], env=self.env | {
-                name('NETWORK'): 'invalid'}, capture_output=True, text=True)
-            self.assertEqual(result.returncode, 0)
-            self.assertIn('--container-setup', result.stdout)
-        self.assertFalse(self.calls())
-        self.assertEqual(list(self.home.iterdir()), [])
-
-    def test_missing_mode_keeps_help_setup_and_fixed_qualification_dispatch(self):
-        cases = (
-            (['--container-setup'], 'requires an interactive terminal'),
-            (['--container-setup', '--version'], 'must be used alone'),
-            (['--container-qualify'], 'qualification requires an explicit same-host Unix endpoint'),
-            (['--container-qualify', 'application'], 'must be used alone'),
-            (['--container-qualify-probe', 'application'], 'must be used alone'),
-            (['--container-qualify-probe'], 'setup required:'),
-        )
-        for mode in (None, ''):
-            env = self.env.copy()
-            if mode is not None:
-                env[name('NETWORK')] = mode
-            for args, message in cases:
-                with self.subTest(mode=mode, args=args):
-                    result = subprocess.run(['/bin/bash', str(ROOT / WRAPPER), *args],
-                                            cwd=self.workspace, env=env, text=True,
-                                            capture_output=True, timeout=10)
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertIn(message, result.stderr)
-                    self.assertEqual(result.stdout, '')
-                    if args != ['--container-qualify-probe']:
-                        self.assertNotIn('setup required:', result.stderr)
-            result = subprocess.run(['/bin/bash', str(ROOT / WRAPPER),
-                                     '--container-setup', '--container-qualify', '--container-help'],
-                                    cwd=self.workspace, env=env | {YOLO_ENV: 'invalid'},
-                                    text=True, capture_output=True, timeout=5)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn('Container options:', result.stdout)
-            code, output = pty_run(['/bin/bash', str(ROOT / WRAPPER)],
-                                   env, self.workspace, [])
-            self.assertEqual(code, 1, output)
-            self.assertIn('setup required:', output)
-        self.assertFalse(self.calls())
-        self.assertEqual(list(self.home.iterdir()), [])
-
     def test_diagnostics_reclassifies_only_complete_known_lines_at_any_chunk_boundary(self):
         for original, expected in ((b'ERRO[0074] Should restart: false\n', b'INFO[0074] Should restart: false\n'),
                                    (b'time="2026-11-07T12:11:46Z" level=error msg="Should restart: false"\n',
@@ -255,38 +206,6 @@ class SetupTests(unittest.TestCase):
         for chunk in (b'Paste code here > ', b'\xf0\x9f', b'\x98\x80', b'\r', b'prompt\n'):
             self.assertEqual(stream.feed(chunk), chunk)
         self.assertEqual(stream.finish(), b'')
-
-    def test_pty_questionnaire_before_invalid_provider_runtime_and_missing_image(self):
-        env = self.env | {name('NETWORK'): 'provider', 'SETUP_TEST_MISSING': '1',
-                          'SETUP_TEST_ENGINE': 'true linux false'}
-        answers = self.answers() + [('Refresh prepared images', 'no'), ('Apply this installation', 'no')]
-        code, output = pty_run(['bash', str(ROOT / WRAPPER), '--container-setup'], env,
-                               self.workspace, answers)
-        self.assertEqual(code, 1, output)
-        self.assertIn('prepare/build missing image', output)
-        self.assertIn('cancelled before', output)
-        self.assertFalse(Path(self.value['installation']).exists())
-        self.assertFalse(any(c['args'][0] in ('build', 'pull', 'tag') for c in self.calls()))
-
-    def test_setup_plan_names_unenforced_budgets_without_a_question(self):
-        for controllers, notices in (('[memory pids]', ['agent CPU budget not enforced: cgroup controller cpu']),
-                                     ('[cpu pids]', ['agent memory budget not enforced: cgroup controller memory']),
-                                     ('[cpu memory pids]', [])):
-            with self.subTest(controllers=controllers):
-                env = self.env | {name('NETWORK'): 'provider', 'SETUP_TEST_MISSING': '1',
-                                  'SETUP_TEST_ENGINE': 'true linux false', 'SETUP_TEST_CONTROLLERS': controllers}
-                answers = self.answers() + [('Refresh prepared images', 'no'), ('Apply this installation', 'no')]
-                code, output = pty_run(['bash', str(ROOT / WRAPPER), '--container-setup'], env,
-                                       self.workspace, answers)
-                self.assertEqual(code, 1, output)
-                self.assertIn('enforced agent budgets: ' + ', '.join(controllers[1:-1].split()), output)
-                for notice in notices:
-                    self.assertIn(notice, output)
-                if not notices:
-                    self.assertNotIn('budget not enforced', output)
-                # This questionnaire selects unrestricted mode, which has no proxy.
-                self.assertNotIn('proxy memory budget', output)
-                self.assertIn('cancelled before', output)
 
     def test_questionnaire_defaults_retries_and_explicit_delegation_conflict(self):
         with patch.dict(os.environ, self.env, clear=True), patch.object(setup, 'SOURCE', ROOT):
@@ -361,13 +280,6 @@ class SetupTests(unittest.TestCase):
                 '', '', '', '', 'no', str(self.bin / COMMAND), ''])
         self.assertIn('Agent memory limit (integer with k, m or g unit) [8g]', output)
         self.assertIn('Session lifetime in seconds, 0 disables [3600]', output)
-
-    def test_questionnaire_cancellation_has_no_mutation(self):
-        code, output = pty_run(['bash', str(ROOT / WRAPPER), '--container-setup'],
-                               self.env, self.workspace, [('Protected native installation directory', None)])
-        self.assertEqual(code, 130, output)
-        self.assertFalse(self.calls())
-        self.assertEqual(list(self.home.iterdir()), [])
 
     def test_strict_engine_records_and_failed_query_stop_before_images(self):
         for response in ('false linux false', 'true windows false', '', 'true linux false\n',
@@ -1008,44 +920,6 @@ exec python3 -c 'import json,os,sys; print(json.dumps({"argv":sys.argv[1:],"stdi
         self.assertEqual(message['network'], '')
         self.assertEqual(message['maintenance'], '1')
 
-    def test_managed_real_wrapper_admits_saved_modes_and_preserves_network_overrides(self):
-        root, release = self.release()
-        command = Path(self.value['command'])
-        setup.activate(root, release, command)
-        for mode in ('offline', 'provider', 'unrestricted'):
-            saved = self.value | {'network': mode, 'auth': 'none' if mode == 'offline' else PROVIDER_METHOD,
-                                 'endpoint': 'default' if mode != 'unrestricted' else 'local',
-                                 'state_dir': str(self.base / 'state'),
-                                 'runtime_dir': str(self.base / 'egress'),
-                                 'proxy_image': 'sha256:' + 'b' * 64}
-            (release / 'setup.json').write_text(json.dumps(saved))
-            for override in (None, '', 'unrestricted', 'invalid'):
-                with self.subTest(saved_mode=mode, override=override):
-                    self.log.unlink(missing_ok=True)
-                    env = self.env | {'SETUP_TEST_FAIL': 'query'}
-                    if override is not None:
-                        env[name('NETWORK')] = override
-                    result = subprocess.run([str(command), '--version'], cwd=self.workspace,
-                                            env=env, capture_output=True, text=True, timeout=10)
-                    self.assertEqual(result.returncode, 1, result.stderr)
-                    self.assertEqual(result.stdout, '')
-                    if override == '':
-                        self.assertIn('setup required:', result.stderr)
-                        self.assertFalse(self.calls())
-                    elif override == 'invalid':
-                        self.assertIn('must be offline, provider, or unrestricted', result.stderr)
-                        self.assertFalse(self.calls())
-                    else:
-                        # Deliberately fail the first engine query: reaching it
-                        # proves admission without faking restricted readiness.
-                        self.assertIn('cannot query Podman', result.stderr)
-                        self.assertEqual(len(self.calls()), 1)
-                        self.assertEqual(self.calls()[0]['args'][0], 'info')
-                        endpoint = self.calls()[0]['endpoint']
-                        self.assertEqual(bool(endpoint), mode != 'unrestricted')
-                    self.assertFalse((self.base / 'state').exists())
-                    self.assertFalse((self.home / CONFIG_HOME).exists())
-
     def test_managed_launcher_rejects_future_worktree_and_state_conflicts(self):
         root, release = self.release()
         command = Path(self.value['command'])
@@ -1199,36 +1073,6 @@ exec python3 -c 'import json,os,sys; print(json.dumps({"argv":sys.argv[1:],"stdi
                 else:
                     self.assertFalse(command.exists())
                 self.assertFalse(list(command.parent.glob('.' + COMMAND + '.*')))
-
-    def test_managed_help_bypasses_corrupt_json_python_and_podman(self):
-        root, release = self.release()
-        command = Path(self.value['command'])
-        setup.activate(root, release, command)
-        (release / 'setup.json').write_text('invalid preferences')
-        help_bin = self.base / 'help-bin'
-        help_bin.mkdir()
-        (help_bin / 'cat').symlink_to(shutil.which('cat'))
-        result = subprocess.run(['/bin/bash', str(command), '--container-setup', '--container-help'],
-                                env={'PATH': str(help_bin), 'HOME': str(self.home)}, capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('--container-setup', result.stdout)
-        self.assertFalse(self.calls())
-
-    def test_managed_rerun_reviews_saved_defaults_without_inheriting_launch_values(self):
-        root, release = self.release()
-        command = Path(self.value['command'])
-        setup.activate(root, release, command)
-        for mode in ('unrestricted', 'offline'):
-            with self.subTest(mode=mode):
-                saved = self.value | {'network': mode, 'auth': 'none' if mode == 'offline' else PROVIDER_METHOD,
-                                      'endpoint': 'default' if mode == 'offline' else 'local'}
-                (release / 'setup.json').write_text(json.dumps(saved))
-                code, output = pty_run([str(command), '--container-setup'],
-                                       self.env | {name('NETWORK'): 'invalid'}, self.workspace,
-                                       [('Protected native installation directory', ''), ('Network mode', None)])
-                self.assertEqual(code, 130, output)
-                self.assertIn('Network mode [' + mode + ']', output)
-        self.assertFalse(self.calls())
 
     def test_saved_worktree_scope_and_tty_are_forwarded_without_a_wrapper_process(self):
         self.value['worktree'] = True
@@ -1553,6 +1397,98 @@ exec python3 -c 'import os,signal; print(os.getpid(),flush=True); signal.pause()
         compile_call = next(c for c in calls if c['args'][0] == 'run')
         self.assertIn('--network=none', compile_call['args'])
         self.assertEqual([c['args'][-1] for c in calls if c['args'][0] == 'rm'], ['d' * 64])
+
+
+SHELL_HARNESS = r'''
+import builtins, importlib.util, json, os, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+sys.path.insert(0, str(root / 'setup'))
+import common
+spec = importlib.util.spec_from_file_location('sandbox_setup', root / 'setup/setup.py')
+setup = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(setup)
+request = json.loads(sys.argv[2])
+result = {}
+value = common.defaults(Path(request['installation']))
+result['defaults'] = value
+result['modes'] = list(setup.NETWORK_MODES)
+errors = {}
+for name, change in request['invalid'].items():
+    try:
+        common.validate(value | change)
+    except common.SetupError as error:
+        errors[name] = str(error)
+result['errors'] = errors
+env = common.runtime_environment(value | {'network': 'unrestricted'}, root, overrides=False)
+result['env'] = sorted(k for k in env if k.startswith(common.PROFILE.env_prefix + '_') or k.startswith('FIXTURE'))
+answers = iter(request['answers'])
+prompts = []
+def ask(prompt):
+    prompts.append(prompt)
+    return next(answers)
+builtins.input = ask
+setup.SOURCE = root
+printed = []
+builtins.print = lambda *args, **kwargs: printed.append(' '.join(map(str, args)))
+chosen, old = setup.questionnaire()
+result['prompts'] = prompts
+result['chosen'] = chosen
+result['printed'] = printed
+result['auth_status'] = setup.authenticate(chosen | {'network': 'unrestricted'}, root)
+sys.stdout = sys.__stdout__
+sys.__stdout__.write(json.dumps(result))
+'''
+
+
+class ProfileWithoutMethodsSetupTests(unittest.TestCase):
+    """Setup for a profile without authentication methods or permission bypass."""
+    def setUp(self):
+        self.root = fixture_root(SHELL_FIXTURE)
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.home = self.root / 'home'
+        self.home.mkdir(mode=0o700)
+
+    def run_harness(self, answers):
+        request = {'installation': str(self.root / 'installed'), 'answers': answers,
+                   'invalid': {'provider': {'network': 'provider'}, 'yolo': {'yolo': True},
+                               'method': {'network': 'unrestricted', 'auth': 'api'}}}
+        result = subprocess.run([sys.executable, '-I', '-c', SHELL_HARNESS, str(self.root), json.dumps(request)],
+                                env={'PATH': os.environ['PATH'], 'HOME': str(self.home)},
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_offline_default_without_authentication_or_bypass_questions(self):
+        # installation, network (refused provider, then default), state, config dir, delegation, worktree,
+        # four budgets, CA trust, command, endpoint
+        # A provider answer is refused and asked again.
+        answers = [str(self.root / 'installed'), 'provider', '', 'shared', '', 'no', 'no', '', '', '', '', 'no',
+                   str(self.root / 'bin/command'), 'default']
+        result = self.run_harness(answers)
+        self.assertEqual(result['modes'], ['offline', 'unrestricted'])
+        self.assertEqual((result['defaults']['network'], result['defaults']['auth']), ('offline', 'none'))
+        self.assertEqual(result['chosen']['network'], 'offline')
+        self.assertEqual(result['chosen']['auth'], 'none')
+        self.assertIs(result['chosen']['yolo'], False)
+        prompts = '\n'.join(result['prompts'])
+        self.assertEqual(prompts.count('Network mode [offline]'), 2)
+        self.assertIn('Choose one of: offline, unrestricted', result['printed'])
+        for absent in ('Authentication method', 'permission bypass', 'Acknowledge', 'provider/'):
+            self.assertNotIn(absent, prompts)
+        self.assertTrue(any('provider mode is unavailable' in line for line in result['printed']))
+        self.assertEqual(result['auth_status'], 'not applicable')
+
+    def test_preferences_and_launch_environment(self):
+        answers = [str(self.root / 'installed'), 'unrestricted', 'shared', '', 'no', 'no', '', '', '', '', 'no',
+                   str(self.root / 'bin/command'), 'local']
+        result = self.run_harness(answers)
+        self.assertEqual(result['chosen']['network'], 'unrestricted')
+        self.assertEqual(result['chosen']['auth'], 'none')
+        self.assertEqual(set(result['errors']), {'provider', 'yolo', 'method'})
+        for suffix in ('NETWORK_PROFILE', 'NETWORK_POLICY', 'NETWORK_RUNTIME_DIR', 'EGRESS_IMAGE', 'YOLO'):
+            self.assertNotIn('FIXTURE_SHELL_' + suffix, result['env'])
+        self.assertIn('FIXTURE_SHELL_NETWORK', result['env'])
 
 
 if __name__ == '__main__':

@@ -24,6 +24,8 @@ SUFFIXES = (
     'TOOLCHAINS', 'TOOLCHAINS_DIR',
 )
 LABELS = ('session', 'egress', 'qualification')
+# The one diagnostic for provider mode with a profile that declares no method.
+NO_METHODS = 'provider mode is unavailable: the agent profile declares no authentication method'
 # Session variables that a toolchain must never replace, the same for every
 # wrapper: identity, shell startup, the agent's own runtimes, proxies, CA trust
 # and the (absent) session bus, which --unsetenv cannot remove once --env sets
@@ -95,7 +97,8 @@ class Profile:
         self.home = native['home']
         self.command = native['command']
         self.config_dir_env = native['config_dir_env']
-        self.approval_bypass_env = native['approval_bypass_env']
+        # Absent when the application has no approval system (for example a plain shell).
+        self.approval_bypass_env = native.get('approval_bypass_env')
         self.config_home = native['config_home']
         self.shared_dirs = tuple(native['shared_dirs'])
         # Wrappers that refuse non-private shared directories declare it here.
@@ -166,8 +169,8 @@ def validate(value):
             or path in (value['wrapper'], 'Containerfile', '.containerignore') for path in files):
         fail('install.files must be distinct agent files outside network/, setup/ and agent/')
     native = value['native']
-    fields(native, ('home', 'command', 'config_dir_env', 'approval_bypass_env', 'config_home', 'shared_dirs'),
-           ('private_shared_dirs', 'protected_env'), where='native')
+    fields(native, ('home', 'command', 'config_dir_env', 'config_home', 'shared_dirs'),
+           ('approval_bypass_env', 'private_shared_dirs', 'protected_env'), where='native')
     if type(native.get('private_shared_dirs', False)) is not bool:
         fail('native.private_shared_dirs must be a boolean')
     for entry in strings(native.get('protected_env', []), AGENT_ENV, 'native.protected_env', minimum=0, maximum=32):
@@ -178,7 +181,8 @@ def validate(value):
     string(native['home'], re.compile(r'/[a-z0-9][a-z0-9._-]*'), 'native.home')
     string(native['command'], NAME, 'native.command')
     for key in ('config_dir_env', 'approval_bypass_env'):
-        string(native[key], ENV, 'native.' + key)
+        if key in native:
+            string(native[key], ENV, 'native.' + key)
     for path in (native['config_home'], *strings(native['shared_dirs'], RELATIVE, 'native.shared_dirs', minimum=0)):
         string(path, RELATIVE, 'native paths')
         if '..' in path.split('/'):
@@ -186,7 +190,8 @@ def validate(value):
     if native['config_home'] in native['shared_dirs']:
         fail('native.config_home is private and cannot also be shared')
     auth = value['auth']
-    if type(auth) is not dict or not 1 <= len(auth) <= 8:
+    # No method means no provider mode: offline and unrestricted only.
+    if type(auth) is not dict or len(auth) > 8:
         fail('auth')
     policies = set()
     for method, item in auth.items():
@@ -213,9 +218,10 @@ def validate(value):
         if 'credential_env' in item:
             string(item['credential_env'], ENV, 'auth.' + method + '.credential_env')
     derived = {value['env_prefix'] + '_' + suffix for suffix in SUFFIXES}
-    native_env = {native['config_dir_env'], native['approval_bypass_env'],
-                  *(item['credential_env'] for item in auth.values() if 'credential_env' in item)}
-    if derived & native_env or len(native_env) != 2 + sum('credential_env' in item for item in auth.values()):
+    named = [native['config_dir_env'], *([native['approval_bypass_env']] if 'approval_bypass_env' in native else []),
+             *(item['credential_env'] for item in auth.values() if 'credential_env' in item)]
+    native_env = set(named)
+    if derived & native_env or len(native_env) != len(named):
         fail('environment names must be distinct')
     lowered = name + ' ' + value['env_prefix'].lower() + ' ' + ' '.join(images)
     if not any(identifier in lowered for identifier in identifiers):
