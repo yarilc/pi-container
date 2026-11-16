@@ -13,7 +13,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sandbox_profile import AGENT_COMMAND, AGENT_IMAGE, PROFILE, ROOT, env as profile_env
+from sandbox_profile import AGENT_COMMAND, AGENT_HOME, AGENT_IMAGE, PROFILE, ROOT, env as profile_env
 from revisions import GUARD_REQUIRED_ABI, GUARD_REVISION, TLS_ENFORCEMENT
 ENABLED = os.environ.get('SANDBOX_GUARD_TESTS') == '1'
 
@@ -212,7 +212,7 @@ class GuardTests(unittest.TestCase):
                    '--tmpfs', '/var/tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777',
                    # Wrappers always mount a writable native home; agents may write there at startup.
                    # notmpcopyup keeps it empty instead of copying image content such as caches.
-                   '--tmpfs', f'{PROFILE.home}:rw,nosuid,nodev,exec,notmpcopyup,size=64m,mode=1777',
+                   '--tmpfs', f'{AGENT_HOME}:rw,nosuid,nodev,exec,notmpcopyup,size=64m,mode=1777',
                    '--volume', f'{self.binary}:/usr/local/bin/guard:ro',
                    '--volume', f'{self.fixture}:/workspace:rw',
                    '--volume', f'{ROOT / "network/resolv.conf"}:/etc/resolv.conf:ro',
