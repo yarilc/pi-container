@@ -458,14 +458,14 @@ All Pi-specific values used by the shared network components SHALL come from one
 - **THEN** ordinary restricted launches are refused with requalification guidance
 
 ### Requirement: Agent-neutral shared sandbox components
-The shared `network/` and `setup/` components and shared tests, including the compiled guard, SHALL contain no agent identifiers and SHALL stay byte-identical to the reference copies in `claude-container`, checked by the unchanged `tests/test_alignment.py` and the per-agent SHA-256 manifest. In-container paths, the guard name and the multiplex protocol marker SHALL be agent-neutral. Host-visible images, labels, variables and installation paths SHALL come from the profile.
+The shared `network/` and `setup/` components and shared tests, including the compiled guard, SHALL contain no agent identifiers and SHALL stay byte-identical to the reference copies in `sandbox-container`, checked by the unchanged `tests/test_alignment.py` and the per-agent SHA-256 manifest. In-container paths, the guard name and the multiplex protocol marker SHALL be agent-neutral. Host-visible images, labels, variables and installation paths SHALL come from the profile.
 
 #### Scenario: Shared component contains an agent identifier
 - **WHEN** a shared network or setup file contains an identifier declared by the profile outside the documented allow-list
 - **THEN** the credential-free alignment check fails
 
 #### Scenario: Shared component differs from the reference
-- **WHEN** a copied shared file differs from its SHA-256 recorded for the reference tag, or `diff -r` against a sibling `claude-container` checkout at that tag reports a difference
+- **WHEN** a copied shared file differs from its SHA-256 recorded for the reference tag, or `diff -r` against a sibling `sandbox-container` checkout at that tag reports a difference
 - **THEN** the credential-free alignment check fails
 
 #### Scenario: Two wrappers on the same host
@@ -527,7 +527,7 @@ Documentation SHALL map N01–N14 and C01–C14 to implementation and acceptance
 
 #### Scenario: Parity table
 - **WHEN** a reader compares the five wrappers
-- **THEN** `docs/network-contract.md` here, in `claude-container`, `codex-container` and `opencode-container` show the same Pi row, with authenticated compatibility recorded as pending until the operator checks run
+- **THEN** `docs/network-contract.md` here, in `sandbox-container`, `codex-container` and `opencode-container` show the same Pi row, with authenticated compatibility recorded as pending until the operator checks run
 
 ### Requirement: Private runtime hierarchies admit only verified read-only masks
 Before agent code runs, the restricted bootstrap SHALL reject every nested mount below `/tmp`, `/run` and `/var/tmp`, except the engine metadata file `/run/.containerenv`, the provider runtime `/run/sandbox-egress` and `/run/secrets` when it is a `tmpfs` whose per-mount options are read-only. Provider proxies and qualification gate containers SHALL also receive the read-only `/run/secrets` mask.
@@ -570,3 +570,10 @@ Every container that local enforcement qualification starts from the runtime ima
 #### Scenario: Probe behavior unchanged
 - **WHEN** the control probe, peer and security probe run in `/`
 - **THEN** they reach their fixtures by absolute paths and produce the same evidence as before
+
+### Requirement: Guard runtime test uses the wrapper's native home
+The shared guard runtime test SHALL run the real Pi image with the wrapper's own native home mounted writable, as the launcher does, so that an agent command that writes to its home at startup runs under the production guard.
+
+#### Scenario: Agent command writes to its home
+- **WHEN** `bash tests/run-runtime.sh --guard` runs the production guard with the Pi image and its command creates directories under its native home
+- **THEN** the guarded production-container test passes without a read-only file system error

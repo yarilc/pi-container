@@ -842,7 +842,7 @@ only for the runs and untagged by name afterwards; `PI_ENABLE_BUN` unset; WSL2
 | `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 18 tests |
 | `./test.sh` | Passed |
 | `git diff --check`, `bash -n pi-container.sh` | Passed |
-| Operator `--container-setup` on the three hosts | Pending (operator, after the `sandbox-ref-21` adoption) |
+| Operator `--container-setup` on the three hosts (`sandbox-ref-21`) | Passed (operator, 2026-11-16) |
 
 ## Adoption of `sandbox-ref-21`: 2026-11-16
 
@@ -859,6 +859,6 @@ Runtime image: `localhost/pi-container:setup-3705f13b91c1402ab8f7f184e1f6e886`; 
 | `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 418 tests, 72 skipped |
 | `bash tests/run-runtime.sh --guard` | Passed: 20 tests, 1 skipped |
 | `git diff --check` | Passed |
-| Operator `--container-setup` on the three hosts | Pending (operator, with the `sandbox-ref-20` adoption) |
+| Operator `--container-setup` on the three hosts (`sandbox-ref-21`) | Passed (operator, 2026-11-16) |
 
 Only shared test files changed: installations need no new setup for this tag.
