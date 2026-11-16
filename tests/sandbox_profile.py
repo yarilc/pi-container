@@ -85,6 +85,8 @@ AGENT_IMAGE = (os.environ.get(REAL_PROFILE.env('IMAGE')) or test_setting('TEST_I
                or REAL_PROFILE.image('agent', 'latest'))
 # The command of that real image, for runtime checks that execute it.
 AGENT_COMMAND = REAL_PROFILE.command
+# The native home of that real image, which wrappers always mount writable.
+AGENT_HOME = REAL_PROFILE.home
 PROXY_IMAGE = PROFILE.image('proxy', 'local')
 NO_METHODS = 'the checkout profile declares no authentication method'
 

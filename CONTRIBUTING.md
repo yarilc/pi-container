@@ -42,7 +42,7 @@ bash tests/run-runtime.sh --guard      # guard fixtures (toolchain image require
 ```
 
 `network/`, `setup/` and the shared tests are copied unchanged
-from `sandbox-container` (tag `sandbox-ref-20`); never edit them here. Fix a
+from `sandbox-container` (tag `sandbox-ref-21`); never edit them here. Fix a
 defect in `sandbox-container` first, then copy the files again and update the
 manifest in `tests/test_reference_copy.py`.
 
