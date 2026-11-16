@@ -392,6 +392,9 @@ def parser():
 
 
 def validate(args):
+    if not PROFILE.auth and (getattr(args, 'mode', None) == 'provider' or args.operation == 'start'
+                             or getattr(args, 'policy', None)):
+        die(agent_profile.NO_METHODS)
     if getattr(args, 'guard_digest', None) is not None and not IDENTITY.fullmatch(args.guard_digest):
         die('invalid guard identity')
     if args.operation in ('prepare', 'start') and (args.policy or args.operation == 'start'):

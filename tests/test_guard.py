@@ -13,7 +13,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sandbox_profile import AGENT_IMAGE, PROFILE, ROOT, env as profile_env
+from sandbox_profile import AGENT_COMMAND, AGENT_IMAGE, PROFILE, ROOT, env as profile_env
 from revisions import GUARD_REQUIRED_ABI, GUARD_REVISION, TLS_ENFORCEMENT
 ENABLED = os.environ.get('SANDBOX_GUARD_TESTS') == '1'
 
@@ -231,7 +231,7 @@ class GuardTests(unittest.TestCase):
             os.close(directory)
         listener.listen(4)
         (self.fixture / 'alias.sock').symlink_to('external.sock')
-        fixture = 'AGENT = ' + repr(PROFILE.command) + '\n' + (ROOT / 'tests/guard_runtime_fixture.py').read_text()
+        fixture = 'AGENT = ' + repr(AGENT_COMMAND) + '\n' + (ROOT / 'tests/guard_runtime_fixture.py').read_text()
         result = self.production_container(fixture)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(json.loads(result.stdout)['native_guard'], 'passed')
@@ -388,6 +388,11 @@ class GuardTests(unittest.TestCase):
         harness.setUp()
         self.addCleanup(harness.doCleanups)
         context, environment = harness.provider_fixture()
+        # The harness belongs to the wrapper and uses its variable names; find
+        # the proxy image without naming them.
+        images = [value for key, value in environment.items() if key.endswith('_EGRESS_IMAGE')]
+        self.assertEqual(len(images), 1, 'expected one *_EGRESS_IMAGE entry in the harness environment: '
+                         + ', '.join(sorted(environment)))
         transport = self.fixture / 'transport'
         transport.mkdir(mode=0o700)
         config = self.fixture / 'config'
@@ -413,7 +418,7 @@ class GuardTests(unittest.TestCase):
                               '--volume', f'{logs}:/logs:rw',
                               '--env', 'EGRESS_PROFILE=controlled-test',
                               '--env', 'EGRESS_SESSION=guarded-synthetic',
-                              environment[profile_env('EGRESS_IMAGE')])
+                              images[0])
         self.addCleanup(harness.podman, 'rm', '--force', '--time', '0', '--ignore', name)
         harness.podman('start', name)
         deadline = time.monotonic() + 10

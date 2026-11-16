@@ -13,7 +13,8 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sandbox_profile import PROFILE, ROOT
+# Alignment checks the checkout itself: its shared files, its wrapper and its image.
+from sandbox_profile import PROFILE as FIXTURE_PROFILE, REAL_PROFILE as PROFILE, REAL_ROOT as ROOT
 import agent_profile
 
 SHARED_DIRECTORIES = ('network', 'setup')
@@ -26,7 +27,10 @@ SHARED_TESTS = (
     'tests/guard_syscall_mock.c', 'tests/idle_mux_fixture.py', 'tests/mux_failure_fixture.py',
     'tests/mux_fault_boundary.py', 'tests/network_fixture.py', 'tests/proxy_budget_fixture.py',
     'tests/tls_binding_fixture.py', 'tests/test_session.py', 'tests/test_toolchains.py',
+    'tests/fixtures/agent/profile.json', 'tests/fixtures/agent/policies/default.json',
+    'tests/fixtures/shell-agent/profile.json', 'tests/fixtures/shell-agent/policies/default.json',
 )
+FIXTURE_FILES = 'tests/fixtures/'
 SKIPPED_PARTS = ('__pycache__', 'bin')
 # Exact (path, line) exceptions. Keep empty unless a reviewed reason exists.
 ALLOWED = frozenset()
@@ -64,7 +68,52 @@ def violations(root, identifiers):
     return found
 
 
+# Shared tests that may read the checkout's own profile: the profile view
+# itself, the checkout checks, and the qualification gate run through the
+# checkout's wrapper. Every other shared test uses the fixture profile.
+REAL_READERS = ('tests/sandbox_profile.py', 'tests/test_alignment.py', 'tests/test_agent_profile.py',
+                'tests/test_qualification.py')
+REAL_NAMES = re.compile(r'\bREAL_(?:ROOT|PROFILE|WRAPPER|POLICY_FILE)\b|\breal_env\b')
+NEUTRAL_NAME = re.compile(r'\bSANDBOX_[A-Z0-9_]+')
+
+
+def real_profile_readers(root):
+    return [name for name in SHARED_TESTS if name.endswith('.py') and name not in REAL_READERS
+            and REAL_NAMES.search((root / name).read_text())]
+
+
+def neutral_collisions(root, prefix):
+    """Neutral SANDBOX_ names in shared files that fall inside the wrapper's own prefix."""
+    names = {name for path in shared_files(root) for name in NEUTRAL_NAME.findall(path.read_text(errors='replace'))}
+    return sorted(name for name in names if name.startswith(prefix + '_'))
+
+
 class SharedComponentAlignment(unittest.TestCase):
+    def test_neutral_names_stay_outside_the_wrapper_prefix(self):
+        self.assertEqual(neutral_collisions(ROOT, PROFILE.env_prefix), [])
+
+    def test_neutral_collision_is_detected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            copy = Path(directory)
+            for name in (*SHARED_DIRECTORIES, 'tests'):
+                shutil.copytree(ROOT / name, copy / name, ignore=shutil.ignore_patterns('__pycache__'))
+            target = copy / 'network/control.py'
+            prefix = 'SANDBOX' + '_COLLIDING'  # kept apart so this file does not collide itself
+            self.assertEqual(neutral_collisions(copy, prefix), [])
+            target.write_text(target.read_text() + '\n# ' + prefix + '_CASE\n')
+            self.assertEqual(neutral_collisions(copy, prefix), [prefix + '_CASE'])
+
+    def test_shared_tests_do_not_read_the_checkout_profile(self):
+        self.assertEqual(real_profile_readers(ROOT), [])
+
+    def test_checkout_profile_reader_is_detected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            copy = Path(directory)
+            shutil.copytree(ROOT / 'tests', copy / 'tests', ignore=shutil.ignore_patterns('__pycache__'))
+            target = copy / 'tests/test_session.py'
+            target.write_text(target.read_text() + '\nfrom sandbox_profile import REAL_PROFILE\n')
+            self.assertEqual(real_profile_readers(copy), ['tests/test_session.py'])
+
     def test_shared_components_contain_no_agent_identifiers(self):
         self.assertEqual(violations(ROOT, PROFILE.identifiers), [])
 
@@ -79,6 +128,11 @@ class SharedComponentAlignment(unittest.TestCase):
             self.assertEqual(len(found), 1)
             self.assertTrue(found[0].startswith('network/control.py:'))
 
+    def test_fixture_identifiers_stay_in_the_fixtures(self):
+        found = [line for line in violations(ROOT, FIXTURE_PROFILE.identifiers)
+                 if not line.startswith(FIXTURE_FILES)]
+        self.assertEqual(found, [])
+
     def test_shared_test_inventory_exists(self):
         for name in SHARED_TESTS:
             self.assertTrue((ROOT / name).is_file(), name)
@@ -91,6 +145,9 @@ USAGE = re.compile(r"^usage\(\) \{\n\s*cat <<'(?P<end>[A-Z]+)'\n.*?^(?P=end)\n\}
 SHARED_READ = ('TOOLCHAINS_DIR',)
 # Derived variables set by setup for the wrapper, never by the operator.
 INTERNAL = ('QUALIFICATION_INPUT',)
+# Derived variables that only provider mode reads; a profile without
+# authentication methods has no provider mode, so its wrapper need not use them.
+PROVIDER_ONLY = ('NETWORK_PROFILE', 'NETWORK_POLICY', 'NETWORK_RUNTIME_DIR', 'EGRESS_IMAGE')
 
 
 def usage_text(wrapper):
@@ -108,9 +165,12 @@ def names_in(text, names):
 
 def missing_profile_names(wrapper):
     """Profile variables the launcher's code or its help text fails to name."""
-    coded = [PROFILE.env(suffix) for suffix in agent_profile.SUFFIXES if suffix not in SHARED_READ]
-    coded += [PROFILE.config_dir_env, PROFILE.approval_bypass_env, *PROFILE.credential_envs]
-    documented = [PROFILE.env(suffix) for suffix in agent_profile.SUFFIXES if suffix not in INTERNAL]
+    unused = SHARED_READ + (() if PROFILE.auth else PROVIDER_ONLY)
+    coded = [PROFILE.env(suffix) for suffix in agent_profile.SUFFIXES if suffix not in unused]
+    coded += [PROFILE.config_dir_env, *([PROFILE.approval_bypass_env] if PROFILE.approval_bypass_env else []),
+              *PROFILE.credential_envs]
+    documented = [PROFILE.env(suffix) for suffix in agent_profile.SUFFIXES
+                  if suffix not in INTERNAL + (() if PROFILE.auth else PROVIDER_ONLY)]
     code, usage = without_usage(wrapper), usage_text(wrapper)
     missing = [name for name in coded if name not in names_in(code, coded)]
     missing += [name for name in documented if name not in names_in(usage, documented) and name not in missing]
@@ -133,7 +193,9 @@ class WrapperConsistency(unittest.TestCase):
 
     def test_wrapper_delegates_the_restricted_session_to_the_shared_helper(self):
         self.assertIn('network/session.py', self.wrapper)
-        for operation in HELPER_OPERATIONS:
+        # start and stop manage the provider proxy, which needs authentication methods.
+        operations = HELPER_OPERATIONS if PROFILE.auth else ('prepare', 'agent-args')
+        for operation in operations:
             self.assertRegex(self.wrapper, r'"\$\{session_helper\[@\]\}" ' + operation + r'\b')
         self.assertEqual(inline_lifecycle(self.wrapper), [])
 
@@ -152,15 +214,15 @@ class WrapperConsistency(unittest.TestCase):
 
     def test_consistency_check_detects_a_mismatch(self):
         self.assertTrue(usage_text(self.wrapper))
-        renamed = PROFILE.env('NETWORK_POLICY')
-        changed = self.wrapper.replace(renamed, PROFILE.env_prefix + '_POLICY_RENAMED')
+        renamed = PROFILE.env('MEMORY_LIMIT')
+        changed = self.wrapper.replace(renamed, PROFILE.env_prefix + '_MEMORY_RENAMED')
         self.assertEqual(missing_profile_names(changed), [renamed])
         # A name that survives only in the help text is still missing from the code.
         usage = usage_text(self.wrapper)
-        help_only = usage + without_usage(self.wrapper).replace(renamed, PROFILE.env_prefix + '_POLICY_RENAMED')
+        help_only = usage + without_usage(self.wrapper).replace(renamed, PROFILE.env_prefix + '_MEMORY_RENAMED')
         self.assertEqual(missing_profile_names(help_only), [renamed])
         # A name used in the code but absent from the help text is undocumented.
-        undocumented = usage.replace(renamed, PROFILE.env_prefix + '_POLICY_RENAMED') + without_usage(self.wrapper)
+        undocumented = usage.replace(renamed, PROFILE.env_prefix + '_MEMORY_RENAMED') + without_usage(self.wrapper)
         self.assertEqual(missing_profile_names(undocumented), [renamed])
 
 

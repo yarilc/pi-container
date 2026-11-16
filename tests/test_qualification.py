@@ -17,13 +17,17 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sandbox_profile import AGENT_IMAGE, POLICY_FILE, PROFILE, ROOT, WIDE_PROFILE, env as name, test_setting
+from sandbox_profile import (AGENT_IMAGE, POLICY_FILE, PROFILE, REAL_POLICY_FILE, REAL_PROFILE, REAL_ROOT, ROOT,
+                             NO_METHODS, WIDE_PROFILE, env as name, real_env, test_setting)
 import agent_profile
 import qualification_records as records
 import qualify
 
 QUALIFICATION_LABEL = PROFILE.label('qualification')
 WORK_GLOB = '.' + PROFILE.name + '-qualification-*'
+# The runtime gate runs through the checkout's own wrapper and profile.
+REAL_QUALIFICATION_LABEL = REAL_PROFILE.label('qualification')
+REAL_WORK_GLOB = '.' + REAL_PROFILE.name + '-qualification-*'
 # Setup modules the installed runtime fixture needs: qualification digests the
 # shared ones, and ordinary launches run the toolchain module.
 FIXTURE_SETUP_FILES = ('setup/common.py', 'setup/toolchains.py')
@@ -472,19 +476,24 @@ time.sleep(60)
 
 @unittest.skipUnless(test_setting('RUNTIME_TESTS') == '1', 'requires disposable native rootless harness')
 class QualificationRuntime(unittest.TestCase):
+    """The installed gate through this checkout's own wrapper and real profile.
+
+    Launchers are per-wrapper files, so this runtime gate uses the checkout's
+    profile; the gate behaves the same in every wrapper.
+    """
     @classmethod
     def setUpClass(cls):
         cls.guard = tempfile.TemporaryDirectory(prefix='qualification-guard-', dir=test_setting('TEST_STATE_ROOT'))
         cls.addClassCleanup(cls.guard.cleanup)
-        result = subprocess.run(['bash', str(ROOT/'network/build-guard.sh'), cls.guard.name],
-            env=os.environ | {name('MAINTENANCE'):'1'}, capture_output=True, text=True, timeout=60)
+        result = subprocess.run(['bash', str(REAL_ROOT/'network/build-guard.sh'), cls.guard.name],
+            env=os.environ | {real_env('MAINTENANCE'):'1'}, capture_output=True, text=True, timeout=60)
         if result.returncode:
             raise RuntimeError(result.stderr)
-        tag = PROFILE.image('proxy', 'qualification-test-' + uuid.uuid4().hex)
+        tag = REAL_PROFILE.image('proxy', 'qualification-test-' + uuid.uuid4().hex)
         cls.addClassCleanup(subprocess.run, ['podman', 'rmi', '--force', tag],
                             capture_output=True, timeout=30)
         result = subprocess.run(['podman', 'build', '--pull=never', '--tag', tag,
-            '--file', str(ROOT/'network/Containerfile'), str(ROOT/'network')],
+            '--file', str(REAL_ROOT/'network/Containerfile'), str(REAL_ROOT/'network')],
             capture_output=True, text=True, timeout=60)
         if result.returncode:
             raise RuntimeError(result.stdout + result.stderr)
@@ -497,32 +506,32 @@ class QualificationRuntime(unittest.TestCase):
         self.base = Path(self.directory.name)
         self.install = self.base/'installed'; self.install.mkdir(mode=0o700)
         (self.install/'network').mkdir(mode=0o700)
-        shutil.copyfile(ROOT/PROFILE.wrapper, self.install/PROFILE.wrapper)
+        shutil.copyfile(REAL_ROOT/REAL_PROFILE.wrapper, self.install/REAL_PROFILE.wrapper)
         # The wrapper may read its recipe and declared agent files on every launch.
-        for relative in ('Containerfile', '.containerignore', *PROFILE.install_files):
+        for relative in ('Containerfile', '.containerignore', *REAL_PROFILE.install_files):
             (self.install/relative).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            shutil.copyfile(ROOT/relative, self.install/relative)
+            shutil.copyfile(REAL_ROOT/relative, self.install/relative)
         (self.install/'agent/policies').mkdir(mode=0o700, parents=True)
-        shutil.copyfile(ROOT/agent_profile.PROFILE, self.install/agent_profile.PROFILE)
-        shutil.copyfile(POLICY_FILE, self.install/agent_profile.POLICY)
-        for source in (ROOT/'network').glob('*.py'):
+        shutil.copyfile(REAL_ROOT/agent_profile.PROFILE, self.install/agent_profile.PROFILE)
+        shutil.copyfile(REAL_POLICY_FILE, self.install/agent_profile.POLICY)
+        for source in (REAL_ROOT/'network').glob('*.py'):
             shutil.copyfile(source, self.install/'network'/source.name)
-        shutil.copyfile(ROOT/'network/resolv.conf', self.install/'network/resolv.conf')
+        shutil.copyfile(REAL_ROOT/'network/resolv.conf', self.install/'network/resolv.conf')
         (self.install/'setup').mkdir(mode=0o700)
         for relative in FIXTURE_SETUP_FILES:
-            shutil.copyfile(ROOT/relative, self.install/relative)
+            shutil.copyfile(REAL_ROOT/relative, self.install/relative)
         shutil.copytree(self.guard.name, self.install/'network/bin')
         self.project=self.base/'project'; self.project.mkdir()
         self.home=self.base/'home'; self.home.mkdir(mode=0o700)
         self.runtime=self.base/'egress'; self.runtime.mkdir(mode=0o700)
         self.env=dict(PATH=os.environ['PATH'], HOME=str(self.home),
             CONTAINER_HOST=os.environ['CONTAINER_HOST'])
-        self.env.update({name('NETWORK'): 'offline', name('STATE_DIR'): str(self.base/'state'),
-            name('NETWORK_RUNTIME_DIR'): str(self.runtime),
-            name('IMAGE'): os.environ.get(name('IMAGE'), AGENT_IMAGE)})
+        self.env.update({real_env('NETWORK'): 'offline', real_env('STATE_DIR'): str(self.base/'state'),
+            real_env('NETWORK_RUNTIME_DIR'): str(self.runtime),
+            real_env('IMAGE'): os.environ.get(real_env('IMAGE'), AGENT_IMAGE)})
 
     def command(self, *args, input=None, timeout=325):
-        return subprocess.run(['bash', str(self.install/PROFILE.wrapper), *args],
+        return subprocess.run(['bash', str(self.install/REAL_PROFILE.wrapper), *args],
             cwd=self.project, env=self.env, input=input, capture_output=True, text=True, timeout=timeout)
 
     def test_installed_offline_qualification_missing_stale_and_unsafe_reports(self):
@@ -542,15 +551,15 @@ class QualificationRuntime(unittest.TestCase):
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         self.assertIn('qualified-startup-ok',result.stdout)
         # An exported budget that differs from the qualified one needs requalification.
-        self.env[name('PIDS_LIMIT')]='1024'
+        self.env[real_env('PIDS_LIMIT')]='1024'
         result=self.command('--container-shell',input='touch agent-started\n')
         self.assertNotEqual(result.returncode,0)
         self.assertIn('agent budgets/lifetime',result.stderr)
         self.assertFalse((self.project/'agent-started').exists())
-        self.env[name('PIDS_LIMIT')]='512'
+        self.env[real_env('PIDS_LIMIT')]='512'
         result=self.command('--container-shell',input='printf explicit-default-ok\n')
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-        del self.env[name('PIDS_LIMIT')]
+        del self.env[real_env('PIDS_LIMIT')]
         helper=self.install/'network/platform_check.py'
         helper.chmod(0o666)
         result=self.command('--container-shell',input='touch agent-started\n')
@@ -566,27 +575,34 @@ class QualificationRuntime(unittest.TestCase):
         self.assertFalse((self.project/'agent-started').exists())
 
     def test_installed_provider_qualification_and_fixed_probe_cannot_run_application(self):
-        image=self.proxy_image
-        policy=self.install/'policy.json'; shutil.copyfile(POLICY_FILE,policy)
-        self.env.update({name('NETWORK'):'provider',name('NETWORK_PROFILE'):WIDE_PROFILE,
-            name('NETWORK_POLICY'):str(policy),name('EGRESS_IMAGE'):image})
-        result=self.command('--container-qualify')
-        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-        report=json.loads(next((self.install/'qualification').glob('*.json')).read_text())
-        self.assertEqual(report['checks']['tls-mismatch-zero-bytes'],'passed')
-        self.assertEqual(report['checks']['proxy-loss'],'passed')
+        if REAL_PROFILE.auth:
+            image=self.proxy_image
+            policy=self.install/'policy.json'; shutil.copyfile(REAL_POLICY_FILE,policy)
+            method=max(REAL_PROFILE.auth, key=lambda m: (len(REAL_PROFILE.auth[m]['hosts']), m))
+            self.env.update({real_env('NETWORK'):'provider',real_env('NETWORK_PROFILE'):REAL_PROFILE.policy_profile(method),
+                real_env('NETWORK_POLICY'):str(policy),real_env('EGRESS_IMAGE'):image})
+            result=self.command('--container-qualify')
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            report=json.loads(next((self.install/'qualification').glob('*.json')).read_text())
+            self.assertEqual(report['checks']['tls-mismatch-zero-bytes'],'passed')
+            self.assertEqual(report['checks']['proxy-loss'],'passed')
+        else:
+            # NO_METHODS: provider qualification is unavailable; the fixed probe
+            # must still refuse every application command in offline mode.
+            result=self.command('--container-qualify')
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         for args in (('--container-qualify','--container-shell'), ('--container-qualify-probe','touch','agent-started')):
             self.assertNotEqual(self.command(*args).returncode,0)
         result=self.command('--container-qualify-probe')
         self.assertNotEqual(result.returncode,0)
         self.assertFalse((self.project/'agent-started').exists())
-        data=dict(schema=1,token='a'*32,workspace=str(self.project),addresses=['127.0.0.1','::1'],ipv6=True,provider=True,tls=False)
+        data=dict(schema=1,token='a'*32,workspace=str(self.project),addresses=['127.0.0.1','::1'],ipv6=True,provider=bool(REAL_PROFILE.auth),tls=False)
         path=self.install/'bad-input.json'
         path.write_text(json.dumps(data | {'command':'touch agent-started'}))
-        self.env[name('QUALIFICATION_INPUT')]=str(path)
+        self.env[real_env('QUALIFICATION_INPUT')]=str(path)
         self.assertNotEqual(self.command('--container-qualify-probe').returncode,0)
         path=self.project/'writable-input.json'; path.write_text(json.dumps(data))
-        self.env[name('QUALIFICATION_INPUT')]=str(path)
+        self.env[real_env('QUALIFICATION_INPUT')]=str(path)
         self.assertNotEqual(self.command('--container-qualify-probe').returncode,0)
         self.assertFalse((self.project/'agent-started').exists())
 
@@ -610,7 +626,7 @@ os.execv(os.environ['QUALIFY_ENGINE'],[os.environ['QUALIFY_ENGINE'],*args])
         script.chmod(0o700)
         env=self.env | dict(PATH=str(directory)+':'+self.env['PATH'], QUALIFY_ENGINE=engine,
                            QUALIFY_MARKER=str(marker),QUALIFY_COUNTER=str(counter))
-        process=subprocess.Popen(['bash',str(self.install/PROFILE.wrapper),'--container-shell'],
+        process=subprocess.Popen(['bash',str(self.install/REAL_PROFILE.wrapper),'--container-shell'],
             env=env,cwd=self.project,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
         try:
             deadline=time.monotonic()+20
@@ -630,13 +646,13 @@ os.execv(os.environ['QUALIFY_ENGINE'],[os.environ['QUALIFY_ENGINE'],*args])
                 process.kill(); process.communicate()
 
     def test_cancelled_gate_has_no_report_and_cleans_only_its_resources(self):
-        process=subprocess.Popen(['bash',str(self.install/PROFILE.wrapper),'--container-qualify'],
+        process=subprocess.Popen(['bash',str(self.install/REAL_PROFILE.wrapper),'--container-qualify'],
             cwd=self.project,env=self.env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
         try:
             deadline=time.monotonic()+30
             configs=[]
             while not configs and process.poll() is None and time.monotonic()<deadline:
-                configs=list(self.base.glob(WORK_GLOB+'/shared/input.json'))
+                configs=list(self.base.glob(REAL_WORK_GLOB+'/shared/input.json'))
                 time.sleep(.02)
             self.assertTrue(configs, 'gate did not reach owned fixture setup')
             token=json.loads(configs[0].read_text())['token']
@@ -645,18 +661,20 @@ os.execv(os.environ['QUALIFY_ENGINE'],[os.environ['QUALIFY_ENGINE'],*args])
             self.assertNotEqual(process.returncode,0,stdout+stderr)
             self.assertEqual(list((self.install/'qualification').glob('*.json')),[])
             result=subprocess.check_output(['podman','ps','--all','--filter',
-                'label='+QUALIFICATION_LABEL+'='+token,'--format','{{.ID}}'],text=True).strip()
+                'label='+REAL_QUALIFICATION_LABEL+'='+token,'--format','{{.ID}}'],text=True).strip()
             self.assertEqual(result,'')
-            self.assertEqual(list(self.base.glob(WORK_GLOB+'')),[])
+            self.assertEqual(list(self.base.glob(REAL_WORK_GLOB+'')),[])
         finally:
             if process.poll() is None:
                 process.kill(); process.communicate()
 
     def test_cancelled_tls_gate_is_bounded_and_cleans_owned_resources(self):
+        if not REAL_PROFILE.auth:
+            self.skipTest(NO_METHODS + '; the controlled TLS stage runs only in provider qualification')
         image=self.proxy_image
-        policy=self.install/'policy.json'; shutil.copyfile(POLICY_FILE,policy)
-        self.env.update({name('NETWORK'):'provider',name('NETWORK_PROFILE'):WIDE_PROFILE,
-            name('NETWORK_POLICY'):str(policy),name('EGRESS_IMAGE'):image})
+        policy=self.install/'policy.json'; shutil.copyfile(REAL_POLICY_FILE,policy)
+        self.env.update({real_env('NETWORK'):'provider',real_env('NETWORK_PROFILE'):REAL_PROFILE.policy_profile(max(REAL_PROFILE.auth, key=lambda m: (len(REAL_PROFILE.auth[m]['hosts']), m))),
+            real_env('NETWORK_POLICY'):str(policy),real_env('EGRESS_IMAGE'):image})
         # Instrument only this disposable installed fixture to hold the TLS
         # subprocess open after actual matching/mismatching handshake checks.
         probe=self.install/'network/qualification_probe.py'
@@ -665,12 +683,12 @@ os.execv(os.environ['QUALIFY_ENGINE'],[os.environ['QUALIFY_ENGINE'],*args])
             "    Path('/workspace/cancel-tls-ready').touch()\n    __import__('time').sleep(60)\n"
             "    print('qualification-proxy-loss-ready', flush=True)")
         probe.write_text(source)
-        process=subprocess.Popen(['bash',str(self.install/PROFILE.wrapper),'--container-qualify'],
+        process=subprocess.Popen(['bash',str(self.install/REAL_PROFILE.wrapper),'--container-qualify'],
             cwd=self.project,env=self.env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
         try:
             deadline=time.monotonic()+100; markers=[]
             while not markers and process.poll() is None and time.monotonic()<deadline:
-                markers=list(self.base.glob(WORK_GLOB+'/tls/project/cancel-tls-ready'))
+                markers=list(self.base.glob(REAL_WORK_GLOB+'/tls/project/cancel-tls-ready'))
                 time.sleep(.02)
             self.assertTrue(markers,'gate did not reach controlled TLS stage')
             config=markers[0].parents[1]/'input.json'
@@ -681,15 +699,15 @@ os.execv(os.environ['QUALIFY_ENGINE'],[os.environ['QUALIFY_ENGINE'],*args])
             self.assertLess(time.monotonic()-started,15)
             self.assertEqual(list((self.install/'qualification').glob('*.json')),[])
             owned=subprocess.check_output(['podman','ps','--all','--filter',
-                'label='+QUALIFICATION_LABEL+'='+token,'--format','{{.ID}}'],text=True).strip()
+                'label='+REAL_QUALIFICATION_LABEL+'='+token,'--format','{{.ID}}'],text=True).strip()
             self.assertEqual(owned,'')
-            self.assertEqual(list(self.base.glob(WORK_GLOB+'')),[])
+            self.assertEqual(list(self.base.glob(REAL_WORK_GLOB+'')),[])
         finally:
             if process.poll() is None:
                 process.kill(); process.communicate()
 
     def test_concurrent_gates_publish_complete_atomic_reports(self):
-        children=[subprocess.Popen(['bash',str(self.install/PROFILE.wrapper),'--container-qualify'],
+        children=[subprocess.Popen(['bash',str(self.install/REAL_PROFILE.wrapper),'--container-qualify'],
             cwd=self.project,env=self.env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
             for _ in range(2)]
         try:
@@ -700,7 +718,7 @@ os.execv(os.environ['QUALIFY_ENGINE'],[os.environ['QUALIFY_ENGINE'],*args])
             self.assertEqual(len(reports),1)
             value=json.loads(reports[0].read_text())
             records.validate_report(value,value['identity'])
-            self.assertEqual(list(self.base.glob(WORK_GLOB+'')),[])
+            self.assertEqual(list(self.base.glob(REAL_WORK_GLOB+'')),[])
         finally:
             for child in children:
                 if child.poll() is None:

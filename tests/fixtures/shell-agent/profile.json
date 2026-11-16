@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "name": "fixture-shell",
+  "display_name": "Fixture shell",
+  "wrapper": "fixture-shell.sh",
+  "env_prefix": "FIXTURE_SHELL",
+  "label_namespace": "io.fixture-shell",
+  "identifiers": ["fixture-shell"],
+  "images": {
+    "agent": "localhost/fixture-shell",
+    "proxy": "localhost/fixture-shell-egress",
+    "toolchain": "localhost/fixture-shell-guard-toolchain"
+  },
+  "install": {
+    "state_name": "fixture-shell-egress"
+  },
+  "native": {
+    "home": "/fixture-shell-home",
+    "command": "bash",
+    "config_dir_env": "FIXTURE_SHELL_CONFIG_DIR",
+    "config_home": ".config/fixture-shell",
+    "shared_dirs": [".config/openspec"]
+  },
+  "auth": {}
+}

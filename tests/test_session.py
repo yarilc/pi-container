@@ -17,7 +17,9 @@ import time
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sandbox_profile import NETWORK, PROFILE, ROOT, test_setting
+from sandbox_profile import NETWORK, PROFILE, ROOT, SHELL_FIXTURE, fixture_root, test_setting
+import agent_profile
+from agent_profile import NO_METHODS
 from revisions import TLS_ENFORCEMENT
 
 DIGEST = 'c' * 64
@@ -493,6 +495,55 @@ class SessionHelper(unittest.TestCase):
                              '--session', str(self.session), '--guard-digest', DIGEST, '--')
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(result.stdout, b'')
+
+
+class ProfileWithoutMethodsTests(unittest.TestCase):
+    """Provider mode is refused before any engine operation without authentication methods."""
+    @classmethod
+    def setUpClass(cls):
+        cls.root = fixture_root(SHELL_FIXTURE)
+        cls.addClassCleanup(shutil.rmtree, cls.root, True)
+        cls.log = cls.root / 'podman.log'
+        cls.bin = cls.root / 'bin-fake'
+        cls.bin.mkdir()
+        (cls.bin / 'podman').write_text('#!/bin/sh\necho "$@" >> ' + str(cls.log) + '\nexit 125\n')
+        (cls.bin / 'podman').chmod(0o700)
+
+    def run_module(self, *args, env=None):
+        environment = {'PATH': str(self.bin) + ':' + os.environ['PATH'], 'HOME': str(self.root)} | (env or {})
+        return subprocess.run([sys.executable, '-I', *map(str, args)], env=environment,
+                              capture_output=True, text=True, timeout=30)
+
+    def assert_refused(self, result):
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(NO_METHODS, result.stderr)
+        self.assertEqual(result.stdout, '')
+        self.assertFalse(self.log.exists(), 'no engine command may run')
+
+    def test_session_helper_refuses_provider_operations(self):
+        helper = self.root / 'network/session.py'
+        common = ('--installation', self.root, '--server-version', '4.9.3', '--backend', 'netavark',
+                  '--endpoint', 'unix:///run/podman.sock', '--engine', 'podman')
+        self.assert_refused(self.run_module(helper, 'prepare', '--mode', 'provider', *common))
+        self.assert_refused(self.run_module(helper, 'prepare', '--mode', 'offline', '--policy', self.root, *common))
+        self.assert_refused(self.run_module(helper, 'start', '--installation', self.root, '--session', 'a' * 32,
+                                            '--guard-digest', 'b' * 64))
+        self.assert_refused(self.run_module(helper, 'agent-args', '--installation', self.root, '--mode', 'provider',
+                                            '--session', 'a' * 32, '--guard-digest', 'b' * 64, '--', 'bash'))
+
+    def test_qualification_refuses_provider(self):
+        result = self.run_module(self.root / 'network/qualify.py', 'qualify', env={
+            'CONTAINER_HOST': 'unix:///run/podman.sock', 'FIXTURE_SHELL_NETWORK': 'provider'})
+        self.assert_refused(result)
+        self.assertIn('status=qualification-required', result.stderr)
+
+    def test_toolchain_protection_without_approval_bypass(self):
+        profile = agent_profile.load(self.root / agent_profile.PROFILE)
+        sys.path.insert(0, str(ROOT / 'setup'))
+        import toolchains
+        names, prefixes = toolchains.profile_protection(profile)
+        self.assertEqual(names, {profile.config_dir_env.lower()})
+        self.assertEqual(prefixes, (profile.env_prefix.lower() + '_',))
 
 
 if __name__ == '__main__':

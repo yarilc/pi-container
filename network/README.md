@@ -13,6 +13,21 @@ policies live in `agent/policies/`. In-container paths are neutral:
 `/opt/sandbox-egress`, `/run/sandbox-egress`, `/tmp/sandbox-runtime` and the
 `sandbox-egress-guard` binary.
 
+A profile may declare no authentication method (`"auth": {}`) and no
+`native.approval_bypass_env`, as the reference shell does. Its policy file then
+declares no profiles (`"profiles": {}`); an empty policy is still rejected for a
+profile with methods. Such a profile has no provider mode: `session.py`
+(`prepare --mode provider`, any provider input, `start`), qualification and
+setup refuse it before any image, proxy or container operation with
+`provider mode is unavailable: the agent profile declares no authentication
+method`. Setup then offers only offline and unrestricted networking, defaults to
+offline, and asks no authentication or permission-bypass question.
+
+Shared tests run the shared modules against the agent-neutral fixture profiles
+in `tests/fixtures/` (`agent/` with two synthetic `.test` methods, `shell-agent/`
+without methods), never against the checkout's own profile; see
+`tests/sandbox_profile.py`.
+
 The guard accepts only:
 
 ```text

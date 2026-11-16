@@ -153,6 +153,8 @@ def fingerprint(root, env, run, platform, token):
     mode = env.get(profile.env('NETWORK')) or 'offline'
     if mode not in ('offline', 'provider'):
         raise PolicyError('qualification requires offline or provider mode')
+    if mode == 'provider' and not profile.auth:
+        raise PolicyError(agent_profile.NO_METHODS)
     policy_id, proxy = '', ''
     if mode == 'provider':
         policy = load(trusted_path(env.get(profile.env('NETWORK_POLICY'), ''), []), profile.policy_rules())

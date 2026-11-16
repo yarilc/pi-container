@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "name": "fixture-agent",
+  "display_name": "Fixture",
+  "wrapper": "fixture-agent.sh",
+  "env_prefix": "FIXTURE_AGENT",
+  "label_namespace": "io.fixture-agent",
+  "identifiers": ["fixture-agent"],
+  "images": {
+    "agent": "localhost/fixture-agent",
+    "proxy": "localhost/fixture-agent-egress",
+    "toolchain": "localhost/fixture-agent-guard-toolchain"
+  },
+  "install": {
+    "state_name": "fixture-agent-egress"
+  },
+  "native": {
+    "home": "/fixture-home",
+    "command": "fixture",
+    "config_dir_env": "FIXTURE_CONFIG_DIR",
+    "approval_bypass_env": "FIXTURE_AGENT_YOLO",
+    "config_home": ".fixture",
+    "shared_dirs": [".config/openspec"],
+    "protected_env": ["FIXTURE_AGENT_", "FIXTURE_TELEMETRY"]
+  },
+  "auth": {
+    "account": {
+      "description": "reuses a synthetic account login",
+      "policy_profile": "fixture-account",
+      "hosts": ["api.provider.test", "login.provider.test"],
+      "login_args": ["login"]
+    },
+    "api": {
+      "description": "uses a synthetic key supplied at launch",
+      "policy_profile": "fixture-api",
+      "hosts": ["api.provider.test"],
+      "credential_env": "FIXTURE_API_KEY"
+    }
+  }
+}

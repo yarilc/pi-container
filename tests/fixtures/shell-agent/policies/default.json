@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "revision": "fixture-shell-2026-11-15-v1",
+  "source_date": "2026-11-15",
+  "sources": ["https://provider.test/network"],
+  "tested": {
+    "cli": "none",
+    "node": "synthetic fixture",
+    "authentication": "none; the profile declares no authentication method"
+  },
+  "profiles": {}
+}
