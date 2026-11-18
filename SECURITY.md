@@ -38,9 +38,12 @@ command line. However, the following exposure surfaces exist:
 - **Host process list:** While keys are not on argv, they remain in the
   podman process's environment block, accessible to the host root user
   via `/proc/<pid>/environ`.
-- **Debug output:** When `PI_DEBUG=1` is set, only argument counts are logged
-  to stderr. However, because API keys are forwarded by name only (`-e KEY`
-  not `-e KEY=value`), the actual key values never appear in the log.
+- **Diagnostics:** keys are forwarded by name only (`--env KEY`, never
+  `--env KEY=value`), so their values never appear in wrapper diagnostics.
+
+Provider sessions receive only the selected profile's key and offline sessions
+none. Unrestricted sessions receive a key only when `PI_CONTAINER_ENV_VARS`
+lists it.
 
 **Recommendations:**
 
@@ -68,8 +71,9 @@ does not enforce their ownership/privacy, so confidentiality remains the
 caller's responsibility. Prefer native Linux storage enforcing Unix modes.
 
 Temporary stores are explicit, bounded, nosuid/nodev/noexec: /tmp and /var/tmp
-256 MiB each, /run 32 MiB, npm cache 256 MiB by default. Delegated-client
-stores are 256 MiB and 64 MiB. None persists after the session.
+512 MiB each, the shared-state home 512 MiB, /run 32 MiB (not writable by the
+session user), npm cache 256 MiB by default. Delegated-client stores are
+256 MiB and 64 MiB. None persists after the session.
 
 ### Persistent Compromise via Extensions and Skills ⚠️
 
@@ -91,7 +95,7 @@ session files.
 
 **Mitigations:**
 
-- Set `PI_READONLY_CONFIG=1` to mount `~/.pi` and `~/.agents` **read-only**
+- Set `PI_CONTAINER_READONLY_STATE=1` to mount `~/.pi` and `~/.agents` **read-only**
   when working with untrusted prompts or projects. This prevents the agent
   from writing any files into these directories.
 - Treat the agent as trusted with everything it can read and write. Do not
@@ -114,9 +118,10 @@ has read access and unrestricted egress.
 
 - Treat the agent as trusted with everything it can read and reach over the
   network. Do not run it on projects containing secrets you would not give it.
-- Use `PI_CONTAINER_NETWORK=offline` to block all egress for tasks that do not
-  need network access, or `provider` with one exact provider profile. Both are
-  enforced by a native guard and an external proxy, not by client settings.
+- Keep the default `provider` mode, which allows one exact provider profile,
+  or use `PI_CONTAINER_NETWORK=offline` to block all egress for tasks that do
+  not need network access. Both are enforced by a native guard and an external
+  proxy, not by client settings.
 - In provider mode the allowed host can still receive data sent with an
   attacker's key or account (residual exfiltration); only offline removes this
   channel. See [docs/network-contract.md](docs/network-contract.md).
@@ -125,7 +130,7 @@ has read access and unrestricted egress.
 ### Host Git Config Exposure
 
 The file `~/.gitconfig` is not mounted by default. It is mounted read-only only
-with exact `PI_CONTAINER_GITCONFIG=1` (or the deprecated `PI_MOUNT_GITCONFIG=1`).
+with exact `PI_CONTAINER_GITCONFIG=1`.
 Git configurations routinely contain:
 
 - Credential helper invocations (`credential.helper`)
@@ -152,8 +157,7 @@ SELinux denials require explicit host policy/permission inspection. The
 sensitive-workspace guard compares physical paths and rejects /, the caller's
 home, /home, /root, /etc, /usr, /var, /bin, /sbin, /lib, /lib64, /boot, /opt,
 /srv, /mnt, /media, /proc, /sys, /dev, /run, /tmp and /mnt/<letter> drive
-roots unless exactly `PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1` is set (the
-deprecated `PI_ALLOW_UNSAFE_PWD` also requires exactly `1`). Worktree mode applies
+roots unless exactly `PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1` is set. Worktree mode applies
 the guard to the immediate parent it exposes. That explicit mode permits
 read/write access to siblings in the whole parent while retaining the
 original workdir. Always use a suitably narrow project directory.
@@ -162,9 +166,9 @@ original workdir. Always use a suitably narrow project directory.
 
 Pi runs its tools without approval prompts, so the container is the only
 boundary around them. `PI_CONTAINER_YOLO` exists for setup and future Pi
-releases; enabling it changes nothing and prints a warning. Pi's `--approve`
+releases; enabling it changes nothing and prints a notice. Pi's `--approve`
 option trusts project-local files for a run; it does not approve tools.
-Combine `PI_CONTAINER_NETWORK=offline`, `PI_READONLY_CONFIG=1` and narrow
+Combine `PI_CONTAINER_NETWORK=offline`, `PI_CONTAINER_READONLY_STATE=1` and narrow
 workspaces for untrusted tasks.
 
 ### Resource Budgets
@@ -177,12 +181,13 @@ not bound workspace or state storage growth.
 
 ### Podman Socket (Opt-In, Dangerous)
 
-Only exact `PI_CONTAINER_PODMAN=1` enables host authority and installs the
-client. All other values disable delegation, including true/yes/0/false.
+Only exact `PI_CONTAINER_PODMAN=1` enables host authority; the client is part
+of every image. All other values disable delegation, including true/yes/0/false.
 The selected absolute accessible socket (`PI_CONTAINER_PODMAN_SOCKET`, Unix
 `CONTAINER_HOST`, then XDG runtime/UID fallback) is canonicalized and queried
 explicitly. It must report rootless operation and an absolute host socket
-path. Enabled failures abort before image operations; services are never
+path that is not made only of slashes and, when visible to the wrapper, is a
+socket. Enabled failures abort before image operations; services are never
 started automatically. The reported host source is bound at
 `/run/podman/podman.sock`; containerized callers must retain absolute host
 workspace/state paths and select a same-host service. Unix transport alone
@@ -191,7 +196,7 @@ cannot establish host identity.
 Delegation gives control over the service user's containers and permits host
 mounts beyond the workspace. It removes the project-only access boundary.
 Without it no socket is mounted and session CONTAINER_HOST is explicitly
-unset, including PI_ENV_VARS requests. Connection forwarding cannot override
+unset, including PI_CONTAINER_ENV_VARS requests. Connection forwarding cannot override
 the selected endpoint. Native Pi permission flags do not enable socket
 access.
 
@@ -200,10 +205,13 @@ access.
 Only the invocation's verified full CID from private bookkeeping authorizes
 removal; no container is deleted by reusable name or prefix. TERM/INT/HUP
 preserve the first interruption status (143/130/129); application exit codes,
-including 125, survive cleanup errors. Controls have a 5s timeout plus 1s
-kill-after, grace is 5s, and client cancellation is TERM 5s then KILL 1s.
-Interrupted creation adds at most 5s completion grace before cancellation and
-final CID recovery. Repeated signals cannot renew these deadlines.
+including 125, survive cleanup errors. A signal starts shutdown at once, also
+during creation, and shutdown ends within one 20-second deadline: 5 seconds of
+grace after the forwarded signal, then forced removal; each shutdown engine
+call is bounded by the time left, and local clients are terminated and reaped
+within the deadline. Interrupted creation is recovered through the validated
+CID record, the create output and the session ownership label. Repeated
+signals cannot renew the deadline.
 
 Unknown/malformed IDs, unresponsive engines, SIGKILL, and delayed server
 results may leave resources requiring explicit engine inspection. Local

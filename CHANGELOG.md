@@ -58,6 +58,33 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
 
 ### Changed
 
+- Shared launcher core (`adopt-sandbox-ref-25`): `pi-container.sh` is the thin
+  entry script of `sandbox-container` tag `sandbox-ref-25`, which runs the
+  shared `launcher/core.sh` with Pi's agent part `agent/launcher.sh`.
+  `agent/profile.json` drops `install.runtime_build`. Every installation runs
+  `--container-setup` again. Visible changes:
+  - an unset or empty `PI_CONTAINER_NETWORK` selects `provider`, which stops
+    with setup guidance without the provider settings;
+  - `PI_ENV_VARS` is now `PI_CONTAINER_ENV_VARS` (an invalid name stops the
+    launch), and `PI_READONLY_CONFIG` is now `PI_CONTAINER_READONLY_STATE`
+    (`1`, `true` or `yes`);
+  - unrestricted sessions forward `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+    `GEMINI_API_KEY` or `OPENROUTER_API_KEY` only when `PI_CONTAINER_ENV_VARS`
+    lists it;
+  - `EDITOR` and `VISUAL` are always `nano`; `TERM`, `COLORTERM`, `LANG` and
+    `LC_ALL` are forwarded when set, and unrestricted sessions also forward
+    `ALL_PROXY`;
+  - `/tmp`, `/var/tmp` and the shared-state home are 512 MiB `noexec` tmpfs
+    mounts; `/run` (32 MiB) is not writable by the session user;
+  - a signal starts shutdown at once, also during creation, within one
+    20-second deadline;
+  - `--container-shell` passes its arguments to Bash, and
+    `--container-build --container-shell` is the build-only operation;
+  - the `build-inputs-hash` label follows the core's rule, so earlier images
+    are stale once; builds pull the exact base first and have no timeout;
+  - a successful create whose CID record is empty starts the session with the
+    ID that `podman create` printed;
+  - the `PI_CONTAINER_YOLO` notice no longer names a Pi version.
 - Shared files now come from `claude-container` tag `sandbox-ref-10`, and
   `agent/profile.json` sets `native.private_shared_dirs: true`. Setup now
   refuses a non-private `~/.agents` before image work, instead of failing later
@@ -133,6 +160,12 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
 
 ### Removed
 
+- With the shared launcher core: the `PI_*` aliases (`PI_IMAGE_NAME`,
+  `PI_ENABLE_PODMAN`, `PI_PODMAN_SOCKET`, `PI_MEMORY_LIMIT`, `PI_CPU_LIMIT`,
+  `PI_PIDS_LIMIT`, `PI_RUN_TIMEOUT`, `PI_ALLOW_UNSAFE_PWD`,
+  `PI_MOUNT_GITCONFIG`), the `PI_NETWORK` stop, the `PI_PULL_ALWAYS` notice,
+  `--wrapper-help`, the `~/.gitconfig` migration notice and `PI_DEBUG` output.
+  These names now have no effect and print no notice.
 - Bun (`remove-bun`): the image no longer offers the optional Bun runtime,
   and `PI_ENABLE_BUN` and `PI_BUN_VERSION` have no effect and print no
   warning. Setup never built a Bun image, and qualification could not accept

@@ -26,7 +26,7 @@
   - the `PI_VERSION` comment in `Containerfile`.
 
   Verify that `python3 -m unittest tests.test_setup_wrapper` passes in the disposable test container and that `bash -n` succeeds on `tests/run-runtime.sh`, `test.sh` and `test-wrapper.sh`.
-- [ ] 3.3 Update the README, `SECURITY.md`, `CONTRIBUTING.md`, `AGENTS.md`, `docs/setup.md`, `docs/network-contract.md` and `CHANGELOG.md` (design decision 7). Verify that `grep -rn "PI_ENV_VARS\|PI_READONLY_CONFIG\|PI_MOUNT_GITCONFIG\|PI_PULL_ALWAYS\|wrapper-help\|PI_DEBUG\|runtime_build\|select_setting\|previous networking" --exclude-dir=openspec --exclude-dir=.git --exclude=validation.md --exclude=CHANGELOG.md .` finds nothing stale.
+- [x] 3.3 Update the README, `SECURITY.md`, `CONTRIBUTING.md`, `AGENTS.md`, `docs/setup.md`, `docs/network-contract.md` and `CHANGELOG.md` (design decision 7). Verify that `grep -rn "PI_ENV_VARS\|PI_READONLY_CONFIG\|PI_MOUNT_GITCONFIG\|PI_PULL_ALWAYS\|wrapper-help\|PI_DEBUG\|runtime_build\|select_setting\|previous networking" --exclude-dir=openspec --exclude-dir=.git --exclude=validation.md --exclude=CHANGELOG.md .` finds nothing stale.
 
 ## 4. Integration
 

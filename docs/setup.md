@@ -28,16 +28,17 @@ off, current workspace only, delegation off and CA trust off.
 Pi 0.80.8 has no tool-approval layer: its tools run without prompts and the
 container is the only boundary. The permission-bypass question is kept so the
 managed launcher can save `PI_CONTAINER_YOLO=0` or `1` as for the other
-wrappers. `0` is silent; `1` prints a warning that the setting has no effect
-yet.
+wrappers. `0` is silent; `1` prints a notice that the setting has no
+effect.
 Accept defaults with Enter; invalid choices are requested again. Existing saved
 choices are offered for review on rerun, including a previously selected offline
-mode. The managed launcher applies the saved network choice. Ordinary direct
-invocation with `PI_CONTAINER_NETWORK` unset or empty stops with setup
-guidance before runtime prerequisite checks, engine queries or state creation.
-Setup is never started automatically. An explicit empty network override on a
-managed invocation also receives this refusal; remove the override to use the
-saved choice. Offline mode cannot reach any model provider.
+mode. The managed launcher applies the saved network choice. A direct
+invocation with `PI_CONTAINER_NETWORK` unset or empty selects `provider`;
+without a protected installation or the saved provider settings it stops with
+setup guidance before engine queries or state creation. Setup is never started
+automatically. An explicit empty network override on a managed invocation also
+selects `provider`, never the saved mode; remove the override to use the saved
+choice. Offline mode cannot reach any model provider.
 
 After the worktree question, setup asks for the agent budgets and lifetime:
 `Agent memory limit` (default `4g`), `Agent CPU limit` (default `2`),
@@ -64,17 +65,17 @@ Operators can still invoke a manually prepared wrapper with explicit `offline`,
 qualification and authority checks apply. Image maintenance additionally
 requires exact `PI_CONTAINER_MAINTENANCE=1`; that consent alone does not select
 a mode. Help and standalone setup/qualification retain their own dispatch checks.
-Standalone `--container-qualify` keeps its offline default when no mode is set
-and can run only fixed controls, never a supplied application command.
+Standalone `--container-qualify` qualifies the same default mode when no mode
+is set and can run only fixed controls, never a supplied application command.
 
-Earlier versions of this wrapper needed no runtime-mode selection; since
-`add-network-egress` a direct launch needs an explicit `PI_CONTAINER_NETWORK`
-(`unrestricted` keeps the previous networking), and an ordinary missing-mode
-launch now stops with setup guidance. Managed launchers supply the saved mode.
-Install an updated protected wrapper through setup, or update and requalify a
-manual restricted installation: changing the wrapper invalidates its old
-qualification identity. Activation and last-working-release rollback are
-unchanged.
+An unset or empty `PI_CONTAINER_NETWORK` selects `provider`, Pi's default.
+Without a protected installation or the saved provider settings, the launch
+stops with setup guidance; managed launchers supply the saved mode and
+settings. Install the updated protected wrapper through setup, or update and
+requalify a manual restricted installation: changing the entry script, the
+shared launcher core `launcher/core.sh` or the agent part `agent/launcher.sh`
+invalidates the old qualification identity. Activation and last-working-release
+rollback are unchanged.
 
 Provider mode authorizes CONNECT hostname/address and requires matching SNI in
 the initial TLS ClientHello, and in the retried ClientHello after a TLS 1.3
@@ -189,12 +190,13 @@ is outside runtime egress filtering even when the chosen session mode is offline
 Consent grants exact maintenance authorization only to these preparation
 commands. It is not saved or enabled for subsequent ordinary launches.
 
-Pi's profile declares `install.runtime_build: "wrapper"`. When no suitable
-runtime image exists, or refresh is approved, setup runs the installed
-release's `pi-container.sh --container-build` alone with the candidate tag and
-the scoped maintenance authorization. That build-only operation uses the same
-`PI_VERSION` (from the installed `.version`) and `build-inputs-hash` label as
-an ordinary launch, starts no session, and exits; setup then inspects the candidate's immutable identity. A reused
+When no suitable runtime image exists, or refresh is approved, setup runs the
+installed release's `pi-container.sh --container-build` alone with the
+candidate tag and the scoped maintenance authorization, as for every wrapper.
+That build-only operation uses the same `PI_VERSION` (passed by the agent part
+from the installed `.version`) and `build-inputs-hash` label as an ordinary
+launch, starts no session, and exits; setup then inspects the candidate's
+immutable identity. A reused
 `localhost/pi-container:latest` keeps its labels: if they are stale for the
 installed inputs, the smoke check stops with the stale-image message, and a
 rerun with refresh rebuilds through the wrapper. `.version` is installed with
@@ -330,9 +332,9 @@ hosts, not credential sources. Subscription, browser-callback and OAuth logins
 (`/login`) are unsupported in restricted modes: no port is published.
 
 In unrestricted mode, setup prints the shared hint that environment-key
-forwarding is the provider mechanism; unrestricted launches forward
-`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `GOOGLE_API_KEY` by name (Pi reads
-`GEMINI_API_KEY` for Gemini; list it in `PI_ENV_VARS`).
+forwarding is the provider mechanism; unrestricted launches forward a key
+only when `PI_CONTAINER_ENV_VARS` lists it, for example
+`PI_CONTAINER_ENV_VARS=ANTHROPIC_API_KEY`.
 
 The wrapper reclassifies Podman 4.3's successful `Should restart: false` message
 as informational (`INFO[...]` or `level=info`), preserving its timestamp and

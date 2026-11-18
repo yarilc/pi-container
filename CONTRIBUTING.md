@@ -35,13 +35,13 @@ container. Its primary concerns are:
 PI_CONTAINER_IMAGE=localhost/pi-container ./tests/run-runtime.sh
 
 # Restricted-mode and shared sandbox suites
-bash tests/run-runtime.sh --wrapper    # wrapper contracts in the runner
+bash tests/run-runtime.sh --wrapper    # shared launcher and Pi wrapper tests
 bash tests/run-runtime.sh --shared     # suites copied from sandbox-container
 bash tests/run-runtime.sh --network    # restricted modes with real rootless Podman
 bash tests/run-runtime.sh --guard      # guard fixtures (toolchain image required)
 ```
 
-`network/`, `setup/` and the shared tests are copied unchanged
+`launcher/`, `network/`, `setup/` and the shared tests are copied unchanged
 from `sandbox-container` (tag `sandbox-ref-25`); never edit them here. Fix a
 defect in `sandbox-container` first, then copy the files again and update the
 manifest in `tests/test_reference_copy.py`.
@@ -52,18 +52,13 @@ removes only its own image/volume. It does not forward provider credentials.
 Record actual commands/results and missing prerequisites in docs/validation.md;
 skips do not count as passes. Do not claim authenticated Pi verification.
 
-Use readiness barriers for signal tests, full IDs for cleanup assertions, and
-permanently stalled fixtures for creation cancellation. Production phases are
-5s completion/grace, 5s TERM, 1s KILL observation, with 5s+1s bounded controls.
-First interruption wins (143/130/129); exit 125 and redirected stdin/EOF must
-remain intact. Check both terminal streams before TTY allocation. Concurrent
-sessions must reserve names atomically above the maximum suffix, never replace
-other sessions, and remove only verified owned IDs. Unknown ownership is a
-diagnostic, not permission to delete by name. The native PI_CONTAINER_RUN_TIMEOUT option
-is separate from shutdown budgets.
-
-All build/shell/worktree modes share engine/state/socket preflights. Help aliases
-must work without Podman, state, or .version; native --help goes to Pi.
+Launcher behavior (signals, the 20-second shutdown deadline, naming, owned
+cleanup, engine verification, state and mounts) is tested once, for every
+wrapper, by the shared `tests/test_launcher.py`. A Pi launcher case it does not
+cover goes into `sandbox-container` first. `tests/test_wrapper.py` covers only
+Pi's agent part: its hooks, its restricted settings and the provider key per
+policy profile. Help must work without Podman, state, or `.version`; native
+`--help` goes to Pi.
 Changes to identity, mounts, optional tools, or state must include real Pi/npm
 and Git workflow checks, not only duplicated podman flags.
 
@@ -81,10 +76,10 @@ and Git workflow checks, not only duplicated podman flags.
 - Environment variables containing secrets (API keys) must never appear on
   the process command line; forward by name only (`-e KEY`).
 - New mounts must be documented in SECURITY.md and README.md.
-- The sensitive-workspace list must stay in sync with the case statement and
-  with the claude-container reference (`sandbox-ref-2`).
-- Wrapper settings use the `PI_CONTAINER_` prefix; earlier names stay
-  deprecated aliases resolved by `select_setting`.
+- Wrapper settings use the `PI_CONTAINER_` prefix; earlier names have no
+  effect. Launcher behavior lives in the shared `launcher/core.sh`; Pi adds only
+  data and hooks in `agent/launcher.sh`. Fix a core defect in
+  `sandbox-container` first.
 
 ## Versioning
 
@@ -98,7 +93,8 @@ image.
 1. Run `./test-wrapper.sh` and `./test.sh`, plus lint and OpenSpec validation.
 2. Update `CHANGELOG.md` with your change under "Unreleased".
 3. If adding a new environment variable, update:
-   - `pi-container.sh` help text and env var block
+   - `agent_help` in `agent/launcher.sh` (a Pi variable) or the core's help in
+     `sandbox-container` (a common variable)
    - `README.md` environment variables table
    - `SECURITY.md` if security-relevant
 4. Open a PR against `main`.
