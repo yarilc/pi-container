@@ -344,9 +344,9 @@ def main():
     if (env.get('CONTAINER_CONNECTION') or not endpoint.startswith('unix:///') or
             not endpoint[7:].strip('/')):
         raise platform.PlatformError('qualification requires an explicit same-host Unix endpoint, without named connections')
-    if (env.get(name('NETWORK')) or 'offline') not in ('offline', 'provider'):
+    if records.selected_mode(PROFILE, env) not in ('offline', 'provider'):
         raise GateError('qualification requires offline or provider mode')
-    if (env.get(name('NETWORK')) or 'offline') == 'provider' and not PROFILE.auth:
+    if records.selected_mode(PROFILE, env) == 'provider' and not PROFILE.auth:
         raise GateError(agent_profile.NO_METHODS)
     if env.get(name('PODMAN')) == '1':
         raise GateError('qualification rejects Podman delegation')
@@ -361,7 +361,7 @@ def main():
     preflight = ['python3', '-I', str(ROOT / 'network/control.py'), 'preflight', '--installation', str(ROOT)]
     for path in paths:
         preflight.extend(('--writable', path))
-    if (env.get(name('NETWORK')) or 'offline') == 'provider':
+    if records.selected_mode(PROFILE, env) == 'provider':
         preflight.extend(('--policy', env.get(name('NETWORK_POLICY'), ''),
             '--profile', env.get(name('NETWORK_PROFILE'), ''),
             '--proxy-image', env.get(name('EGRESS_IMAGE'), ''),

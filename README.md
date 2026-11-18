@@ -334,7 +334,7 @@ networking. `PI_NETWORK` is rejected with migration guidance.
 | `unrestricted` | Ordinary runtime networking, the previous behavior | Exact `PI_CONTAINER_PODMAN=1` |
 
 The restricted implementation is shared with `sandbox-container` and copied
-unchanged from its tag `sandbox-ref-21`; see
+unchanged from its tag `sandbox-ref-25`; see
 [docs/network-contract.md](docs/network-contract.md) and
 [network/README.md](network/README.md).
 

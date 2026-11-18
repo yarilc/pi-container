@@ -21,7 +21,7 @@ SUFFIXES = (
     'NETWORK', 'NETWORK_PROFILE', 'NETWORK_POLICY', 'NETWORK_RUNTIME_DIR', 'EGRESS_IMAGE',
     'IMAGE', 'STATE_DIR', 'PODMAN', 'PODMAN_SOCKET', 'TRUST_HOST_CA', 'CA_BUNDLE',
     'MAINTENANCE', 'QUALIFICATION_INPUT', 'MEMORY_LIMIT', 'CPU_LIMIT', 'PIDS_LIMIT', 'RUN_TIMEOUT',
-    'TOOLCHAINS', 'TOOLCHAINS_DIR',
+    'TOOLCHAINS', 'TOOLCHAINS_DIR', 'ENV_VARS', 'READONLY_STATE',
 )
 LABELS = ('session', 'egress', 'qualification')
 # The one diagnostic for provider mode with a profile that declares no method.
@@ -92,10 +92,13 @@ class Profile:
         self.state_name = value['install']['state_name']
         # Agent-specific installation inputs read by the wrapper (for example a version file).
         self.install_files = tuple(value['install'].get('files', ()))
-        self.runtime_build = value['install'].get('runtime_build', 'recipe')
         native = value['native']
         self.home = native['home']
         self.command = native['command']
+        # Absolute in-container path of the application for restricted agent sessions.
+        self.exec = native.get('exec', '/usr/local/bin/' + self.command)
+        # Whether /tmp and the ephemeral home must allow execution (native runtime parts).
+        self.exec_tmp = native.get('exec_tmp', False)
         self.config_dir_env = native['config_dir_env']
         # Absent when the application has no approval system (for example a plain shell).
         self.approval_bypass_env = native.get('approval_bypass_env')
@@ -123,6 +126,11 @@ class Profile:
     @property
     def credential_envs(self):
         return tuple(item['credential_env'] for item in self.auth.values() if 'credential_env' in item)
+
+    @property
+    def default_mode(self):
+        """Network mode of a launch without one: provider for an agent with methods."""
+        return 'provider' if self.auth else 'offline'
 
     @property
     def message_prefix(self):
@@ -159,9 +167,7 @@ def validate(value):
     images = [string(item, IMAGE, 'images.' + key) for key, item in value['images'].items()]
     if len(set(images)) != len(images):
         fail('images must be distinct')
-    fields(value['install'], ('state_name',), ('files', 'runtime_build'), where='install')
-    if value['install'].get('runtime_build', 'recipe') not in ('recipe', 'wrapper'):
-        fail('install.runtime_build must be recipe or wrapper')
+    fields(value['install'], ('state_name',), ('files',), where='install')
     string(value['install']['state_name'], NAME, 'install.state_name')
     files = strings(value['install'].get('files', []), RELATIVE, 'install.files', minimum=0, maximum=8)
     if len(set(files)) != len(files) or any(
@@ -170,9 +176,14 @@ def validate(value):
         fail('install.files must be distinct agent files outside network/, setup/ and agent/')
     native = value['native']
     fields(native, ('home', 'command', 'config_dir_env', 'config_home', 'shared_dirs'),
-           ('approval_bypass_env', 'private_shared_dirs', 'protected_env'), where='native')
-    if type(native.get('private_shared_dirs', False)) is not bool:
-        fail('native.private_shared_dirs must be a boolean')
+           ('approval_bypass_env', 'private_shared_dirs', 'protected_env', 'exec', 'exec_tmp'), where='native')
+    for key in ('private_shared_dirs', 'exec_tmp'):
+        if type(native.get(key, False)) is not bool:
+            fail('native.' + key + ' must be a boolean')
+    if 'exec' in native:
+        string(native['exec'], re.compile(r'(/[A-Za-z0-9._-]+)+'), 'native.exec')
+        if '..' in native['exec'].split('/'):
+            fail('native.exec must be an absolute path without ..')
     for entry in strings(native.get('protected_env', []), AGENT_ENV, 'native.protected_env', minimum=0, maximum=32):
         if entry.endswith('_') and len(entry) < 3:
             fail('native.protected_env prefixes need at least three characters')

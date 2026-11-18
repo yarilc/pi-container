@@ -26,11 +26,16 @@ SHARED_CODE = ('network/control.py', 'network/platform_check.py', 'network/agent
                'network/qualification_probe.py', 'network/qualification_peer.py',
                'network/qualification_proxy.py', 'network/relay.py', 'network/mux.py',
                'network/resolv.conf', 'network/bin/' + GUARD, 'network/bin/' + GUARD + '.sha256',
-               'setup/toolchains.py', agent_profile.PROFILE, agent_profile.POLICY)
+               'setup/toolchains.py', 'launcher/core.sh', agent_profile.PROFILE, agent_profile.POLICY)
+
+
+def selected_mode(profile, env):
+    """The launch mode: the explicit setting, else the profile's default (the launcher's rule)."""
+    return env.get(profile.env('NETWORK')) or profile.default_mode
 
 
 def code_files(profile):
-    return (profile.wrapper, *profile.install_files, *SHARED_CODE)
+    return (profile.wrapper, 'agent/launcher.sh', *profile.install_files, *SHARED_CODE)
 
 
 def digest(data):
@@ -150,7 +155,7 @@ def fingerprint(root, env, run, platform, token):
     if not re.fullmatch(r'(?:sha256:)?[a-f0-9]{64}', runtime):
         raise PolicyError('unverifiable runtime image identity')
     selected_profile = env.get(profile.env('NETWORK_PROFILE'), '')
-    mode = env.get(profile.env('NETWORK')) or 'offline'
+    mode = selected_mode(profile, env)
     if mode not in ('offline', 'provider'):
         raise PolicyError('qualification requires offline or provider mode')
     if mode == 'provider' and not profile.auth:

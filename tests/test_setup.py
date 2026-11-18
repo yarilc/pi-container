@@ -379,12 +379,21 @@ class SetupTests(unittest.TestCase):
         endpoint = Path(temporary.name) / 'podman.sock'
         with socket.socket(socket.AF_UNIX) as bound:
             bound.bind(str(endpoint))
+            directory = Path(temporary.name) / 'reported-directory'
+            directory.mkdir()
+            regular = Path(temporary.name) / 'reported-file'
+            regular.write_text('not a socket')
             for response in ('false /host/socket', 'true relative', 'true /host/socket\r', 'true /host/socket\n\n',
-                             'true unix://relative', 'true unix:///host/socket\r'):
+                             'true unix://relative', 'true unix:///host/socket\r',
+                             # The reported path is a bind source: never the root or a visible non-socket.
+                             'true /', 'true //', 'true unix:///', f'true {directory}', f'true {regular}'):
                 with patch.object(setup, 'run', return_value=response):
                     with self.assertRaises(common.SetupError):
                         setup.verify_socket('unix://' + str(endpoint), self.env)
             setup.verify_socket('unix://' + str(endpoint), self.env)
+            # A visible reported path that is the socket itself is accepted.
+            with patch.object(setup, 'run', return_value=f'true {endpoint}'):
+                setup.verify_socket('unix://' + str(endpoint), self.env)
             # Podman 5 reports the host socket as a unix:// URL.
             with patch.object(setup, 'run', return_value='true unix:///host/socket'):
                 setup.verify_socket('unix://' + str(endpoint), self.env)
@@ -683,22 +692,24 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
             with self.assertRaises(common.SetupError):
                 setup.build_image(release, 'Containerfile', 'localhost/test:failure', env | {'SETUP_TEST_FAIL': 'build'})
 
-    def test_runtime_build_follows_the_profile(self):
+    def test_setup_ignores_launch_only_switches_and_installs_the_launcher(self):
+        _, release = self.release()
+        for relative in ('launcher/core.sh', 'agent/launcher.sh'):
+            self.assertIn(relative, common.MANIFEST)
+            self.assertTrue((release / relative).is_file(), relative)
+        host = {name('ENV_VARS'): 'GH_TOKEN', name('READONLY_STATE'): '1'}
+        with patch.dict(os.environ, host):
+            smoke = common.runtime_environment(self.value, release, overrides=False)
+            managed = common.runtime_environment(self.value, release)
+        for variable in host:
+            self.assertNotIn(variable, smoke)
+            self.assertEqual(managed[variable], host[variable])
+
+    def test_runtime_is_built_by_the_wrapper(self):
         _, release = self.release()
         env = self.env | {name('MAINTENANCE'): '1'}
         identity = 'sha256:' + 'c' * 64
-        with patch.object(setup.PROFILE, 'runtime_build', 'recipe'), \
-                patch.object(setup, 'build_image', return_value=identity) as build, \
-                patch.object(setup, 'run') as run:
-            self.assertEqual(setup.build_runtime(release, 'localhost/test:recipe', env), identity)
-        build.assert_called_once_with(release, 'Containerfile', 'localhost/test:recipe', env, '')
-        run.assert_not_called()
-        with patch.object(setup.PROFILE, 'runtime_build', 'recipe'), \
-                patch.object(setup, 'build_image', return_value=identity) as build:
-            setup.build_runtime(release, 'localhost/test:recipe', env, '/ca/bundle.pem')
-        build.assert_called_once_with(release, 'Containerfile', 'localhost/test:recipe', env, '/ca/bundle.pem')
-        with patch.object(setup.PROFILE, 'runtime_build', 'wrapper'), \
-                patch.object(setup, 'build_image') as build, \
+        with patch.object(setup, 'build_image') as build, \
                 patch.object(setup, 'run') as run, \
                 patch.object(setup, 'image_identity', return_value=identity) as inspect:
             self.assertEqual(setup.build_runtime(release, 'localhost/test:wrapper', env), identity)
@@ -710,62 +721,53 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
         self.assertEqual(used[name('MAINTENANCE')], '1')
         self.assertEqual(run.call_args.kwargs['input'], '')
         inspect.assert_called_once_with('localhost/test:wrapper', env)
-        # Wrapper-built runtimes receive setup's trust selection, never an inherited one,
+        # The wrapper receives setup's trust selection, never an inherited one,
         # and setup adds no --secret of its own: the wrapper owns its build arguments.
         inherited = env | {name('TRUST_HOST_CA'): '1', name('CA_BUNDLE'): '/inherited.pem'}
         for bundle in ('', '/ca/bundle.pem'):
-            with self.subTest(bundle=bundle), patch.object(setup.PROFILE, 'runtime_build', 'wrapper'), \
-                    patch.object(setup, 'build_image') as build, patch.object(setup, 'run') as run, \
-                    patch.object(setup, 'image_identity', return_value=identity):
+            with self.subTest(bundle=bundle), patch.object(setup, 'build_image') as build, \
+                    patch.object(setup, 'run') as run, patch.object(setup, 'image_identity', return_value=identity):
                 setup.build_runtime(release, 'localhost/test:wrapper', inherited, bundle)
             build.assert_not_called()
             command, used = run.call_args.args
             self.assertNotIn('--secret', command)
             self.assertEqual(used[name('TRUST_HOST_CA')], '1' if bundle else '0')
             self.assertEqual(used[name('CA_BUNDLE')], bundle)
-        with patch.object(setup.PROFILE, 'runtime_build', 'wrapper'), patch.object(setup, 'run'), \
-                patch.object(setup, 'image_identity', return_value=''):
+        with patch.object(setup, 'run'), patch.object(setup, 'image_identity', return_value=''):
             with self.assertRaisesRegex(common.SetupError, 'unavailable after preparation'):
                 setup.build_runtime(release, 'localhost/test:missing', env)
 
     def test_runtime_build_receives_host_ca_only_when_trusted(self):
-        # The recipe path is asserted here; wrapper-built runtimes are covered by
-        # test_runtime_build_follows_the_profile, so pin the profile for any wrapper.
-        recipe = patch.object(setup.PROFILE, 'runtime_build', 'recipe')
-        recipe.start()
-        self.addCleanup(recipe.stop)
         _, release = self.release()
-        env = self.env | {name('MAINTENANCE'): '1'}
         bundle = self.base / 'bundle.pem'
         bundle.write_text('-----BEGIN CERTIFICATE-----\n')
         for trusted in (False, True):
             with self.subTest(trusted=trusted):
                 value = self.value | {'trust_ca': trusted, 'ca_bundle': str(bundle) if trusted else ''}
-                with patch.object(setup, 'build_image', return_value='b' * 64) as build:
+                with patch.object(setup, 'run') as run, \
+                        patch.object(setup, 'image_identity', return_value='sha256:' + 'b' * 64):
                     setup.prepare_artifacts(value, None, release, self.env, {'runtime': ''}, False, [])
-                self.assertEqual(build.call_args.args[4], str(bundle) if trusted else '')
-                self.log.unlink(missing_ok=True)
-                with patch.object(setup, 'image_identity', side_effect=['sha256:' + 'a' * 64, 'sha256:' + 'b' * 64]):
-                    setup.build_image(release, 'Containerfile', 'localhost/test:ca', env, build.call_args.args[4])
-                args = next(c for c in self.calls() if c['args'][0] == 'build')['args']
-                secrets = [args[i + 1] for i, arg in enumerate(args) if arg == '--secret']
-                self.assertEqual(secrets, ['id=build-ca,src=' + str(bundle)] if trusted else [])
+                build = next(c for c in run.call_args_list if c.args[0][-1:] == ['--container-build'])
+                used = build.args[1]
+                self.assertEqual(used[name('TRUST_HOST_CA')], '1' if trusted else '0')
+                self.assertEqual(used[name('CA_BUNDLE')], str(bundle) if trusted else '')
         # The toolchain build takes the same opt-in CA; the proxy build never receives it.
         second = release.parent / 'provider-ca'
         second.mkdir(mode=0o700)
         setup.copy_inputs(second)
         value = self.value | {'network': 'provider', 'endpoint': 'default', 'trust_ca': True,
                               'ca_bundle': str(bundle), 'runtime_dir': str(self.base / 'egress')}
-        with patch.object(setup, 'run'), patch.object(setup, 'build_image', return_value='b' * 64) as build:
+        with patch.object(setup, 'run'), patch.object(setup, 'image_identity', return_value='sha256:' + 'b' * 64), \
+                patch.object(setup, 'build_image', return_value='b' * 64) as build:
             setup.prepare_artifacts(value, None, second, self.env, {'runtime': ''}, True, [])
         recipes = {call.args[1]: call.args[4] if len(call.args) > 4 else '' for call in build.call_args_list}
-        self.assertEqual(recipes, {'Containerfile': str(bundle), 'network/guard-build.Containerfile': str(bundle),
-                                   'network/Containerfile': ''})
+        self.assertEqual(recipes, {'network/guard-build.Containerfile': str(bundle), 'network/Containerfile': ''})
         third = release.parent / 'provider-no-ca'
         third.mkdir(mode=0o700)
         setup.copy_inputs(third)
         value = value | {'trust_ca': False, 'ca_bundle': ''}
-        with patch.object(setup, 'run'), patch.object(setup, 'build_image', return_value='b' * 64) as build:
+        with patch.object(setup, 'run'), patch.object(setup, 'image_identity', return_value='sha256:' + 'b' * 64), \
+                patch.object(setup, 'build_image', return_value='b' * 64) as build:
             setup.prepare_artifacts(value, None, third, self.env, {'runtime': ''}, True, [])
         self.assertEqual({call.args[4] if len(call.args) > 4 else '' for call in build.call_args_list}, {''})
 

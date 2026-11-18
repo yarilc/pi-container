@@ -17,7 +17,7 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sandbox_profile import (AGENT_IMAGE, POLICY_FILE, PROFILE, REAL_POLICY_FILE, REAL_PROFILE, REAL_ROOT, ROOT,
+from sandbox_profile import (AGENT_IMAGE, SHELL_FIXTURE, POLICY_FILE, PROFILE, REAL_POLICY_FILE, REAL_PROFILE, REAL_ROOT, ROOT,
                              NO_METHODS, WIDE_PROFILE, env as name, real_env, test_setting)
 import agent_profile
 import qualification_records as records
@@ -399,10 +399,18 @@ time.sleep(60)
             self.assertLess(time.monotonic() - started, 5)
             self.assertIsNone(gate.process)
 
+    def test_missing_mode_follows_the_profile_default(self):
+        for value in (None, ''):
+            env = {} if value is None else {name('NETWORK'): value}
+            self.assertEqual(records.selected_mode(PROFILE, env), 'provider' if PROFILE.auth else 'offline')
+        shell = agent_profile.load(SHELL_FIXTURE / 'profile.json')
+        self.assertEqual(records.selected_mode(shell, {}), 'offline')
+        self.assertEqual(records.selected_mode(PROFILE, {name('NETWORK'): 'offline'}), 'offline')
+
     def test_code_identity_binds_wrapper_profile_and_policy(self):
         files = records.code_files(PROFILE)
-        for path in (PROFILE.wrapper, agent_profile.PROFILE, agent_profile.POLICY,
-                     'network/agent_profile.py', 'network/bin/sandbox-egress-guard'):
+        for path in (PROFILE.wrapper, agent_profile.PROFILE, agent_profile.POLICY, 'launcher/core.sh',
+                     'agent/launcher.sh', 'network/agent_profile.py', 'network/bin/sandbox-egress-guard'):
             self.assertIn(path, files)
         identity = self.identity()
         report = dict(schema=1, identity=identity, fingerprint=records.digest(records.canonical(identity)),
@@ -508,7 +516,8 @@ class QualificationRuntime(unittest.TestCase):
         (self.install/'network').mkdir(mode=0o700)
         shutil.copyfile(REAL_ROOT/REAL_PROFILE.wrapper, self.install/REAL_PROFILE.wrapper)
         # The wrapper may read its recipe and declared agent files on every launch.
-        for relative in ('Containerfile', '.containerignore', *REAL_PROFILE.install_files):
+        for relative in ('Containerfile', '.containerignore', 'launcher/core.sh', 'agent/launcher.sh',
+                         *REAL_PROFILE.install_files):
             (self.install/relative).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             shutil.copyfile(REAL_ROOT/relative, self.install/relative)
         (self.install/'agent/policies').mkdir(mode=0o700, parents=True)

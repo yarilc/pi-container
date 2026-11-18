@@ -13,6 +13,7 @@ Tests that launch the checkout's own wrapper use ``REAL_ROOT``,
 its own variable names.
 """
 import atexit
+import json
 import os
 from pathlib import Path
 import shutil
@@ -33,6 +34,11 @@ def test_setting(name, default=None):
     return os.environ.get('SANDBOX_' + name, default)
 
 
+def _real_wrapper_name():
+    """The checkout's entry script name, read without importing its profile module."""
+    return json.loads((REAL_ROOT / 'agent/profile.json').read_text())['wrapper']
+
+
 def fixture_root(fixture=AGENT_FIXTURE, parent=None):
     """Create a private root with the shared code and the given fixture ``agent/``.
 
@@ -41,8 +47,9 @@ def fixture_root(fixture=AGENT_FIXTURE, parent=None):
     """
     parent = parent or test_setting('TEST_STATE_ROOT') or test_setting('TEST_TMPDIR')
     root = Path(tempfile.mkdtemp(prefix='sandbox-fixture-', dir=parent)).resolve()
-    for name in ('network', 'setup', 'tests'):
-        shutil.copytree(REAL_ROOT / name, root / name, ignore=SKIPPED)
+    for name in ('network', 'setup', 'tests', 'launcher'):
+        if (REAL_ROOT / name).is_dir():
+            shutil.copytree(REAL_ROOT / name, root / name, ignore=SKIPPED)
     shutil.copytree(fixture, root / 'agent')
     for name in ('Containerfile', '.containerignore'):
         if (REAL_ROOT / name).exists():
@@ -51,8 +58,13 @@ def fixture_root(fixture=AGENT_FIXTURE, parent=None):
     import agent_profile
     sys.path.pop(0)
     profile = agent_profile.load(root / agent_profile.PROFILE)
-    # A fixture wrapper cannot launch anything: wrappers are per-agent files.
-    (root / profile.wrapper).write_text('#!/bin/bash\nprintf "fixture wrapper\\n" >&2\nexit 1\n')
+    # The thin entry script is identical in every wrapper, so the fixture runs
+    # the checkout's own; before the shared core exists it cannot launch.
+    entry = REAL_ROOT / _real_wrapper_name()
+    if (root / 'launcher/core.sh').is_file() and 'launcher/core.sh' in entry.read_text():
+        shutil.copyfile(entry, root / profile.wrapper)
+    else:
+        (root / profile.wrapper).write_text('#!/bin/bash\nprintf "fixture wrapper\\n" >&2\nexit 1\n')
     (root / profile.wrapper).chmod(0o755)
     return root
 

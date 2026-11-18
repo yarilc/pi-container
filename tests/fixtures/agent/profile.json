@@ -17,6 +17,8 @@
   "native": {
     "home": "/fixture-home",
     "command": "fixture",
+    "exec": "/usr/local/bin/fixture",
+    "exec_tmp": true,
     "config_dir_env": "FIXTURE_CONFIG_DIR",
     "approval_bypass_env": "FIXTURE_AGENT_YOLO",
     "config_home": ".fixture",

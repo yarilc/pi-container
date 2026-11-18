@@ -21,7 +21,7 @@ class SetupError(ValueError):
 
 
 MANIFEST = (
-    PROFILE.wrapper, 'Containerfile', '.containerignore', agent_profile.PROFILE, agent_profile.POLICY,
+    PROFILE.wrapper, 'launcher/core.sh', 'agent/launcher.sh', 'Containerfile', '.containerignore', agent_profile.PROFILE, agent_profile.POLICY,
     'setup/common.py', 'setup/setup.py', 'setup/launch.py', 'setup/smoke.py', 'setup/diagnostics.py',
     'setup/toolchains.py',
     'network/Containerfile', 'network/.containerignore',
@@ -264,7 +264,9 @@ def runtime_environment(value, release, *, overrides=True):
             name('EGRESS_IMAGE'): value['proxy_image'],
         })
     if not overrides:
-        for name in (*selected, 'CONTAINER_CONNECTION', PROFILE.env('MAINTENANCE'), *PROFILE.credential_envs):
+        # Setup and smoke never inherit the launch-only forwarding and read-only switches.
+        for name in (*selected, 'CONTAINER_CONNECTION', PROFILE.env('MAINTENANCE'), PROFILE.env('ENV_VARS'),
+                     PROFILE.env('READONLY_STATE'), *PROFILE.credential_envs):
             env.pop(name, None)
     for name, item in selected.items():
         if name not in env:
@@ -342,7 +344,7 @@ def protect_mounts(value, env, args=(), *, launcher=None, workspace=None):
         if any(overlap(path, mount) or lexical == mount or mount in lexical.parents
                or lexical in mount.parents for mount in mounts):
             raise SetupError('Managed installation/command overlaps a writable workspace or state mount; relocate it or choose another workspace.')
-    if env.get(PROFILE.env('NETWORK'), 'offline') == 'provider':
+    if (env.get(PROFILE.env('NETWORK')) or PROFILE.default_mode) == 'provider':
         for name in (PROFILE.env('NETWORK_POLICY'), PROFILE.env('NETWORK_RUNTIME_DIR')):
             path = env.get(name, '')
             if not path or any(overlap(path, mount) for mount in mounts):
