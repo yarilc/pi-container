@@ -975,6 +975,7 @@ guard toolchain tagged from the setup image of this host.
 | `./test.sh` (image built through `--container-build`) | Passed: 18 tests |
 | `git diff --check`, `bash -n` on the entry script and the agent part | Passed |
 | ShellCheck (warning) on `pi-container.sh`, `agent/launcher.sh`, `test.sh`, `test-wrapper.sh`, `tests/run-runtime.sh` | Passed. Standalone, `launcher/core.sh` and the launcher fixtures report warnings (unknown shell, variables assigned by `capture_response`); this is the same in every wrapper and is reported to the reference |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host, then a Pi session in provider mode | Passed (operator, 2026-11-18) |
 
 The installed and qualified code changes (entry script, core, agent part,
 profile): installations rerun `--container-setup`.

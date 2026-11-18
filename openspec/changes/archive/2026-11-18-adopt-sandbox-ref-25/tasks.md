@@ -42,6 +42,6 @@
 
 ## Workflow follow-up
 
-- The operator pushes `main` in the five repositories and runs `--container-setup` for Pi on this host, the Rocky Linux 9 lab host and the newer WSL host, then checks a Pi session in provider mode.
+- The operator pushes `main` in the five repositories and runs `--container-setup` for Pi on this host, the Rocky Linux 9 lab host and the newer WSL host, then checks a Pi session in provider mode. Done (operator, 2026-11-18): passed, no errors.
 - Archive this change with spec sync. This creates `openspec/specs/shared-launcher/spec.md` in this repository.
 - OpenCode adopts `sandbox-ref-25` (or a later tag) in its own change.

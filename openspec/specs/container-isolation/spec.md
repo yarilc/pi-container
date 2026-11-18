@@ -35,18 +35,19 @@ Before image operations the wrapper SHALL validate the physical `.pi` and `.agen
 - **AND** every session has `PI_CONTAINER_CONFIG_DIR=/pi-home/.pi`, and the host value is never forwarded
 
 ### Requirement: Read-only persistent state remains available
-
-With the existing read-only configuration option enabled, both persistent directories SHALL be mounted read-only after physical-path, directory, read, and traverse checks. This mode SHALL neither create missing state nor require write permission or silently copy credentials.
+With `PI_CONTAINER_READONLY_STATE` enabled (a boolean: `1`, `true` or `yes`, any case), the configuration directory and `.agents`, from shared state or from the isolated home, SHALL be mounted read-only below the ephemeral home after physical-path, directory, read, and traverse checks. This mode SHALL neither create missing state nor require write permission or silently copy credentials. The isolated home itself SHALL NOT be mounted, and the read-only directories SHALL NOT be writable inputs of restricted preparation.
 
 #### Scenario: Readable state without write access
-
-- **WHEN** read-only configuration is enabled and both state sources are readable and traversable
-- **THEN** startup accepts them without writable-state ownership/privacy requirements and session writes to either mount fail.
+- **WHEN** read-only state is enabled and both state sources are readable and traversable
+- **THEN** startup accepts them without writable-state ownership/privacy requirements and session writes to either mount fail
 
 #### Scenario: Missing read-only state
+- **WHEN** read-only state is enabled but either source is absent or unreadable
+- **THEN** startup fails before image operations and does not create or modify the source
 
-- **WHEN** read-only configuration is enabled but either source is absent or unreadable
-- **THEN** startup fails before image operations and does not create or modify the source.
+#### Scenario: Invalid switch value
+- **WHEN** `PI_CONTAINER_READONLY_STATE` is set to a value such as `2`
+- **THEN** the wrapper exits with status 1 naming the variable before engine queries
 
 ### Requirement: Physical workspace binds without host relabeling
 
@@ -63,66 +64,35 @@ The default workspace source, destination, and workdir SHALL be the exact physic
 - **THEN** startup fails with an actionable diagnostic and does not change host labels or disable security enforcement.
 
 ### Requirement: Explicit bounded ephemeral storage
-
-Read-only sessions SHALL explicitly provide `/tmp`, `/var/tmp`, `/run`, the container home and a separate npm cache with finite capacities, nosuid/nodev, deliberate execution modes, and mapped-user access. Automatic read-only tmpfs provisioning SHALL add no writable path beyond these explicit temporary and device mounts. Podman storage SHALL follow the same policy. Temporary contents SHALL disappear after the session.
+Read-only sessions SHALL explicitly provide `/tmp`, `/var/tmp`, `/run`, the container home and a separate npm cache with finite capacities, `noexec`, nosuid/nodev, and mapped-user access. Automatic read-only tmpfs provisioning SHALL add no writable path beyond these explicit temporary and device mounts. Podman storage SHALL follow the same policy. Temporary contents SHALL disappear after the session.
 
 #### Scenario: Declared temporary mount policy
-
 - **WHEN** a default session starts
-- **THEN** `/tmp` and `/var/tmp` each provide 256 MiB and `/run` 32 MiB with rw,noexec,nosuid,nodev,mode=1777, `/pi-home` provides a noexec,nosuid,nodev home, and `/pi-home/.npm` provides rw,noexec,nosuid,nodev with caller access and a default 256 MiB capacity configurable by `PI_NPM_CACHE_SIZE`.
+- **THEN** `/tmp` and `/var/tmp` each provide 512 MiB with rw,noexec,nosuid,nodev,mode=1777, and `/run` provides 32 MiB noexec,nosuid,nodev and is not writable by the session user
+- **AND** `/pi-home` provides a 512 MiB noexec,nosuid,nodev home, and `/pi-home/.npm` provides rw,noexec,nosuid,nodev with caller access and a default 256 MiB capacity configurable by `PI_NPM_CACHE_SIZE`
 
 #### Scenario: Writable scope and lifetime
-
-- **WHEN** the mapped user writes in every temporary location, attempts a root-filesystem write, and starts a second session
-- **THEN** temporary writes succeed within capacity, the root write fails, and previous temporary data is absent while writable persistent state remains.
+- **WHEN** the mapped user writes in every writable temporary location, attempts a root-filesystem write, and starts a second session
+- **THEN** temporary writes succeed within capacity, the root write fails, and previous temporary data is absent while writable persistent state remains
 
 ### Requirement: Host Git configuration requires exact opt-in
-
-The wrapper SHALL mount the caller's `~/.gitconfig` read-only at `/pi-home/.gitconfig` only when `PI_CONTAINER_GITCONFIG` is exactly `1`, using the physical file as source. Any other value SHALL leave it unmounted. An opt-in without a regular `~/.gitconfig` file SHALL stop with status 1 naming the variable and the path, before any engine query or state creation. No other host Git configuration file SHALL be mounted.
+The wrapper SHALL mount the caller's `~/.gitconfig` read-only at `/pi-home/.gitconfig` only when `PI_CONTAINER_GITCONFIG` is exactly `1`, using the physical file as source. Any other value SHALL leave it unmounted without a notice. An opt-in without a regular `~/.gitconfig` file, or with a physical path containing a colon, CR or LF, SHALL stop with status 1 naming the variable and the path, before any engine query or state creation. No other host Git configuration file SHALL be mounted.
 
 #### Scenario: Default launch with an existing gitconfig
-
-- **WHEN** `~/.gitconfig` exists and neither `PI_CONTAINER_GITCONFIG` nor `PI_MOUNT_GITCONFIG` is set
-- **THEN** the generated engine arguments contain no mount of `~/.gitconfig`
+- **WHEN** `~/.gitconfig` exists and `PI_CONTAINER_GITCONFIG` is not set
+- **THEN** the generated engine arguments contain no mount of `~/.gitconfig` and stderr names no gitconfig
 
 #### Scenario: Exact opt-in
-
 - **WHEN** `PI_CONTAINER_GITCONFIG=1` is set and `~/.gitconfig` is a regular file or a symlink to one
 - **THEN** its physical file is mounted read-only at `/pi-home/.gitconfig`, `git config --global` reads it, and a write attempt inside the session fails
 
 #### Scenario: Non-exact opt-in
-
 - **WHEN** `PI_CONTAINER_GITCONFIG` is `true`, `yes`, empty or any value other than `1`
 - **THEN** `~/.gitconfig` is not mounted
 
 #### Scenario: Opt-in without a file
-
 - **WHEN** `PI_CONTAINER_GITCONFIG=1` is set and `~/.gitconfig` is missing or not a regular file
 - **THEN** the wrapper exits with status 1 naming the variable and path, with no engine query or state creation
-
-### Requirement: Deprecated gitconfig variable
-
-`PI_MOUNT_GITCONFIG` SHALL remain a deprecated alias that prints one stderr warning naming `PI_CONTAINER_GITCONFIG`. Alone, `1` SHALL behave as the opt-in and `0` as the default. Values other than `0` and `1` SHALL stop with status 1 before engine queries.
-
-#### Scenario: Old opt-in value
-
-- **WHEN** only `PI_MOUNT_GITCONFIG=1` is set and `~/.gitconfig` exists
-- **THEN** the file is mounted read-only and stderr contains one deprecation warning
-
-#### Scenario: Conflicting values
-
-- **WHEN** `PI_MOUNT_GITCONFIG=0` and `PI_CONTAINER_GITCONFIG=1` are both set, or `PI_MOUNT_GITCONFIG=1` and `PI_CONTAINER_GITCONFIG` is set to another value
-- **THEN** the wrapper exits with status 1 naming both variables, before any engine query
-
-### Requirement: Gitconfig migration notice
-
-When neither `PI_CONTAINER_GITCONFIG` nor `PI_MOUNT_GITCONFIG` is set and `~/.gitconfig` exists, the wrapper SHALL print one stderr notice that the file is no longer mounted by default and how to opt in. The notice SHALL NOT include file contents and SHALL NOT change the exit status.
-
-#### Scenario: Notice and silence
-
-- **WHEN** `~/.gitconfig` exists and no variable is set
-- **THEN** one notice naming `PI_CONTAINER_GITCONFIG=1` is printed and the session starts
-- **AND** setting `PI_CONTAINER_GITCONFIG=0` suppresses the notice
 
 ### Requirement: Sessions have explicit resource budgets
 Every Pi and shell container SHALL be created with a memory limit, a CPU limit and a process limit for each budget whose cgroup v2 controller (`memory`, `cpu`, `pids`) the verified rootless engine reports as available. The defaults SHALL be 4 GiB memory, 2 CPUs and 512 processes. `PI_CONTAINER_MEMORY_LIMIT`, `PI_CONTAINER_CPU_LIMIT` and `PI_CONTAINER_PIDS_LIMIT` SHALL override them. Only an unset variable SHALL select its default; no value SHALL disable a budget, and only a missing controller SHALL leave it unenforced.
@@ -181,29 +151,28 @@ Wrapper help and the README SHALL document the budget variables with defaults an
 - **AND** no engine query or state creation occurs
 
 ### Requirement: Dedicated container home
-
-Sessions SHALL use `HOME=/pi-home`, an ephemeral noexec tmpfs, with the persistent state, npm cache and opted-in gitconfig mounted at fixed paths beneath it. The workspace SHALL keep its host absolute path. Files written elsewhere below `/pi-home` SHALL NOT survive the session.
+Sessions SHALL use `HOME=/pi-home`. In shared-state mode and with read-only state it SHALL be an ephemeral 512 MiB `noexec` tmpfs; with writable isolated state it SHALL be the isolated home. The persistent state, npm cache and opted-in gitconfig SHALL be mounted at fixed paths beneath it. The workspace SHALL keep its host absolute path. In shared-state mode, files written elsewhere below `/pi-home` SHALL NOT survive the session.
 
 #### Scenario: Default layout
-
 - **WHEN** a default session starts
 - **THEN** `HOME` is `/pi-home`, and `~/.pi`, `~/.agents` and the npm cache tmpfs are at `/pi-home/.pi`, `/pi-home/.agents` and `/pi-home/.npm`
 - **AND** Pi, npm extension installation and Git work as before, and host state is unchanged apart from Pi's own writes
 
 ### Requirement: Isolated persistent state option
-
-`PI_CONTAINER_STATE_DIR` SHALL select a private host directory whose `.pi` and `.agents` replace `~/.pi` and `~/.agents`: mounted as the persistent `/pi-home` in writable mode, or read-only below an ephemeral home with `PI_READONLY_CONFIG`. It SHALL be checked lexically before engine queries, then created privately and validated before image operations. It SHALL NOT overlap the workspace or be combined with a nonempty `PI_CONTAINER_CONFIG_DIR`. An empty value selects shared state.
+`PI_CONTAINER_STATE_DIR` SHALL select a private host directory whose `.pi` and `.agents` replace `~/.pi` and `~/.agents`: mounted as the persistent `/pi-home` in writable mode, or read-only below an ephemeral home with `PI_CONTAINER_READONLY_STATE`. It SHALL be checked lexically (absolute, no colon, CR or LF) before engine queries, then created privately and validated before image operations. Every child the launcher uses below it, and the CA mount parent, SHALL be resolved before creation, SHALL stay inside it and SHALL be private. It SHALL NOT overlap the workspace or be combined with a nonempty `PI_CONTAINER_CONFIG_DIR`. An empty value selects shared state.
 
 #### Scenario: Isolated writable state
-
 - **WHEN** `PI_CONTAINER_STATE_DIR` names a missing absolute directory
 - **THEN** it is created with its `.pi` and `.agents` private, mounted at `/pi-home`, and `~/.pi` and `~/.agents` are not mounted
 
 #### Scenario: Invalid isolated state
-
 - **WHEN** the value is relative, the directory is foreign-owned or grants group or other permissions, or it overlaps the workspace
-- **THEN** the wrapper exits with status 1 naming the variable before any image operation and changes nothing
+- **THEN** the wrapper exits with status 1 before any image operation and changes nothing, naming the variable for a relative or overlapping value and the directory for an ownership or permission refusal
 - **AND** a relative or overlapping value fails before any engine query
+
+#### Scenario: Escaping or shared child
+- **WHEN** `.pi` or `.agents` in the isolated home is a symlink leaving it, or grants group or other permissions
+- **THEN** the wrapper exits with status 1 naming the path before any image operation
 
 #### Scenario: Engine query fails
 - **WHEN** a missing isolated state directory is selected and the engine query fails
