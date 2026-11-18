@@ -30,7 +30,7 @@
 
 ## 4. Integration
 
-- [ ] 4.1 Rebuild the Pi test image with `--container-build`. Then run:
+- [x] 4.1 Rebuild the Pi test image with `--container-build`. Then run:
   - the unit discovery in the disposable test container;
   - `bash tests/run-runtime.sh` with `--wrapper`, `--shared`, `--setup`, `--setup-runtime`, `--qualification`, `--network` and `--guard`, and the default mode;
   - `bash test.sh`;

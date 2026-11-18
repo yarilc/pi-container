@@ -862,3 +862,119 @@ Runtime image: `localhost/pi-container:setup-3705f13b91c1402ab8f7f184e1f6e886`; 
 | Operator `--container-setup` on the three hosts (`sandbox-ref-21`) | Passed (operator, 2026-11-16) |
 
 Only shared test files changed: installations need no new setup for this tag.
+
+## Adoption of `sandbox-ref-25`: 2026-11-18
+
+Change `adopt-sandbox-ref-25`: full adoption of the shared launcher core, from
+`sandbox-ref-21` straight to `sandbox-ref-25` (commit `6bed770`). Copied from
+`sandbox-container` with `tools/propagate.py`: `network/README.md`,
+`network/agent_profile.py`, `network/control.py`, `network/qualification_records.py`,
+`network/qualify.py`, `setup/common.py`, `setup/launch.py`, `setup/setup.py`,
+`tests/fixtures/agent/profile.json`, `tests/sandbox_profile.py`,
+`tests/test_agent_profile.py`, `tests/test_alignment.py`, `tests/test_network_policy.py`,
+`tests/test_qualification.py`, `tests/test_setup.py`, `launcher/core.sh`,
+`tests/fake_podman.py`, `tests/fixtures/agent/launcher.sh`,
+`tests/fixtures/shell-agent/launcher.sh`, `tests/test_launcher.py`. The
+`tests/test_reference_copy.py` manifest moved to the tag and lists `launcher` as
+a closed directory; the parity rows were copied from their repositories.
+
+- **Launcher:** `pi-container.sh` is the reference entry script with the wrapper
+  name replaced. `agent/launcher.sh` holds Pi's profile values,
+  `AGENT_EXEC=/usr/local/bin/pi`, `AGENT_EXEC_TMP=0`, `AGENT_INSTALL_FILES=(.version)`,
+  one credential per policy profile, `PI_OFFLINE=1`, `PI_SKIP_VERSION_CHECK=1` and
+  `PI_TELEMETRY=0` for restricted sessions, and five hooks: `agent_validate`,
+  `agent_mounts`, `agent_build_args`, `agent_approval_bypass` and `agent_help`.
+  `agent/profile.json` drops `install.runtime_build`.
+- **State (U4, U6, M4):** shared `~/.pi` and `~/.agents` stay the default;
+  `PI_CONTAINER_READONLY_STATE` replaces `PI_READONLY_CONFIG`.
+- **Temporary storage (U7, L7):** `/tmp`, `/var/tmp` and the shared-state home are
+  512 MiB `noexec` tmpfs mounts; `/run` (32 MiB) is not writable by the session
+  user; the `~/.npm` tmpfs keeps its 256 MiB default.
+- **Gitconfig:** the migration notice is dropped with the aliases (design
+  decision 2).
+
+Old tests gate (design decision 4): the `sandbox-ref-21` `tests/test_wrapper.py`
+(91 cases) ran with its saved fake engine against the new entry script and core,
+with only its harness adapted (the fake answers the core's `build-inputs-hash`
+label and its one-line socket query; synthetic installations copy the core and
+the agent part). 43 cases failed, each classified below. No lost behavior: one
+candidate (`test_missing_successful_cid_reports_unresolved`) was classified as
+a visible change by the user (2026-11-18). A diagnostic rerun with the new
+variable names (`PI_CONTAINER_READONLY_STATE`, `PI_CONTAINER_ENV_VARS`) and the
+new YOLO notice passed `test_physical_state_both_directories_and_readonly`,
+`test_exact_delegation_and_connection_forwarding` and `test_yolo_has_no_effect`;
+an invalid CID record is refused and the created container removed.
+
+| Old case | Outcome | Maps to |
+| --- | --- | --- |
+| `test_all_names_decimal_bounds_and_listing_error` | visible change | wording ("cannot list Podman containers") |
+| `test_application_status_and_cleanup_failure` | visible change | wording; status preserved (U9 cleanup report "cleanup rm failed or timed out") |
+| `test_budget_inspection` | visible change | wording ("agent not started"); start still refused |
+| `test_budget_validation` | visible change | `--cap-drop=all` spelling; the budget checks passed |
+| `test_build_cannot_consume_session_input` | visible change | U3/U16: `--container-build --container-shell` is the build-only operation; the build still gets no session input |
+| `test_build_only_refresh` | visible change | U8: the build-only operation checks and pulls the exact bases; wording and status of a failed build |
+| `test_common_names_and_deprecated_aliases` | visible change | U2: aliases removed without notice |
+| `test_creation_and_collision_query_failures` (exists=125) | visible change | phase 6: collisions confirmed by ownership label, not `container exists`; create diagnostics kept |
+| `test_dedicated_home_layout` | visible change | U7 512 MiB home; U11 environment order |
+| `test_device_and_secret_mounts_in_every_unrestricted_mode` | visible change | U7 tmpfs sizes and option order |
+| `test_exact_delegation_and_connection_forwarding` | visible change | U6 `PI_CONTAINER_ENV_VARS`; passed with the new name |
+| `test_gitconfig_deprecated_alias` | visible change | U2: `PI_MOUNT_GITCONFIG` removed |
+| `test_gitconfig_opt_in_without_regular_file` | visible change | design decision 2: no migration notice; the refusals passed |
+| `test_gitconfig_requires_exact_opt_in` | visible change | design decision 2: no migration notice |
+| `test_hash_inspection_build_inputs_and_failures` | visible change | U8 core hash; wording of the stale-image message |
+| `test_help_documents_modes_migration_and_provider_limits` | visible change | U1: no migration text; hosts printed from the policy |
+| `test_help_missing_version_and_runtime` | visible change | U2 `--wrapper-help`; the copied entry script needs the core; help without `.version` is a hook case in the reduced tests |
+| `test_help_without_engine_or_state` | visible change | help text from the core (U2: no deprecated names) |
+| `test_image_and_build_status_matrix` | visible change | a failed image inspection exits 1 with a diagnostic instead of the engine status (user, 2026-11-17, Codex) |
+| `test_interrupted_creation_invalid_identity_and_control_failures` | visible change | wording of the core's cleanup reports (validated CID record, U9) |
+| `test_interrupted_creation_is_recovered_by_label` | visible change | wording of the core's cleanup reports |
+| `test_isolated_state_directory` | visible change | U6 `PI_CONTAINER_READONLY_STATE`; the privacy refusal names the directory |
+| `test_maintenance_gates_every_build` | visible change | wording of the stale-image message |
+| `test_missing_mode_and_removed_network_stop_before_engine` | visible change | U1 provider default and its setup message; U2 `PI_NETWORK` |
+| `test_missing_successful_cid_reports_unresolved` | visible change (user, 2026-11-18) | a successful create with a valid stdout ID and an empty CID record starts the session; the record is a cross-check when present |
+| `test_mode_and_delegation_rejections_precede_engine` | visible change | phase 1-2 union: setup guidance before mode-specific settings |
+| `test_modes_image_override_and_native_help` | visible change | U14: shell receives its arguments |
+| `test_non_enforcing_modes_controlled_fixture` | visible change | wording ("use native Linux storage if permissions are not enforced") |
+| `test_offline_order_arguments_and_forwarding` | visible change | the qualification check follows the name listing, before create |
+| `test_permanently_stalled_creation_signal_matrix` | visible change | U9 immediate shutdown |
+| `test_physical_state_both_directories_and_readonly` | visible change | U6 `PI_CONTAINER_READONLY_STATE`; passed with the new name |
+| `test_prefix_fallback_identity_records_and_attempt_environment` | visible change | low findings: fallback name `AGENT_NAME`; an invalid CID record is refused and the created container removed |
+| `test_provider_order_and_profile_credentials` | visible change | U7 tmpfs sizes |
+| `test_restricted_credentials_match_the_agent_profile` | visible change | source inspection of the old launcher; `AGENT_CREDENTIALS` (U10) |
+| `test_retained_editors_gitconfig_and_secrets` | visible change | U15 `EDITOR`/`VISUAL` nano; U10 |
+| `test_sensitive_workspaces` | visible change | U2 `PI_ALLOW_UNSAFE_PWD`; wording |
+| `test_setup_entry_point_is_dedicated_and_help_takes_precedence` | visible change | help text from the core |
+| `test_socket_fallbacks_and_symlink` (default path) | visible change | fixture limit: the core checks the default socket before resolving it; shared case covers `/run/user/<uid>/podman/podman.sock` |
+| `test_stubborn_application_and_stalled_cleanup_are_bounded` | visible change | U9 rewrite; wording |
+| `test_unreapable_client_reports_without_waiting` | visible change | source inspection of the old helper (U9) |
+| `test_unrestricted_keeps_forwarding` | visible change | U10: unrestricted sessions forward no key unless listed |
+| `test_workspace_parent_identity_tmpfs_and_controls` | visible change | `--cap-drop=all` spelling; U7 |
+| `test_yolo_has_no_effect` | Pi-only behavior | notice from `agent_approval_bypass` with new wording; passed with it; kept in the reduced tests |
+
+The other "to verify at adoption" cases passed against the core. The hook cases
+are rewritten in the reduced `tests/test_wrapper.py` (13 tests).
+
+Environment: WSL2 6.6.87.2, Podman server 4.9.3; image rebuilt through the
+build-only path: `localhost/pi-container:latest` `21762a3dcf25`, Pi 0.80.8,
+`build-inputs-hash` `7797baa9d001aece6d7f01bb8cac91425d699f326b548fbb275e23d8b210916c`;
+guard toolchain tagged from the setup image of this host.
+
+| Check | Result |
+| --- | --- |
+| `--container-build` alone (real engine, maintenance) | Passed: built, labeled, no session container |
+| `python3 -m unittest tests.test_alignment tests.test_agent_profile tests.test_launcher` (disposable container) | Passed: 145 tests, 1 skipped |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 453 tests, 73 skipped |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 120 tests (`test_launcher.py`, `test_wrapper.py`) |
+| `bash tests/run-runtime.sh --shared` | Passed: 288 tests, 29 skipped |
+| `bash tests/run-runtime.sh --setup` | Passed: 67 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 4 tests |
+| `bash tests/run-runtime.sh --qualification` | Passed: 29 tests |
+| `bash tests/run-runtime.sh --network` | Passed: 22 tests |
+| `bash tests/run-runtime.sh --guard` | Passed: 20 tests, 1 skipped |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 18 tests |
+| `./test.sh` (image built through `--container-build`) | Passed: 18 tests |
+| `git diff --check`, `bash -n` on the entry script and the agent part | Passed |
+| ShellCheck (warning) on `pi-container.sh`, `agent/launcher.sh`, `test.sh`, `test-wrapper.sh`, `tests/run-runtime.sh` | Passed. Standalone, `launcher/core.sh` and the launcher fixtures report warnings (unknown shell, variables assigned by `capture_response`); this is the same in every wrapper and is reported to the reference |
+
+The installed and qualified code changes (entry script, core, agent part,
+profile): installations rerun `--container-setup`.

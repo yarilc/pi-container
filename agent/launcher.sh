@@ -1,6 +1,9 @@
 # Pi agent part for the shared launcher core (launcher/core.sh). It mirrors
 # agent/profile.json and agent/policies/default.json; tests/test_alignment.py
 # compares them. See docs/launcher-contract.md in sandbox-container.
+# The core sources this file: it reads the AGENT_* data and hook outputs and
+# defines script_dir.
+# shellcheck shell=bash disable=SC2034,SC2154
 AGENT_NAME=pi-container
 AGENT_DISPLAY_NAME=Pi
 AGENT_WRAPPER=pi-container.sh
