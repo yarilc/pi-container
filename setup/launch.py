@@ -30,6 +30,9 @@ def main():
     if release.parent != trusted(value['installation']) / 'releases':
         raise SetupError('Managed release does not belong to its declared installation.')
     trusted(wrapper)
+    # The shared launcher core and the agent part run with the wrapper.
+    for name in ('launcher/core.sh', 'agent/launcher.sh'):
+        trusted(release / name)
     # The profile imported above must be the protected one of this release.
     for name in (agent_profile.PROFILE, agent_profile.POLICY, 'network/agent_profile.py'):
         trusted(release / name)

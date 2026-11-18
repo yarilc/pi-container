@@ -2,12 +2,15 @@
 
 ``network/``, ``setup/`` and the shared tests are copied unchanged between
 wrappers. They must not contain agent identifiers; every agent-specific value
-comes from ``agent/profile.json``. The wrapper and agent image stay per agent
-and must agree with the names the profile produces.
+comes from ``agent/profile.json``. The thin entry script and the shared
+launcher core run every wrapper; ``agent/launcher.sh`` and the agent image stay
+per agent and must agree with the profile.
 """
 from pathlib import Path
 import re
+import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -17,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sandbox_profile import PROFILE as FIXTURE_PROFILE, REAL_PROFILE as PROFILE, REAL_ROOT as ROOT
 import agent_profile
 
-SHARED_DIRECTORIES = ('network', 'setup')
+SHARED_DIRECTORIES = ('network', 'setup', 'launcher')
 SHARED_TESTS = (
     'tests/sandbox_profile.py', 'tests/test_alignment.py', 'tests/test_agent_profile.py',
     'tests/test_network_policy.py', 'tests/test_mux.py', 'tests/test_tls_client_hello.py',
@@ -29,6 +32,8 @@ SHARED_TESTS = (
     'tests/tls_binding_fixture.py', 'tests/test_session.py', 'tests/test_toolchains.py',
     'tests/fixtures/agent/profile.json', 'tests/fixtures/agent/policies/default.json',
     'tests/fixtures/shell-agent/profile.json', 'tests/fixtures/shell-agent/policies/default.json',
+    'tests/fixtures/agent/launcher.sh', 'tests/fixtures/shell-agent/launcher.sh', 'tests/fake_podman.py',
+    'tests/test_launcher.py',
 )
 FIXTURE_FILES = 'tests/fixtures/'
 SKIPPED_PARTS = ('__pycache__', 'bin')
@@ -55,6 +60,16 @@ def shared_files(root):
                 yield path
     for name in SHARED_TESTS:
         yield root / name
+
+
+def sibling_identifiers(root):
+    """Identifiers of the wrapper checkouts next to this one, which shared files must not name either."""
+    identifiers = set()
+    for path in sorted(root.parent.glob('*/' + agent_profile.PROFILE)):
+        if path.parent.parent.resolve() != root.resolve():
+            # Only the identifiers: a sibling on another tag may not validate against this checkout's rules.
+            identifiers.update(json.loads(path.read_text())['identifiers'])
+    return sorted(identifiers)
 
 
 def violations(root, identifiers):
@@ -117,6 +132,12 @@ class SharedComponentAlignment(unittest.TestCase):
     def test_shared_components_contain_no_agent_identifiers(self):
         self.assertEqual(violations(ROOT, PROFILE.identifiers), [])
 
+    def test_shared_components_contain_no_sibling_identifiers(self):
+        identifiers = sibling_identifiers(ROOT)
+        if not identifiers:
+            self.skipTest('no sibling wrapper checkout next to this one')
+        self.assertEqual(violations(ROOT, identifiers), [])
+
     def test_scan_detects_an_injected_identifier(self):
         with tempfile.TemporaryDirectory() as directory:
             copy = Path(directory)
@@ -138,69 +159,122 @@ class SharedComponentAlignment(unittest.TestCase):
             self.assertTrue((ROOT / name).is_file(), name)
 
 
-# The usage() function is a quoted heredoc: a name there documents a control
-# but proves nothing about the launcher's code.
-USAGE = re.compile(r"^usage\(\) \{\n\s*cat <<'(?P<end>[A-Z]+)'\n.*?^(?P=end)\n\}\n", re.M | re.S)
-# Derived variables that shared code reads itself; the wrapper only documents them.
+# Derived variables that shared code reads itself; the launcher only documents them.
 SHARED_READ = ('TOOLCHAINS_DIR',)
-# Derived variables set by setup for the wrapper, never by the operator.
+# Derived variables set by setup for the launcher, never by the operator.
 INTERNAL = ('QUALIFICATION_INPUT',)
 # Derived variables that only provider mode reads; a profile without
-# authentication methods has no provider mode, so its wrapper need not use them.
+# authentication methods has no provider mode, so its help need not name them.
 PROVIDER_ONLY = ('NETWORK_PROFILE', 'NETWORK_POLICY', 'NETWORK_RUNTIME_DIR', 'EGRESS_IMAGE')
+ENTRY_SOURCE = 'source "$wrapper_dir/launcher/core.sh" "$wrapper_dir/agent/launcher.sh" "$@"'
+SCALARS = ('AGENT_NAME', 'AGENT_DISPLAY_NAME', 'AGENT_WRAPPER', 'AGENT_ENV_PREFIX', 'AGENT_LABEL_NAMESPACE',
+           'AGENT_IMAGE', 'AGENT_PROXY_IMAGE', 'AGENT_HOME', 'AGENT_COMMAND', 'AGENT_EXEC', 'AGENT_CONFIG_DIR_ENV',
+           'AGENT_CONFIG_HOME', 'AGENT_PRIVATE_SHARED_DIRS', 'AGENT_APPROVAL_BYPASS_ENV', 'AGENT_EXEC_TMP')
+ARRAYS = ('AGENT_SHARED_DIRS', 'AGENT_INSTALL_FILES', 'AGENT_CREDENTIALS', 'AGENT_POLICY_HOSTS', 'AGENT_SESSION_ENV', 'AGENT_RESTRICTED_ENV',
+          'AGENT_PROVIDER_ENV', 'AGENT_UNSET_ENV', 'AGENT_RESERVED_ENV')
+DUMP = (r'''source "$1"; for name in ''' + ' '.join(SCALARS) + r'''; do printf '%s=%s\n' "$name" "${!name}"; done
+for name in ''' + ' '.join(ARRAYS) + r'''; do declare -n items=$name; printf '%s=' "$name"
+for item in "${items[@]}"; do printf '%s\037' "$item"; done; printf '\n'; unset -n items; done''')
 
 
-def usage_text(wrapper):
-    match = USAGE.search(wrapper)
-    return match.group(0) if match else ''
+def agent_part(path):
+    """Values an agent launcher part declares, read by Bash itself."""
+    result = subprocess.run(['bash', '-c', DUMP, 'dump', str(path)], capture_output=True, text=True, check=True)
+    values = dict(line.split('=', 1) for line in result.stdout.splitlines())
+    return {key: (value.split('\037')[:-1] if key in ARRAYS else value) for key, value in values.items()}
 
 
-def without_usage(wrapper):
-    return USAGE.sub('', wrapper, count=1)
+def expected_agent_part(profile, policy):
+    credentials = sorted(name + '=' + profile.auth.get(item['authentication'], {}).get('credential_env', '')
+                         for name, item in json.loads(policy.read_text())['profiles'].items())
+    return {'AGENT_NAME': profile.name, 'AGENT_DISPLAY_NAME': profile.display_name, 'AGENT_WRAPPER': profile.wrapper,
+            'AGENT_ENV_PREFIX': profile.env_prefix, 'AGENT_LABEL_NAMESPACE': profile.label_namespace,
+            'AGENT_IMAGE': profile.images['agent'], 'AGENT_PROXY_IMAGE': profile.images['proxy'],
+            'AGENT_HOME': profile.home, 'AGENT_COMMAND': profile.command, 'AGENT_EXEC': profile.exec,
+            'AGENT_CONFIG_DIR_ENV': profile.config_dir_env, 'AGENT_CONFIG_HOME': profile.config_home,
+            'AGENT_PRIVATE_SHARED_DIRS': '1' if profile.private_shared_dirs else '0',
+            'AGENT_APPROVAL_BYPASS_ENV': profile.approval_bypass_env or '',
+            'AGENT_EXEC_TMP': '1' if profile.exec_tmp else '0',
+            'AGENT_SHARED_DIRS': list(profile.shared_dirs), 'AGENT_INSTALL_FILES': list(profile.install_files),
+            'AGENT_CREDENTIALS': credentials,
+            'AGENT_POLICY_HOSTS': sorted(item['policy_profile'] + '=' + ' '.join(item['hosts'])
+                                         for item in profile.auth.values())}
 
 
-def names_in(text, names):
-    return [name for name in names if re.search(r'(?<![A-Za-z0-9_])' + re.escape(name) + r'(?![A-Za-z0-9_])', text)]
+def agent_part_mismatches(root):
+    profile = agent_profile.load(root / agent_profile.PROFILE)
+    declared = agent_part(root / 'agent/launcher.sh')
+    for name in ('AGENT_CREDENTIALS', 'AGENT_POLICY_HOSTS'):
+        declared[name] = sorted(declared.get(name, []))
+    expected = expected_agent_part(profile, root / agent_profile.POLICY)
+    missing = [name for name in SCALARS + ARRAYS if name not in declared]
+    return missing + [name for name, value in expected.items() if declared.get(name) != value]
 
 
-def missing_profile_names(wrapper):
-    """Profile variables the launcher's code or its help text fails to name."""
+def core_code(core):
+    """The core without its help text, which documents names but proves no use."""
+    return re.sub(r"(?ms)^usage\(\) \{.*?^EOF\n", '', core, count=1)
+
+
+def unread_settings(core):
     unused = SHARED_READ + (() if PROFILE.auth else PROVIDER_ONLY)
-    coded = [PROFILE.env(suffix) for suffix in agent_profile.SUFFIXES if suffix not in unused]
-    coded += [PROFILE.config_dir_env, *([PROFILE.approval_bypass_env] if PROFILE.approval_bypass_env else []),
-              *PROFILE.credential_envs]
-    documented = [PROFILE.env(suffix) for suffix in agent_profile.SUFFIXES
-                  if suffix not in INTERNAL + (() if PROFILE.auth else PROVIDER_ONLY)]
-    code, usage = without_usage(wrapper), usage_text(wrapper)
-    missing = [name for name in coded if name not in names_in(code, coded)]
-    missing += [name for name in documented if name not in names_in(usage, documented) and name not in missing]
-    return missing
+    code = core_code(core)
+    return [suffix for suffix in agent_profile.SUFFIXES if suffix not in unused
+            and not re.search(r'\bcfg_' + suffix + r'(?![A-Z_])', code)]
 
-class WrapperConsistency(unittest.TestCase):
+
+class LauncherConsistency(unittest.TestCase):
     def setUp(self):
-        self.wrapper = (ROOT / PROFILE.wrapper).read_text()
+        self.entry = (ROOT / PROFILE.wrapper).read_text()
+        self.core = (ROOT / 'launcher/core.sh').read_text()
         self.image = (ROOT / 'Containerfile').read_text()
 
-    def test_wrapper_uses_every_profile_variable(self):
-        self.assertEqual(missing_profile_names(self.wrapper), [])
+    def test_entry_script_is_thin_and_agent_neutral(self):
+        self.assertIn(ENTRY_SOURCE, self.entry)
+        for value in (PROFILE.name, PROFILE.env_prefix, PROFILE.home):
+            self.assertNotIn(value, self.entry)
+        code = [line for line in self.entry.splitlines() if line.strip() and not line.lstrip().startswith('#')]
+        self.assertLessEqual(len(code), 14)
 
-    def test_wrapper_uses_profile_labels_images_and_home(self):
-        # Egress and qualification labels are applied by the shared helper.
-        self.assertIn(PROFILE.label('session'), self.wrapper)
-        self.assertIn(PROFILE.images['agent'], self.wrapper)
-        self.assertIn(PROFILE.home, self.wrapper)
-        self.assertIn(PROFILE.command, self.wrapper)
+    def test_agent_parts_match_their_profiles(self):
+        from sandbox_profile import AGENT_FIXTURE, SHELL_FIXTURE
+        self.assertEqual(agent_part_mismatches(ROOT), [])
+        for fixture in (AGENT_FIXTURE, SHELL_FIXTURE):
+            with self.subTest(fixture=fixture.name), tempfile.TemporaryDirectory() as directory:
+                shutil.copytree(fixture, Path(directory) / 'agent')
+                self.assertEqual(agent_part_mismatches(Path(directory)), [])
 
-    def test_wrapper_delegates_the_restricted_session_to_the_shared_helper(self):
-        self.assertIn('network/session.py', self.wrapper)
+    def test_agent_part_mismatch_is_detected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            copy = Path(directory)
+            shutil.copytree(ROOT / 'agent', copy / 'agent')
+            part = copy / 'agent/launcher.sh'
+            part.write_text(part.read_text().replace('AGENT_HOME=' + PROFILE.home, 'AGENT_HOME=/elsewhere'))
+            self.assertEqual(agent_part_mismatches(copy), ['AGENT_HOME'])
+
+    def test_core_reads_every_profile_setting(self):
+        self.assertEqual(unread_settings(self.core), [])
+        renamed = self.core.replace('cfg_MEMORY_LIMIT', 'cfg_MEMORY_RENAMED')
+        self.assertEqual(unread_settings(renamed), ['MEMORY_LIMIT'])
+
+    def test_help_documents_every_operator_setting(self):
+        result = subprocess.run(['bash', str(ROOT / PROFILE.wrapper), '--container-help'],
+                                capture_output=True, text=True, env={'PATH': '/usr/bin:/bin', 'HOME': '/nonexistent'})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        hidden = INTERNAL + (() if PROFILE.auth else PROVIDER_ONLY)
+        documented = [PROFILE.env(suffix) for suffix in agent_profile.SUFFIXES if suffix not in hidden]
+        self.assertEqual([name for name in documented if name not in result.stdout], [])
+
+    def test_core_delegates_the_restricted_session_to_the_shared_helper(self):
+        self.assertIn('network/session.py', self.core)
         # start and stop manage the provider proxy, which needs authentication methods.
         operations = HELPER_OPERATIONS if PROFILE.auth else ('prepare', 'agent-args')
         for operation in operations:
-            self.assertRegex(self.wrapper, r'"\$\{session_helper\[@\]\}" ' + operation + r'\b')
-        self.assertEqual(inline_lifecycle(self.wrapper), [])
+            self.assertRegex(self.core, r'"\$\{session_helper\[@\]\}" ' + operation + r'\b')
+        self.assertEqual(inline_lifecycle(self.core), [])
 
     def test_inline_lifecycle_detection_detects_a_reintroduced_call(self):
-        changed = self.wrapper + '\npython3 -I "$script_dir/network/control.py" snapshot\n'
+        changed = self.core + '\npython3 -I "$script_dir/network/control.py" snapshot\n'
         self.assertEqual(inline_lifecycle(changed), [r'network/control\.py'])
 
     def test_image_and_helper_use_neutral_internal_paths(self):
@@ -209,22 +283,8 @@ class WrapperConsistency(unittest.TestCase):
             self.assertIn(path, helper)
         self.assertIn('/opt/sandbox-egress/', self.image)
         legacy = re.compile(r'/(?:opt|run)/(?!sandbox-egress)[a-z0-9-]+-egress\b|\b(?!sandbox-)[a-z0-9]+-egress-guard\b')
-        self.assertEqual(legacy.findall(self.wrapper), [])
+        self.assertEqual(legacy.findall(self.core), [])
         self.assertEqual(legacy.findall(self.image), [])
-
-    def test_consistency_check_detects_a_mismatch(self):
-        self.assertTrue(usage_text(self.wrapper))
-        renamed = PROFILE.env('MEMORY_LIMIT')
-        changed = self.wrapper.replace(renamed, PROFILE.env_prefix + '_MEMORY_RENAMED')
-        self.assertEqual(missing_profile_names(changed), [renamed])
-        # A name that survives only in the help text is still missing from the code.
-        usage = usage_text(self.wrapper)
-        help_only = usage + without_usage(self.wrapper).replace(renamed, PROFILE.env_prefix + '_MEMORY_RENAMED')
-        self.assertEqual(missing_profile_names(help_only), [renamed])
-        # A name used in the code but absent from the help text is undocumented.
-        undocumented = usage.replace(renamed, PROFILE.env_prefix + '_MEMORY_RENAMED') + without_usage(self.wrapper)
-        self.assertEqual(missing_profile_names(undocumented), [renamed])
-
 
 if __name__ == '__main__':
     unittest.main()

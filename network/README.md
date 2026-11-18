@@ -6,7 +6,7 @@ is replaced by mandatory protected-asset, platform and in-container enforcement
 checks plus the credential-free installation gate. An ABI number or mock pass alone
 does not establish support.
 
-Shared files in `network/` and `setup/` contain no agent identifiers. Agent-specific
+Shared files in `network/`, `setup/` and `launcher/` contain no agent identifiers. Agent-specific
 names (wrapper, variables, images, labels, native home/command and provider
 host requirements) come from the protected `agent/profile.json`; provider
 policies live in `agent/policies/`. In-container paths are neutral:

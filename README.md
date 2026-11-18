@@ -30,20 +30,22 @@ cd /path/to/your/project
 ~/.local/bin/pi-container                   # the managed launcher printed by setup
 ```
 
-See [docs/setup.md](docs/setup.md). An ordinary launch with an unset or empty
-`PI_CONTAINER_NETWORK` stops with `setup required:` guidance; setup is never
-started automatically. Offline sessions cannot reach any model provider.
+See [docs/setup.md](docs/setup.md). A launch with an unset or empty
+`PI_CONTAINER_NETWORK` selects `provider`, the default; without a protected
+installation or the provider settings that setup saves, it stops with
+`setup required:` guidance before any engine call. Setup is never started
+automatically. Offline sessions cannot reach any model provider.
 
 ### Direct operator launches
 
 Operators can keep invoking the wrapper directly with an explicit mode:
 
 ```bash
-# Every launch selects a network mode; unrestricted is the previous behavior
+# A direct launch from a checkout selects unrestricted networking explicitly
 export PI_CONTAINER_NETWORK=unrestricted
 
-# Build the image once, under explicit maintenance authorization
-PI_CONTAINER_MAINTENANCE=1 ./pi-container.sh --container-build --version
+# Build the image once, under explicit maintenance authorization, and exit
+PI_CONTAINER_MAINTENANCE=1 ./pi-container.sh --container-build
 
 # Use it anywhere, exactly like the `pi` command
 cd /path/to/your/project
@@ -56,7 +58,7 @@ pic --version
 
 Building the image, including the first build, needs exact
 `PI_CONTAINER_MAINTENANCE=1`. When `Containerfile`, `.containerignore`,
-`.version`, `network/relay.py` or `network/mux.py` changes, the image is
+`network/relay.py`, `network/mux.py` or `.version` changes, the image is
 stale: the launch stops until `--container-build` is run again under
 maintenance. For restricted networking, see [Network modes](#network-modes).
 
@@ -84,14 +86,18 @@ podman images   # Lists host images
 
 ### Podman socket architecture
 
-Only exact `PI_CONTAINER_PODMAN=1` installs the client and enables delegation.
-Unset, empty, `0`, `false`, `true`, `yes`, and all other values disable it;
-migrate earlier truthy configurations to `1`.
+Only exact `PI_CONTAINER_PODMAN=1` enables delegation; the client is part of
+every image. Unset, empty, `0`, `false`, `true`, `yes`, and all other values
+disable it.
 
 Selection uses `PI_CONTAINER_PODMAN_SOCKET`, then explicit Unix `CONTAINER_HOST`, then
 `${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock`. The accessible socket
 must be absolute, canonical, readable/writable, and report a rootless service
-with an absolute `Host.RemoteSocket.Path`. Enabled verification failures stop
+with an absolute `Host.RemoteSocket.Path` (a `unix://` URL is reduced to its
+path). A reported path made only of slashes is refused, and so is one that
+exists in the wrapper's own namespace as anything but a socket; a path the
+wrapper cannot see is accepted as the remapped socket of a containerized
+wrapper. Enabled verification failures stop
 before image operations; no warning-only fallback or automatic service start
 occurs. Start the rootless service yourself if needed, for example
 `systemctl --user start podman.socket`.
@@ -100,8 +106,9 @@ The verified service reports the host-side bind source, which may differ from
 the socket visible to a containerized caller. It is mounted at
 `/run/podman/podman.sock`, with session
 `CONTAINER_HOST=unix:///run/podman/podman.sock`. Disabled sessions explicitly
-unset `CONTAINER_HOST`; `PI_ENV_VARS` cannot change this selection or inject a
-named connection. Containerized callers must preserve host absolute workspace
+unset `CONTAINER_HOST`; `PI_CONTAINER_ENV_VARS` cannot change this selection or
+inject a named connection. Delegated sessions get private tmpfs mounts at
+`/var/lib/containers` and `/run/containers` for nested Podman. Containerized callers must preserve host absolute workspace
 and state paths. Use a same-host service; a Unix URI alone does not establish
 host identity. Client/server version compatibility is still required.
 
@@ -114,11 +121,11 @@ permission controls.
 ### Wrapper modes
 
 ```bash
-pic --container-help                 # also --wrapper-help; no prerequisites
+pic --container-help                 # no prerequisites
 pic --container-setup                # guided setup and managed launcher; alone
-pic --container-build --version      # force refresh, then start Pi
+pic --container-build --version      # refresh the image, then start Pi
 pic --container-build                # refresh the image only, then exit
-pic --container-shell                # Bash with the same sandbox and cleanup
+pic --container-shell -c 'make test' # Bash with the same sandbox; gets its arguments
 pic --container-git-worktree         # expose the entire immediate parent
 pic --container-toolchain list       # manage the toolchain library; first argument
 ```
@@ -126,8 +133,11 @@ pic --container-toolchain list       # manage the toolchain library; first argum
 Worktree mode keeps the physical original workdir but exposes siblings in the
 immediate parent read/write. No higher ancestor is selected. It requires the
 explicit flag and applies the sensitive-directory guard to the exposed parent.
-Shell mode discards native Pi arguments; other modes strip only wrapper flags.
-Native `--help` remains Pi's help.
+Shell mode passes the remaining arguments to Bash; other modes strip only
+wrapper flags. Native `--help` remains Pi's help. `--container-build` without Pi
+arguments, also together with `--container-shell` or
+`--container-git-worktree`, validates every setting, builds the image and exits
+without a session.
 
 ### Session lifecycle
 
@@ -136,15 +146,20 @@ highest matching suffix across running and stopped containers (`08` is decimal
 8). At most 20 confirmed collisions are retried; existing containers are never
 replaced. `CONTAINER_NAME` inside the session matches the reserved name.
 
-Creation uses a private full-ID record. Attachment preserves stdin and EOF.
+Creation uses a private full-ID record, cross-checked with the ID that
+`podman create` prints. Attachment preserves stdin and EOF.
 Application/attach exit codes, including 125, survive cleanup failures.
-TERM/INT/HUP select 143/130/129; the first signal is forwarded once and later
-signals neither replace it nor renew deadlines. Attached shutdown allows 5s
-application grace. Each signal/removal control has a 5s timeout plus 1s forced
-termination; local-client reaping allows TERM 5s then KILL 1s.
-Interrupted creation allows 5s completion, TERM 5s, KILL 1s, then re-reads the
-CID and attempts removal within 5s+1s (17s total phase budgets). Attached
-shutdown has at most 23s of phase budgets, excluding scheduling overhead.
+
+A signal starts shutdown at once, also while the container is being created.
+TERM/INT/HUP select 143/130/129; the first signal is forwarded once to the
+owned container and later signals neither replace it nor restart shutdown.
+Shutdown has one 20-second deadline: after forwarding the signal, the wrapper
+allows at most 5 seconds for graceful exit, then attempts forced removal. Each
+shutdown engine call is bounded by the time left, and local create/attach
+clients are terminated and reaped within the deadline. An interrupted creation
+is recovered through the CID record, the create output and the session
+ownership label, and never starts Pi. Read-only engine queries are bounded by a
+timeout; builds and normal sessions are not.
 
 Only this invocation's verified full ID is removed. Missing/invalid ownership
 is reported without deleting by name. Cancelling a local client does not prove
@@ -225,26 +240,29 @@ PI_NPM_CACHE_SIZE=512M pic install npm:pi-web-access
 ## Tips
 
 - **Alias in `~/.bashrc`**: `alias pic='/path/to/pi-container/pi-container.sh'`
-- **Debug mode**: `PI_DEBUG=1 pic ...` to see verbose output
 - **Custom image name**: `PI_CONTAINER_IMAGE=my-pi pic ...`
-- **Rebuild the image**: `pic --container-build --version`
-- **Interactive CLI args**: all arguments pass straight through to Pi — use `--help` to see Pi's full CLI, or `--wrapper-help` for wrapper-specific options
+- **Rebuild the image**: `PI_CONTAINER_MAINTENANCE=1 pic --container-build`
+- **Interactive CLI args**: all arguments pass straight through to Pi — use `--help` to see Pi's full CLI, or `--container-help` for wrapper-specific options
 - **Multiple instances**: containers are named `<directory>-0`, `<directory>-1`, etc. Concurrent instances reserve above the highest existing suffix with bounded collision retries.
 
 ## Environment variables
 
 ### API keys
 
-In `unrestricted` mode, the script forwards these environment variables to the
-container **only if they are set and non-empty**. In `provider` mode only the
-key of the selected profile is forwarded, and `offline` forwards none (see
-[Provider mode](#provider-mode)):
+In `provider` mode the wrapper forwards, by name, only the key of the selected
+profile, and `offline` forwards none (see [Provider mode](#provider-mode)).
+Unrestricted sessions get a key only when `PI_CONTAINER_ENV_VARS` lists it:
 
-| Variable | Purpose |
+| Variable | Profile |
 | --- | --- |
-| `ANTHROPIC_API_KEY` | Anthropic / Claude API key |
-| `OPENAI_API_KEY` | OpenAI API key |
-| `GOOGLE_API_KEY` | Forwarded in unrestricted mode; Pi 0.80.8 reads `GEMINI_API_KEY` for Gemini, so list it in `PI_ENV_VARS` or use the `gemini-api` profile |
+| `ANTHROPIC_API_KEY` | `anthropic-api` |
+| `OPENAI_API_KEY` | `openai-api` |
+| `GEMINI_API_KEY` | `gemini-api` |
+| `OPENROUTER_API_KEY` | `openrouter-api` |
+
+```bash
+PI_CONTAINER_NETWORK=unrestricted PI_CONTAINER_ENV_VARS=ANTHROPIC_API_KEY pic
+```
 
 > ⚠️ **Security note:** API keys are passed as environment variables. They are
 > visible in `podman inspect` output and inside the container's `/proc`.
@@ -254,56 +272,58 @@ key of the selected profile is forwarded, and `offline` forwards none (see
 
 Skills, extensions, or other tools may require environment variables that the
 wrapper does not hardcode (e.g. `GITHUB_TOKEN`, `DATABASE_URL`, a third-party
-API key). Use `PI_ENV_VARS` to forward arbitrary variables **by name**.
+API key). Use `PI_CONTAINER_ENV_VARS` to forward arbitrary variables **by name**.
 
-`PI_ENV_VARS` is a space-separated list of variable **names**. Each name that
-is set and non-empty in the host environment is forwarded to the container via
-`-e NAME` (by name only, never as `NAME=value`), so secret values never appear
-on the process command line. Podman still stores their values in container inspection metadata.
-Variables that are unset or empty are skipped silently.
+`PI_CONTAINER_ENV_VARS` is a list of variable **names** separated by
+whitespace. Each name that is set and non-empty in the host environment is
+forwarded to the container via `--env NAME` (by name only, never as
+`NAME=value`), so secret values never appear on the process command line.
+Podman still stores their values in container inspection metadata. Variables
+that are unset or empty are skipped silently; an invalid name stops the launch
+before any engine call.
 
 ```bash
 # Forward two secrets to the container
-PI_ENV_VARS="GITHUB_TOKEN DATABASE_URL" pic "fix the bug"
+PI_CONTAINER_ENV_VARS="GITHUB_TOKEN DATABASE_URL" pic "fix the bug"
 
 # With the values exported in the current shell
 export GITHUB_TOKEN=ghp_xxx
 export DATABASE_URL=postgres://localhost/app
-PI_ENV_VARS="GITHUB_TOKEN DATABASE_URL" pic "review the schema"
-
-# Persist the list once in ~/.bashrc (values still exported per-session)
-#   echo 'export PI_ENV_VARS="GITHUB_TOKEN DATABASE_URL"' >> ~/.bashrc
+PI_CONTAINER_ENV_VARS="GITHUB_TOKEN DATABASE_URL" pic "review the schema"
 ```
 
-Names already handled explicitly by the wrapper (`HOME`, `TERM`, `EDITOR`,
-`VISUAL`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`,
-`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `CONTAINER_NAME`, `CONTAINER_HOST`,
-`CONTAINER_CONNECTION`) are skipped if listed in `PI_ENV_VARS`
-to avoid duplicate forwarding.
+Names the launcher sets itself (`HOME`, `USER`, `TERM`, `COLORTERM`, `LANG`,
+`LC_ALL`, `EDITOR`, `VISUAL`, `PATH`, `CONTAINER_NAME`, `CONTAINER_HOST`,
+`CONTAINER_CONNECTION`, the CA variables and `PI_CONTAINER_CONFIG_DIR`) are
+skipped with one notice each. Restricted sessions also skip the proxy and CA
+variables and Pi's optional-traffic settings; provider sessions skip another
+profile's key.
 
-> ⚠️ **Security note:** `PI_ENV_VARS` only forwards the *names*; the *values*
+> ⚠️ **Security note:** `PI_CONTAINER_ENV_VARS` only forwards the *names*; the *values*
 > come from the host environment and are still visible inside the container's
 > `/proc` and in `podman inspect` output (same residual exposure as API keys).
 > Do not list variables you do not need, and prefer the narrowest set possible.
 > For highly sensitive, long-lived secrets on shared systems, consider
 > `podman secret` instead.
 
-### Proxy support
+### Session environment and proxy support
 
-In `unrestricted` mode, `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` set on the
-host are forwarded to the container automatically. Restricted modes never
-forward host proxy or CA variables.
+Every session receives `USER`, `EDITOR=nano`, `VISUAL=nano`, and by name
+`TERM`, `COLORTERM`, `LANG` and `LC_ALL` when set; host editor settings are not
+kept. In `unrestricted` mode, `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`,
+`NO_PROXY` and their lowercase forms set on the host are also forwarded by name,
+the session runs with `--init` and sees its container name as `CONTAINER_NAME`.
+Restricted modes never forward host proxy or CA variables.
 
 ### Other variables
 
 | Variable | Purpose |
 | --- | --- |
-| `PI_CONTAINER_NETWORK` | Required network mode: `offline`, `provider` or `unrestricted`; see [Network modes](#network-modes) |
+| `PI_CONTAINER_NETWORK` | Network mode: `offline`, `provider` or `unrestricted`; unset or empty selects `provider`. See [Network modes](#network-modes) |
 | `PI_CONTAINER_MAINTENANCE` | Exactly `1` authorizes image builds and proxy pulls |
 | `PI_CONTAINER_CONFIG_DIR` | Private host directory replacing only `~/.pi`; conflicts with `PI_CONTAINER_STATE_DIR`. Inside the session it is always `/pi-home/.pi` |
 | `PI_CONTAINER_TRUST_HOST_CA`, `PI_CONTAINER_CA_BUNDLE` | Opt-in host CA trust; see [Host CA trust](#host-ca-trust) |
-| `PI_CONTAINER_IMAGE` | Override the container image name (default: `localhost/pi-container`) |
-| `PI_DEBUG` | Set to any value to enable verbose debug output |
+| `PI_CONTAINER_IMAGE` | Override the container image name (default: `localhost/pi-container:latest`) |
 | `PI_CONTAINER_PODMAN` | Only exact `1` enables the client and verified host socket; all other values disable delegation |
 | `PI_CONTAINER_PODMAN_SOCKET` | Absolute accessible socket override; then Unix `CONTAINER_HOST`, then `${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock` |
 | `PI_CONTAINER_STATE_DIR` | Private host directory holding `.pi` and `.agents` instead of `~/.pi` and `~/.agents`; see [Isolated state](#isolated-state) |
@@ -311,30 +331,37 @@ forward host proxy or CA variables.
 | `PI_CONTAINER_CPU_LIMIT` | Container CPU limit (default: `2`) |
 | `PI_CONTAINER_PIDS_LIMIT` | Container PID limit (default: `512`) |
 | `PI_NPM_CACHE_SIZE` | Size of the ephemeral npm cache tmpfs at `/pi-home/.npm`, used by `pi install npm:<pkg>` (default: `256M`) |
-| `PI_READONLY_CONFIG` | Set to `1` to mount `~/.pi` and `~/.agents` read-only (prevents persistence) |
+| `PI_CONTAINER_READONLY_STATE` | `1`, `true` or `yes` (any case) mounts the existing `.pi` and `.agents` read-only (prevents persistence) |
 | `PI_CONTAINER_GITCONFIG` | Exactly `1` mounts `~/.gitconfig` read-only from its physical file (default: not mounted). The opt-in fails if `~/.gitconfig` is not a regular file |
-| `PI_MOUNT_GITCONFIG` | Deprecated alias with a warning: `1` mounts, `0` does not. Conflicting values with `PI_CONTAINER_GITCONFIG` are errors |
+| `PI_CONTAINER_YOLO` | Accepted boolean with no effect; see [Permissions](#permissions) |
 | `PI_CONTAINER_RUN_TIMEOUT` | Native Podman container lifetime in seconds, placed before the image (0 disables); independent of shutdown budgets |
-| `PI_ENV_VARS` | Space-separated list of extra env var **names** to forward to the container (for skill/extension/tool secrets; forwarded by name only, never as `NAME=value`). See [Custom environment variables](#custom-environment-variables) |
+| `PI_CONTAINER_ENV_VARS` | Extra host variable **names**, separated by whitespace, forwarded by name only, never as `NAME=value`. See [Custom environment variables](#custom-environment-variables) |
 | `PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE` | Exactly `1` allows a refused sensitive workspace, with a warning (not recommended) |
-| `TERM` | Terminal type (forwarded for TUI rendering) |
-| `EDITOR`, `VISUAL` | Host editor preference (forwarded with fallback to `nano`) |
+| `TERM`, `COLORTERM`, `LANG`, `LC_ALL` | Forwarded by name when set |
+| `EDITOR`, `VISUAL` | Always `nano` in the session |
+
+Earlier names (`PI_IMAGE_NAME`, `PI_ENABLE_PODMAN`, `PI_PODMAN_SOCKET`,
+`PI_MEMORY_LIMIT`, `PI_CPU_LIMIT`, `PI_PIDS_LIMIT`, `PI_RUN_TIMEOUT`,
+`PI_ALLOW_UNSAFE_PWD`, `PI_MOUNT_GITCONFIG`, `PI_ENV_VARS`,
+`PI_READONLY_CONFIG`, `PI_NETWORK`, `PI_PULL_ALWAYS`, `PI_DEBUG`) and
+`--wrapper-help` have no effect and print no notice; use the names above.
 
 ## Network modes
 
-`PI_CONTAINER_NETWORK` is required for every launch; an unset or empty value
-stops before any engine call or state change. Unknown values fail before image
-operations, and a failed restricted launch never retries with unrestricted
-networking. `PI_NETWORK` is rejected with migration guidance.
+An unset or empty `PI_CONTAINER_NETWORK` selects `provider`; without a
+protected installation or the provider settings that setup saves, the launch
+stops with `setup required:` guidance before any engine call or state change.
+Unknown values fail before image operations, and a failed restricted launch
+never retries with unrestricted networking.
 
 | Mode | Agent network | Podman delegation |
 | --- | --- | --- |
 | `offline` | Own loopback, pipes and connected socket pairs only; no model provider is reachable | Rejected |
-| `provider` | As offline, plus the exact HTTPS host of one protected provider profile through an external proxy | Rejected |
-| `unrestricted` | Ordinary runtime networking, the previous behavior | Exact `PI_CONTAINER_PODMAN=1` |
+| `provider` (default) | As offline, plus the exact HTTPS host of one protected provider profile through an external proxy | Rejected |
+| `unrestricted` (explicit only) | Ordinary runtime networking | Exact `PI_CONTAINER_PODMAN=1` |
 
 The restricted implementation is shared with `sandbox-container` and copied
-unchanged from its tag `sandbox-ref-21`; see
+unchanged from its tag `sandbox-ref-25`; see
 [docs/network-contract.md](docs/network-contract.md) and
 [network/README.md](network/README.md).
 
@@ -355,8 +382,10 @@ Run `--container-qualify` alone after preparation or relevant updates:
 PI_CONTAINER_NETWORK=offline ./pi-container.sh --container-qualify
 ```
 
-Qualification is bound to the boot, engine, security policy, code, images,
-policy, profile, CA trust and hardening settings. A
+Qualification is bound to the boot, engine, security policy, code (including
+`launcher/core.sh` and `agent/launcher.sh`), images, policy, profile, CA trust
+and hardening settings, and to the resolved mode, including the provider
+default. A
 reboot therefore requires requalification. An active SELinux or AppArmor policy
 that cannot be identified forces the full gate on every launch. The shipped
 release acceptance inventory is empty, so installations report
@@ -407,8 +436,8 @@ Limits:
 
 ### Operator build inputs
 
-Prepare these under maintenance authorization (guided setup arrives with
-`add-container-setup`):
+Guided setup prepares these; an operator can prepare them by hand under
+maintenance authorization:
 
 ```bash
 export PI_CONTAINER_MAINTENANCE=1
@@ -441,7 +470,7 @@ session.
   `PI_CONTAINER_TOOLCHAINS_DIR`. The launcher creates it private (`0700`) when
   it is missing. It must stay outside the workspace, the Pi state
   (`~/.pi` or `PI_CONTAINER_CONFIG_DIR`, `~/.agents`, or
-  `PI_CONTAINER_STATE_DIR`, also with `PI_READONLY_CONFIG`) and the
+  `PI_CONTAINER_STATE_DIR`, also with `PI_CONTAINER_READONLY_STATE`) and the
   installation. A home directory exposed as the workspace with
   `PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1` contains the default library, so that
   launch stops. Move the library with `PI_CONTAINER_TOOLCHAINS_DIR`, or omit it.
@@ -523,8 +552,9 @@ A recipe is a JSON file that the operator keeps and reviews:
   `/pi-home/.npm`). Point caches to `/tmp` with literal values. A tool that
   runs files from its temporary directory must use a directory under the
   workspace, for example `GOTMPDIR` for `go test`; Maven's jansi prints a
-  harmless native-library warning. With `PI_READONLY_CONFIG`, `~/.pi` and
-  `~/.agents` are read-only too.
+  harmless native-library warning. `/run` is not writable by the session
+  user. With `PI_CONTAINER_READONLY_STATE`, `~/.pi` and `~/.agents` are
+  read-only too.
 - **Dependency downloads** (Maven, npm, pip, Cargo, Go modules) need network
   access that provider and offline modes do not grant. Provide dependencies in
   the workspace, or use an unrestricted session.
@@ -594,7 +624,7 @@ to manage. Missing read-only state fails without creating it.
 
 ### Dedicated home
 
-Sessions use `HOME=/pi-home`, an ephemeral 64 MiB noexec tmpfs. Your `~/.pi`
+Sessions use `HOME=/pi-home`, an ephemeral 512 MiB noexec tmpfs. Your `~/.pi`
 and `~/.agents`, the npm cache tmpfs and the opted-in `~/.gitconfig` are
 mounted below it, so Pi, extensions and Git find them as before; the
 workspace keeps its host absolute path. Other files written in `/pi-home`
@@ -609,18 +639,22 @@ everyday `~/.pi` and `~/.agents`. The directory holds its own `.pi` and
 - In the default writable mode the directory becomes the persistent
   `/pi-home`. It and its `.pi` and `.agents` are created privately when
   missing and must belong to you without group/other permissions.
-- With `PI_READONLY_CONFIG=1`, its `.pi` and `.agents` must already exist and
-  are mounted read-only below an ephemeral home.
+- With `PI_CONTAINER_READONLY_STATE=1`, its `.pi` and `.agents` must already
+  exist and are mounted read-only below an ephemeral home.
 
-The directory must not equal, contain or lie inside the workspace. No
-credentials are copied; authenticate again inside an isolated state.
+The value must be absolute, without colon, CR or LF, and conflicts with a
+nonempty `PI_CONTAINER_CONFIG_DIR`. The directory must not equal, contain or
+lie inside the workspace. Every child the launcher uses below it, and the CA
+mount parent, must stay inside it and be private. The npm cache tmpfs is
+mounted at `/pi-home/.npm` also over an isolated home. No credentials are
+copied; authenticate again inside an isolated state.
 
 ### Volume mounts
 
 | Mount point | Purpose | Read-only mode |
 | --- | --- | --- |
-| `/pi-home/.pi` ← `~/.pi` | Pi configuration, auth, sessions, extensions | `PI_READONLY_CONFIG=1` |
-| `/pi-home/.agents` ← `~/.agents` | Skills (prompt libraries) | `PI_READONLY_CONFIG=1` |
+| `/pi-home/.pi` ← `~/.pi` | Pi configuration, auth, sessions, extensions | `PI_CONTAINER_READONLY_STATE=1` |
+| `/pi-home/.agents` ← `~/.agents` | Skills (prompt libraries) | `PI_CONTAINER_READONLY_STATE=1` |
 | `${PWD}` | Current working directory (same path inside and out) | Always writable |
 | `/pi-home/.gitconfig` ← `~/.gitconfig` | Git identity, only with `PI_CONTAINER_GITCONFIG=1` | Always read-only |
 
@@ -633,25 +667,26 @@ never disables confinement or repairs labels.
 
 `~/.gitconfig` is not mounted by default because Git configuration often holds
 credential helpers, URL tokens, `include` paths and signing-key references.
-When the file exists and neither `PI_CONTAINER_GITCONFIG` nor
-`PI_MOUNT_GITCONFIG` is set, the wrapper prints one notice;
-`PI_CONTAINER_GITCONFIG=0` silences it. Alternatives to mounting it: set the
-identity in the repository (`git config user.name ...`), or forward
+Only exact `PI_CONTAINER_GITCONFIG=1` mounts it, from its physical file; the
+opt-in stops before any engine call when `~/.gitconfig` is not a regular file or
+its physical path contains a colon, CR or LF. Alternatives to mounting it: set
+the identity in the repository (`git config user.name ...`), or forward
 `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME` and
-`GIT_COMMITTER_EMAIL` by name with `PI_ENV_VARS`.
+`GIT_COMMITTER_EMAIL` by name with `PI_CONTAINER_ENV_VARS`.
 
-Temporary storage is declared explicitly with automatic read-only tmpfs
-provisioning disabled. `/tmp` and `/var/tmp` are each 256 MiB, `/run` is 32 MiB,
-and `~/.npm` defaults to 256 MiB (`PI_NPM_CACHE_SIZE` overrides it). All are
-rw,nosuid,nodev,noexec. The first three use mode 1777; npm cache uses mode 0700
-and your UID/GID. Delegated-client stores at `/var/lib/containers` (256 MiB)
+Temporary storage is declared explicitly. `/tmp` and `/var/tmp` are each
+512 MiB with mode 1777, `/run` is 32 MiB and not writable by the session user,
+the shared-state home is 512 MiB with mode 1777, and `~/.npm` defaults to
+256 MiB (`PI_NPM_CACHE_SIZE`, a size with unit `k`, `m` or `g`, overrides it;
+an invalid size stops the launch before any engine call). All are
+rw,nosuid,nodev,noexec; the npm cache uses mode 0700 and your UID/GID. Delegated-client stores at `/var/lib/containers` (256 MiB)
 and `/run/containers` (64 MiB) use the same hardening and private ownership.
 Private tmpfs ownership uses Podman `U`; host binds never use recursive
 ownership changes. Every temporary store disappears with the session.
 
 > **Security note:** `~/.pi` and `~/.agents` are mounted **read-write by default**.
 > A compromised agent could plant malicious extensions that persist across runs.
-> Set `PI_READONLY_CONFIG=1` when working with untrusted prompts or projects.
+> Set `PI_CONTAINER_READONLY_STATE=1` when working with untrusted prompts or projects.
 > See [SECURITY.md](./SECURITY.md) for details.
 >
 > **npm cache:** An ephemeral tmpfs is mounted at `/pi-home/.npm` so that
@@ -665,28 +700,28 @@ ownership changes. Every temporary store disappears with the session.
 
 | Control | Implementation |
 | --- | --- |
-| Identity / capabilities | Caller UID/GID, keep-id, `--cap-drop=ALL`, no additions |
+| Identity / capabilities | Caller UID/GID, keep-id, `--cap-drop=all`, no additions |
 | Root filesystem | Read-only; explicit bounded `/tmp`, `/var/tmp`, `/run`, and npm cache; the engine's `/dev` and `devpts`, and an empty read-only `/dev/shm`; an empty read-only `/run/secrets` mask |
 | Privilege escalation | `--security-opt=no-new-privileges` |
 | Resource limits | 4 GiB memory, 2 CPUs, 512 processes (configurable), validated, each enforced when its cgroup controller is delegated, and checked after create |
 | SELinux | Host labels and confinement remain unchanged |
 | Sensitive workspace guard | Refuses `/`, system directories, `/tmp`, `$HOME` and `/mnt/<letter>` on physical paths (override: exact `PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1`) |
 | Rootless enforcement | Verified Linux rootless engine before image operations; no override |
-| Signal handling | Owned full-ID lifecycle with finite cleanup phases; `--init` for reaping |
+| Signal handling | Owned full-ID lifecycle; shutdown within one 20-second deadline; `--init` for reaping in unrestricted sessions |
 | Image build policy | Pinned inputs; a stale content hash stops the launch until `--container-build` |
 | Conditional TTY | Only when stdin and stdout are terminals |
 | Container naming | Sanitized `<dir>-<N>`, max existing suffix+1 including stopped containers; atomic create, at most 20 attempts |
 
-> **Network egress is unrestricted by default.** An autonomous agent with
+> **Unrestricted networking has no egress limit.** An autonomous agent with
 > network access and read access to mounted volumes (including
 > `~/.pi/agent/auth.json`) could exfiltrate data if subverted by prompt
-> injection. Use `PI_CONTAINER_NETWORK=offline`, or `provider` with one exact
-> provider profile, to limit egress.
+> injection. The default `provider` mode limits egress to one exact provider
+> profile, and `offline` removes it.
 > See [SECURITY.md](./SECURITY.md).
 >
 > **Config directories (`~/.pi`, `~/.agents`) are writable by default.**
 > A compromised agent could plant persistent extensions or skills. Use
-> `PI_READONLY_CONFIG=1` to mount them read-only for untrusted tasks.
+> `PI_CONTAINER_READONLY_STATE=1` to mount them read-only for untrusted tasks.
 > See [SECURITY.md](./SECURITY.md) for details on this and other risks.
 
 ### Session hardening, budgets and lifetime
@@ -748,9 +783,10 @@ Pi runs its tools (read, bash, edit, write and extension tools) without
 approval prompts, so the container is the only boundary around Pi's tools.
 `PI_CONTAINER_YOLO` is accepted like the other wrappers' permission-bypass
 switch (`0`, `1`, `true`, `false`, `yes` or `no`; other values fail) so that
-setup and the managed launcher can save it. Pi 0.80.8 has no approval layer to
-bypass: an enabled value only prints a warning that it has no effect yet, and a
-disabled value is silent. Pi's `--approve`/`--no-approve` options decide
+setup and the managed launcher can save it. Pi has no approval layer to
+bypass: an enabled value only prints a notice that it has no effect, a
+disabled value is silent, and neither changes the engine arguments. Shell mode
+and the qualification probe ignore it. Pi's `--approve`/`--no-approve` options decide
 whether project-local files are trusted for a run; they do not approve tool
 use.
 
@@ -770,15 +806,21 @@ the separate `PI_CONTAINER_PODMAN=1` opt-in.
 
 ### Image build policy
 
-The script computes a SHA-256 hash of `Containerfile`, `.containerignore`,
-`.version`, `network/relay.py` and `network/mux.py`, and stores it as the `build-inputs-hash` label on the built image. The build
-context contains only those five files.
+The launcher core computes a SHA-256 hash over `Containerfile`,
+`.containerignore`, `network/relay.py`, `network/mux.py` and `.version`, and
+stores it as the `build-inputs-hash` label on the built image. The build
+context contains only those five files. Pi's agent part passes the first line
+of `.version` as `PI_VERSION` to every build; a launch stops before any image
+operation when `.version` is missing or empty. A build pulls the exact `FROM`
+base first, then runs with `--pull=never` and the docker format, without a
+timeout.
 
 - A missing image is built only under exact `PI_CONTAINER_MAINTENANCE=1`.
 - A stale image (the label differs from the current inputs) stops the launch
   with a message naming `--container-build`; it is never rebuilt silently.
-- `--container-build` always rebuilds from the pinned inputs. Used alone, it
-  only rebuilds and exits; guided setup uses this form to build its candidate
+- `--container-build` always rebuilds from the pinned inputs, keeping the
+  layer cache. Used without Pi arguments, it validates every launch setting,
+  rebuilds and exits; guided setup uses this form to build its candidate
   runtime image with the same build arguments and label.
 - Debian packages are fetched over verified HTTPS only; image preparation needs
   outbound HTTPS (443) to the Debian, npm and container registries, not port 80.
@@ -790,15 +832,18 @@ context contains only those five files.
 - The recipe declares no `WORKDIR`; a future one must be created by an earlier
   build step, so the engine never creates or chowns it at container start.
 
-`PI_PULL_ALWAYS` is ignored with a warning: the base image is pinned by digest.
-Weekly CI scans monitor the built image for CVEs.
+The base image is pinned by digest. Weekly CI scans monitor the built image for
+CVEs.
 
 ### File layout
 
 ```text
 pi-container/
 ├── Containerfile              # Image definition (pinned inputs)
-├── pi-container.sh            # Entry point script (builds & runs)
+├── pi-container.sh            # Thin entry script shared by every wrapper
+├── launcher/core.sh           # Shared launcher core (from sandbox-container)
+├── agent/launcher.sh          # Pi's agent part: profile data and hooks
+├── agent/profile.json         # Pi profile for the shared components
 ├── .containerignore            # Build context allowlist
 ├── .version                    # Single source of truth for Pi version
 ├── test.sh                     # Disposable image build plus real checks
@@ -820,7 +865,7 @@ and the base image digest. `tests/test_image_pins.py` rejects
 floating inputs, `@latest`, version ranges and piped install scripts. To update:
 
 1. Change `.version`, or the recorded version or digest in `Containerfile`.
-2. Rebuild explicitly with `pic --container-build --version`.
+2. Rebuild explicitly with `PI_CONTAINER_MAINTENANCE=1 pic --container-build`.
 3. Rerun `./test-wrapper.sh` and `./test.sh`.
 4. Record the tested versions with the date in `docs/validation.md`.
 
@@ -844,7 +889,7 @@ ask for `--container-build`.
 > **⚠️ Persistence vector:** Because extensions, skills, sessions, auth tokens,
 > and settings survive on the host filesystem, a compromised agent could write
 > malicious extensions or skills that persist across container rebuilds and even
-> execute on host-native `pi` invocations. Use `PI_READONLY_CONFIG=1` when working
+> execute on host-native `pi` invocations. Use `PI_CONTAINER_READONLY_STATE=1` when working
 > with untrusted content. See [SECURITY.md](./SECURITY.md).
 
 ## Troubleshooting
@@ -854,13 +899,13 @@ ask for `--container-build`.
 | `EACCES: permission denied` on a bind | Host permissions or SELinux policy | Inspect host access/policy explicitly; the wrapper does not relabel or weaken confinement |
 | `podman: command not found` | Podman not installed | [Install Podman](https://podman.io/docs/installation) |
 | Pi hangs on non-interactive use | `-t` flag allocated without TTY | Script now auto-detects TTY and omits `-t` when not available |
-| `pi: command not found` | npm install failed | Rebuild: `podman rmi pi-container && ./pi-container.sh --version` |
-| `.version` missing or empty | Version file absent | Ensure `.version` contains the Pi version (e.g., `0.79.8`); the wrapper now fails hard if absent |
+| `pi: command not found` | npm install failed | Rebuild: `PI_CONTAINER_MAINTENANCE=1 ./pi-container.sh --container-build` |
+| `.version` missing or empty | Version file absent | Ensure `.version` contains the Pi version (e.g., `0.80.8`); the launch stops before any image operation without it |
 | Slow first start | apt + npm install during build | One-time cost; subsequent runs use cached image |
-| API key not recognized | Empty key forwarded | Script now only forwards keys that are set and non-empty |
-| `Image pi-container is stale for the current inputs` | `Containerfile`, `.version`, `network/relay.py` or `network/mux.py` changed | Run `pic --container-build --version` |
+| API key not recognized | Key not forwarded | Provider mode forwards only the selected profile's key; unrestricted mode needs `PI_CONTAINER_ENV_VARS` to list it |
+| `image ... is stale for the current build inputs` | `Containerfile`, `.containerignore`, `.version`, `network/relay.py` or `network/mux.py` changed | Run `PI_CONTAINER_MAINTENANCE=1 pic --container-build` |
 | Permission denied on volume | Rootful Podman (sudo) | Run without `sudo` (rootless mode) |
-| Read-only config error | `PI_READONLY_CONFIG=1` and Pi needs to write | Disable `PI_READONLY_CONFIG` for tasks that install extensions |
+| Read-only config error | `PI_CONTAINER_READONLY_STATE=1` and Pi needs to write | Disable `PI_CONTAINER_READONLY_STATE` for tasks that install extensions |
 | `npm error ENOENT ... mkdir '~/.npm'` during `pi install` | npm cache dir on the read-only rootfs | Fixed: the wrapper mounts an ephemeral tmpfs at `~/.npm`. Raise the cap with `PI_NPM_CACHE_SIZE=512M` for large extensions |
 
 ## Verification
@@ -868,7 +913,7 @@ ask for `--container-build`.
 ```bash
 ./test-wrapper.sh                      # synthetic wrapper tests, no engine or credentials
 bash tests/run-runtime.sh              # unrestricted real rootless checks
-bash tests/run-runtime.sh --wrapper    # wrapper tests in the runner (executable /tmp)
+bash tests/run-runtime.sh --wrapper    # shared launcher and Pi wrapper tests (fake engine)
 bash tests/run-runtime.sh --shared     # shared sandbox suites from sandbox-container
 bash tests/run-runtime.sh --network    # restricted modes with real rootless Podman
 bash tests/run-runtime.sh --guard      # guard fixtures (needs the toolchain image)
@@ -884,69 +929,28 @@ Synthetic and real results, with their limitations, are recorded in
 [the validation record](docs/validation.md). See [CONTRIBUTING.md](./CONTRIBUTING.md)
 for lint commands.
 
-## Migrating from earlier releases
+## Shared sandbox components and the agent profile
 
-Earlier names keep working as deprecated aliases. Each prints one warning, and
-setting an old and a new name to different values is an error.
+`network/`, `setup/`, `launcher/` and the shared tests come unchanged from the
+reference repository `sandbox-container` (tag `sandbox-ref-25`) and are shared
+with the Claude, Codex, Antigravity and OpenCode wrappers. They contain no
+Pi-specific names. `launcher/core.sh` is the whole launcher: `pi-container.sh`
+is the thin entry script every wrapper shares, and `agent/launcher.sh` holds the
+profile values the core needs plus Pi's five hooks (`docs/launcher-contract.md`
+in `sandbox-container`):
 
-| Earlier name | Current name |
-| --- | --- |
-| `PI_IMAGE_NAME` | `PI_CONTAINER_IMAGE` |
-| `PI_ENABLE_PODMAN` | `PI_CONTAINER_PODMAN` |
-| `PI_PODMAN_SOCKET` | `PI_CONTAINER_PODMAN_SOCKET` |
-| `PI_MEMORY_LIMIT` | `PI_CONTAINER_MEMORY_LIMIT` |
-| `PI_CPU_LIMIT` | `PI_CONTAINER_CPU_LIMIT` |
-| `PI_PIDS_LIMIT` | `PI_CONTAINER_PIDS_LIMIT` |
-| `PI_RUN_TIMEOUT` | `PI_CONTAINER_RUN_TIMEOUT` |
-| `PI_ALLOW_UNSAFE_PWD` | `PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE` |
-| `PI_MOUNT_GITCONFIG` | `PI_CONTAINER_GITCONFIG` |
+- `agent_validate` checks the `PI_CONTAINER_GITCONFIG=1` opt-in and
+  `PI_NPM_CACHE_SIZE` before any engine or state operation;
+- `agent_mounts` adds the `~/.npm` tmpfs and the opted-in read-only gitconfig;
+- `agent_build_args` passes `PI_VERSION` from `.version`;
+- `agent_approval_bypass` prints the `PI_CONTAINER_YOLO` notice;
+- `agent_help` documents these variables and the provider keys.
 
-Network egress port (`add-network-egress`):
-
-- Every launch needs `PI_CONTAINER_NETWORK`. Set `unrestricted` to keep the
-  previous networking.
-- `PI_NETWORK` is no longer supported: `PI_NETWORK=none` becomes
-  `PI_CONTAINER_NETWORK=offline`; other values become `unrestricted`.
-- Image builds, including the first, need `PI_CONTAINER_MAINTENANCE=1`.
-- The default image name is `localhost/pi-container`, the same local image.
-- An empty `PI_CONTAINER_STATE_DIR` now selects shared state.
-
-Guided setup (`add-container-setup`):
-
-- New users run `bash ./pi-container.sh --container-setup` once and then use
-  the managed launcher. A direct launch without `PI_CONTAINER_NETWORK` now
-  stops with `setup required:` guidance instead of only naming the variable.
-- `--container-build` used alone now rebuilds the image and exits; add Pi
-  arguments, such as `--version`, to rebuild and then start a session.
-- `PI_CONTAINER_YOLO` accepts only `0`, `1`, `true`, `false`, `yes` or `no`;
-  other values fail. Disabled values no longer print a warning.
-
-Bun removal (`remove-bun`):
-
-- The image no longer offers Bun. `PI_ENABLE_BUN` and `PI_BUN_VERSION` have
-  no effect and print no warning; projects that need Bun run it outside the
-  sandbox.
-- The staleness hash changed: rerun `--container-setup`, or
-  `pic --container-build --version` for a direct launch.
-
-Behavior changes:
-
-- Budget variables set to an empty value, `max`, zero or a unit such as `4gb`
-  now fail instead of falling back to defaults or reaching Podman.
-- Only exact `1` overrides the sensitive-workspace refusal; earlier any
-  nonempty `PI_ALLOW_UNSAFE_PWD` value did.
-- `/tmp` and `/mnt/<letter>` drive roots are now refused like the other
-  sensitive directories.
-- Sessions start only when the engine applied the budgets; hosts need
-  delegated rootless cgroup v2 `cpu`, `memory` and `pids` controllers.
-- `~/.gitconfig` is mounted only with `PI_CONTAINER_GITCONFIG=1`.
-- Sessions use `HOME=/pi-home`; state is mounted below it from the same host
-  directories, and other files written in the home are ephemeral.
-- The image is pinned and built once more after upgrading: run
-  `pic --container-build --version`. A stale image no longer rebuilds
-  automatically.
-- `PI_PULL_ALWAYS` is ignored with a warning; image inputs are recorded in
-  `Containerfile`.
+The shared launcher tests (`tests/test_launcher.py`, with the fake engine
+`tests/fake_podman.py`) run the core against fixture agent parts;
+`tests/test_wrapper.py` covers only Pi's part. Every other agent-specific value
+is declared in `agent/profile.json`. The changes for users of earlier versions
+are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## Security
 

@@ -5,9 +5,16 @@ English. Communicate with the user in the language and style the user asks for.
 
 ## Project Structure & Module Organization
 
-- `pi-container.sh` owns runtime policy: setting resolution and deprecated
-  aliases, engine and delegation verification, state validation, mounts,
-  hardening and budgets, environment forwarding, naming and owned cleanup.
+- `pi-container.sh` is the thin entry script shared by every wrapper: it only
+  sources `launcher/core.sh` with `agent/launcher.sh`. The shared launcher core
+  owns runtime policy: setting resolution, engine and delegation verification,
+  state validation, mounts, hardening and budgets, environment forwarding,
+  naming and owned cleanup. `agent/launcher.sh` holds Pi's profile data for the
+  core (checked against `agent/profile.json` by `tests/test_alignment.py`) and
+  five hooks: `agent_validate` (gitconfig opt-in, `PI_NPM_CACHE_SIZE`),
+  `agent_mounts` (the `~/.npm` tmpfs, the read-only gitconfig),
+  `agent_build_args` (`PI_VERSION` from `.version`), `agent_approval_bypass`
+  (the `PI_CONTAINER_YOLO` notice) and `agent_help`.
 - `Containerfile` and `.containerignore` define the Pi image (digest-pinned
   base, common toolset with the Podman client, Pi from `.version`, pinned
   OpenSpec) and its five-file build context
@@ -19,13 +26,13 @@ English. Communicate with the user in the language and style the user asks for.
   four provider profiles). Restricted preparation, proxy lifecycle and restricted
   container arguments come from `network/session.py` (`prepare`, `start`,
   `agent-args`, `stop`); never re-implement them inline.
-- `network/`, `setup/` and the shared tests (`sandbox_profile.py`,
-  `test_alignment.py`, `test_setup.py`,
+- `launcher/`, `network/`, `setup/` and the shared tests (`sandbox_profile.py`,
+  `test_alignment.py`, `test_launcher.py`, `fake_podman.py`, `test_setup.py`,
   `test_agent_profile.py`, `test_network_policy.py`, `test_mux.py`,
   `test_tls_client_hello.py`, `test_tls_proxy.py`, `test_platform.py`,
   `test_qualification.py`, `test_guard.py`, `test_session.py`,
   `test_network_feasibility.py`, `test_toolchains.py` and their fixtures) are copied unchanged from
-  `sandbox-container` at tag `sandbox-ref-21`. Never edit them here, and never
+  `sandbox-container` at tag `sandbox-ref-25`. Never edit them here, and never
   add a profile identifier (`pi-container`, `anthropic`, `openai`, `gemini`,
   `openrouter`) to them; fix a defect in `sandbox-container` first, then copy the
   files again and update `tests/test_reference_copy.py`.
@@ -47,20 +54,20 @@ Run from the repository root:
 
 ```bash
 bash ./pi-container.sh --container-setup       # guided setup (interactive, alone)
-export PI_CONTAINER_NETWORK=unrestricted        # direct launches need a mode
-PI_CONTAINER_MAINTENANCE=1 ./pi-container.sh --container-build --version   # build, then print Pi's version
+export PI_CONTAINER_NETWORK=unrestricted        # direct launches from a checkout
+PI_CONTAINER_MAINTENANCE=1 ./pi-container.sh --container-build   # build the image and exit
 ./test-wrapper.sh                               # synthetic wrapper suite
 bash tests/run-runtime.sh                       # real rootless checks with native Linux state
 bash tests/run-runtime.sh --network             # restricted modes (also --wrapper, --shared, --setup, ...)
 ./test.sh                                       # disposable image build plus real checks
-bash -n pi-container.sh test-wrapper.sh test.sh tests/run-runtime.sh
+bash -n pi-container.sh agent/launcher.sh test-wrapper.sh test.sh tests/run-runtime.sh
 ```
 
 Lint through containers when the tools are not installed:
 
 ```bash
 podman run --rm -v "$PWD:$PWD:ro" -w "$PWD" docker.io/koalaman/shellcheck:stable \
-  pi-container.sh test.sh test-wrapper.sh tests/run-runtime.sh
+  pi-container.sh agent/launcher.sh test.sh test-wrapper.sh tests/run-runtime.sh
 podman run --rm -v "$PWD:$PWD:ro" -w "$PWD" docker.io/hadolint/hadolint:latest-alpine \
   hadolint --config .hadolint.yaml Containerfile tests/Containerfile.runner \
   network/Containerfile network/guard-build.Containerfile
@@ -70,11 +77,12 @@ podman run --rm -v "$PWD:$PWD:ro" -w "$PWD" docker.io/davidanson/markdownlint-cl
 
 ## Coding Style & Naming Conventions
 
-Use Bash with `set -Eeuo pipefail`, quoted variables and command arrays for
-user-controlled arguments. Follow the script's four-space indentation, prefer
-small functions, and prefix diagnostics with `pi-container:`. Wrapper settings
-use the `PI_CONTAINER_` prefix; earlier names stay deprecated aliases resolved
-by `select_setting`, which warns and rejects conflicting old and new values.
+Use Bash with quoted variables and command arrays for user-controlled
+arguments. Follow the four-space indentation, keep hooks small, and prefix
+diagnostics with `pi-container:` (`$AGENT_NAME`). Wrapper settings use the
+`PI_CONTAINER_` prefix; earlier names have no effect and print no notice.
+Launcher behavior belongs in the shared core: change it in `sandbox-container`
+and adopt the new tag, never here.
 Forward secrets by name only (`--env NAME`), never as `NAME=value`.
 
 ## Testing Guidelines
@@ -109,7 +117,7 @@ changes.
 
 - Pi runs its tools without approval prompts: the container is the only
   boundary. `PI_CONTAINER_YOLO` is a validated boolean for setup and future Pi
-  releases; an enabled value only warns and must never change engine
+  releases; an enabled value only prints a notice and must never change engine
   arguments. `--approve` only trusts project-local files.
 - Keep `--cap-drop=ALL`, `no-new-privileges`, the read-only root filesystem,
   noexec temporary storage, the pinned Pi version, and CI with hadolint and
@@ -132,7 +140,8 @@ changes.
 - Refuse a workspace or worktree parent that physically is `/`, a system
   directory, `/tmp`, the physical home or a `/mnt/<letter>` drive root, unless
   exactly `PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1`.
-- Require an explicit `PI_CONTAINER_NETWORK`; reject `PI_NETWORK`; never fall
+- An unset or empty `PI_CONTAINER_NETWORK` selects `provider`, which needs the
+  provider settings or stops with setup guidance; never fall
   back to unrestricted networking after a restricted failure. Restricted modes
   forward no host proxy or CA variables, only the network profile's key, and set
   `PI_OFFLINE=1`, `PI_SKIP_VERSION_CHECK=1` and `PI_TELEMETRY=0` after

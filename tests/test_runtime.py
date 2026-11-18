@@ -263,7 +263,9 @@ print('pty-and-masks-ok')
         test -z "${{CONTAINER_HOST:-}}"
         test ! -S /run/podman/podman.sock
         if touch /usr/pi-test-write 2>/dev/null; then exit 10; fi
-        for directory in /tmp /var/tmp /run "$HOME/.npm"; do
+        # /run is not writable by the session user (contract L7).
+        if touch /run/pi-test-write 2>/dev/null; then exit 12; fi
+        for directory in /tmp /var/tmp "$HOME" "$HOME/.npm"; do
             printf temporary > "$directory/sentinel"
             printf '#!/bin/sh\\nexit 0\\n' > "$directory/executable"
             chmod +x "$directory/executable"
@@ -273,23 +275,23 @@ print('pty-and-masks-ok')
         printf workspace > owned-file
         node <<'NODE'
 const fs = require('fs');
-const paths = [['/tmp',256],['/var/tmp',256],['/run',32],[process.env.HOME+'/.npm',256]];
+const paths = [['/tmp',512],['/var/tmp',512],['/run',32],[process.env.HOME,512],[process.env.HOME+'/.npm',256]];
 const mounts=fs.readFileSync('/proc/mounts','utf8').split('\\n');
 for (const [path,mib] of paths) {{
  const stat=fs.statfsSync(path); if(stat.bsize*stat.blocks!==mib*1024*1024) throw Error('capacity '+path);
  const opts=mounts.find(x=>x.split(' ')[1]===path).split(' ')[3].split(',');
  for(const flag of ['rw','nosuid','nodev','noexec']) if(!opts.includes(flag)) throw Error(flag+' '+path);
 }}
-let fd=fs.openSync('/run/exhaust','w');
-try {{ for(let n=0;n<34;n++) fs.writeSync(fd,Buffer.alloc(1024*1024)); throw Error('unbounded /run'); }}
-catch(e) {{ if(e.code!=='ENOSPC') throw e; }} finally {{ fs.closeSync(fd); fs.unlinkSync('/run/exhaust'); }}
+let fd=fs.openSync(process.env.HOME+'/.npm/exhaust','w');
+try {{ for(let n=0;n<258;n++) fs.writeSync(fd,Buffer.alloc(1024*1024)); throw Error('unbounded npm cache'); }}
+catch(e) {{ if(e.code!=='ENOSPC') throw e; }} finally {{ fs.closeSync(fd); fs.unlinkSync(process.env.HOME+'/.npm/exhaust'); }}
 NODE
 '''
         self.assert_success(self.pipe_shell(script))
         self.assertEqual((self.project / 'owned-file').stat().st_uid, os.getuid())
         self.assertEqual((self.project / 'owned-file').stat().st_gid, os.getgid())
         self.assertEqual((self.state / 'sentinel').read_text(), 'persistent')
-        self.assert_success(self.pipe_shell('set -e\nfor d in /tmp /var/tmp /run "$HOME/.npm"; do test ! -e "$d/sentinel"; done\ntest "$(cat "$HOME/.pi/sentinel")" = persistent\n'))
+        self.assert_success(self.pipe_shell('set -e\nfor d in /tmp /var/tmp "$HOME" "$HOME/.npm"; do test ! -e "$d/sentinel"; done\ntest "$(cat "$HOME/.pi/sentinel")" = persistent\n'))
 
     def test_native_pi_help_version_npm_git_and_no_bun(self):
         for arg in ('--version', '--help'):
@@ -357,7 +359,7 @@ echo LAYOUT_OK
             self.assertIn('private', result.stderr)
             self.assertEqual(state.stat().st_mode & 0o777, 0o755)
             state.chmod(0o700)
-        self.assert_success(self.shell('set -e\nif touch "$HOME/.pi/forbidden" 2>/dev/null; then exit 10; fi\nif touch "$HOME/.agents/forbidden" 2>/dev/null; then exit 11; fi', PI_READONLY_CONFIG='1'))
+        self.assert_success(self.shell('set -e\nif touch "$HOME/.pi/forbidden" 2>/dev/null; then exit 10; fi\nif touch "$HOME/.agents/forbidden" 2>/dev/null; then exit 11; fi', PI_CONTAINER_READONLY_STATE='1'))
 
     def test_native_lifetime_timeout(self):
         start = time.monotonic()

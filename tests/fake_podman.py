@@ -1,150 +1,155 @@
 #!/usr/bin/env python3
-import hashlib, json, os, pathlib, signal, sys, time
+"""Shared fake Podman engine for the launcher tests.
+
+Every call is appended to FAKE_LOG as a JSON list. FAKE_* variables select
+responses and failures. An engine command this fake does not implement fails
+with status 99, so a test never passes on an unexpected engine call.
+"""
+import json, os, pathlib, sys, time, signal
 args = sys.argv[1:]
-with open(os.environ['FAKE_LOG'], 'a') as log:
-    log.write(json.dumps(args) + '\n')
-proxy = 'b' * 64
-if args[0] in os.environ.get('FAKE_STALL', '').split(','):
+log = pathlib.Path(os.environ['FAKE_LOG'])
+if os.environ.get('FAKE_UMASK_LOG'):
+    mask = os.umask(0)
+    os.umask(mask)
+    with pathlib.Path(os.environ['FAKE_UMASK_LOG']).open('a') as f:
+        f.write(json.dumps([args[0], mask]) + '\n')
+with log.open('a') as f:
+    f.write(json.dumps(args) + '\n')
+state = pathlib.Path(str(log) + '.container')
+command = args[0]
+if command in os.environ.get('FAKE_STALL', '').split(',') and (command != 'ps' or '--filter' in args):
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    pathlib.Path(os.environ['FAKE_LOG'] + '.stalled-' + args[0]).write_text(str(os.getpid()))
-    while True: time.sleep(0.05)
-# Restricted-mode engine responses (platform, image identity, proxy image and container).
-if args[0] == 'info' and args[-1] == '{{json .Host}}':
-    print(json.dumps({'kernel': '6.6.87.2-microsoft-standard-WSL2', 'arch': 'amd64',
-        'security': {'seccompEnabled': True, 'selinuxEnabled': False, 'apparmorEnabled': False}}))
-elif args[0] == 'info' and args[-1] == '{{.Host.NetworkBackend}}':
-    print(os.environ.get('FAKE_BACKEND', 'netavark'))
-elif args[0] == 'info' and args[-1] == '{{.Host.CgroupControllers}}':
-    print(os.environ.get('FAKE_CONTROLLERS', '[cpu memory pids]'))
+    pathlib.Path(str(log) + '.stalled-' + command).write_text(str(os.getpid()))
+    while True:
+        time.sleep(0.05)
+if command in os.environ.get('FAKE_FAIL', '').split(','):
+    print('synthetic control failure: ' + command, file=sys.stderr)
+    sys.exit(17)
+if args[:2] == ['--remote', '--url']:
+    sys.stdout.write(os.environ.get('FAKE_SOCKET_RAW',
+                     os.environ.get('FAKE_SOCKET_ROOTLESS', 'true') + ' ' +
+                     os.environ.get('FAKE_HOST_SOCKET', '/host/podman.sock') + '\n'))
+    sys.exit(int(os.environ.get('FAKE_SOCKET_STATUS', '0')))
+elif args[0] == 'info':
+    if args[-1] == '{{json .Host}}':
+        print(os.environ.get('FAKE_PLATFORM',json.dumps({'kernel':'6.6.87.2-microsoft-standard-WSL2','arch':'amd64',
+            'security':{'seccompEnabled':True,'selinuxEnabled':False,'apparmorEnabled':False}})))
+        sys.exit(0)
+    if args[-1] == '{{.Host.NetworkBackend}}':
+        print(os.environ.get('FAKE_BACKEND', 'netavark'))
+        sys.exit(0)
+    if args[-1] == '{{.Host.CgroupControllers}}':
+        print(os.environ.get('FAKE_CONTROLLERS', '[cpu memory pids]'))
+        sys.exit(int(os.environ.get('FAKE_CONTROLLERS_STATUS', '0')))
+    sys.stdout.write(os.environ.get('FAKE_INFO_RAW', os.environ.get('FAKE_INFO', 'true linux false') + '\n'))
+    sys.exit(int(os.environ.get('FAKE_INFO_STATUS', '0')))
 elif args[0] == 'version':
     print(os.environ.get('FAKE_SERVER_VERSION', '4.9.3'))
-elif args[:2] == ['image', 'inspect'] and any('.Config.Env' in a for a in args):
-    print(os.environ.get('FAKE_IMAGE_ENV', 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'))
-elif args[:2] == ['image', 'inspect'] and '{{.Id}}' in args:
-    print(os.environ.get('FAKE_IMAGE_ID', 'd' * 64))
-elif args[:2] == ['image', 'exists'] and args[-1] == os.environ.get('FAKE_EGRESS_IMAGE', '-'):
-    sys.exit(int(os.environ.get('FAKE_EGRESS_STATUS', '0')))
-elif args[0] == 'pull':
-    sys.exit(0)
-elif args[0] == 'create' and any(a.startswith('io.pi-container.egress=') for a in args):
-    pathlib.Path(args[args.index('--cidfile') + 1]).write_text(proxy + '\n')
-    print(proxy)
-elif args[0] == 'inspect' and args[-1] == proxy:
-    print(os.environ.get('FAKE_PROXY_CONFIG', '{"PidsLimit":128,"Memory":268435456}'))
-elif args[0] == 'exec' and args[1] == proxy:
-    print(os.environ.get('FAKE_PROXY_EFFECTIVE', '{"pids":128,"memory":268435456,"capabilities":[0,0,0,0,0],"no_new_privs":1,"seccomp":2}'))
-elif args[0] in ('start', 'rm') and args[-1] == proxy:
-    sys.exit(0)
-elif args[0] == 'ps' and any(a.startswith('label=io.pi-container.session=') for a in args):
-    # Containers this session owns, looked up when no ID was published.
-    print(os.environ.get('FAKE_OWNED_PS', ''))
-    sys.exit(int(os.environ.get('FAKE_OWNED_PS_STATUS', '0')))
-elif args[0] == 'ps' and '--filter' in args:
-    print('')
-elif args[0] == 'info':
-    sys.stdout.write(os.environ['FAKE_INFO_RAW']) if 'FAKE_INFO_RAW' in os.environ else print(os.environ.get('FAKE_INFO', 'true linux false'))
-    sys.exit(int(os.environ.get('FAKE_INFO_STATUS', '0')))
-elif args[:2] == ['--remote', '--url']:
-    sys.stdout.write(os.environ['FAKE_SOCKET_INFO_RAW']) if 'FAKE_SOCKET_INFO_RAW' in os.environ else print(os.environ.get('FAKE_SOCKET_INFO', 'true\n/host/podman.sock'))
-    sys.exit(int(os.environ.get('FAKE_SOCKET_STATUS', '0')))
-elif args[0] == 'ps':
-    print(os.environ.get('FAKE_NAMES', ''))
-    sys.exit(int(os.environ.get('FAKE_LIST_STATUS', '0')))
 elif args[:2] == ['image', 'exists']:
     sys.exit(int(os.environ.get('FAKE_IMAGE_STATUS', '0')))
 elif args[:2] == ['image', 'inspect']:
-    root = pathlib.Path(os.environ['FAKE_ROOT'])
-    inputs = b''.join((root / name).read_bytes() for name in ('Containerfile', '.containerignore', '.version',
-                                                                 'network/relay.py', 'network/mux.py'))
-    print(os.environ.get('FAKE_LABEL_HASH', hashlib.sha256(inputs).hexdigest()))
-    sys.exit(int(os.environ.get('FAKE_INSPECT_STATUS', '0')))
-elif args[0] == 'inspect' and any('.Config.Labels' in a for a in args):
-    # Owner label: a name defaults to another session, a full ID to this one.
-    calls = [json.loads(line) for line in pathlib.Path(os.environ['FAKE_LOG']).read_text().splitlines()]
-    token = next(a.split('=', 1)[1] for c in calls if c[0] == 'create' for a in c
-                 if a.startswith('io.pi-container.session='))
-    is_id = len(args[-1]) == 64
-    owner = os.environ.get('FAKE_ID_OWNER' if is_id else 'FAKE_NAME_OWNER', 'self' if is_id else 'other')
-    print(token if owner == 'self' else 'other-session')
-elif args[:3] == ['inspect', '--type', 'container']:
-    if 'FAKE_AGENT_BUDGETS' in os.environ:
-        print(os.environ['FAKE_AGENT_BUDGETS'])
+    if any('build-inputs-hash' in a for a in args):
+        print(os.environ.get('FAKE_LABEL_HASH', ''))
+        sys.exit(int(os.environ.get('FAKE_LABEL_STATUS', '0')))
+    if any('.Config.Env' in a for a in args):
+        print(os.environ.get('FAKE_IMAGE_ENV', 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'))
     else:
-        # Report what the agent create requested; unrequested budgets read as 0, as the engine does.
-        calls = [json.loads(line) for line in pathlib.Path(os.environ['FAKE_LOG']).read_text().splitlines()]
-        create = [c for c in calls if c[0] == 'create' and not any(a.startswith('io.pi-container.egress=') for a in c)][-1]
-        value = lambda prefix, default: next((a[len(prefix):] for a in create if a.startswith(prefix)), default)
-        whole, _, frac = value('--cpus=', '0').partition('.')
-        nano = int(whole) * 10**9 + int((frac + '000')[:3]) * 10**6
-        print(value('--memory=', '0'), nano, value('--pids-limit=', '0'))
-    sys.exit(int(os.environ.get('FAKE_BUDGET_INSPECT_STATUS', '0')))
+        print('d' * 64)
+elif args[0] == 'pull':
+    sys.exit(int(os.environ.get('FAKE_PULL_STATUS', '0')))
 elif args[0] == 'build':
-    if os.environ.get('FAKE_BUILD_READ_INPUT'):
-        pathlib.Path(os.environ['FAKE_LOG'] + '.build-stdin').write_text(sys.stdin.read())
+    time.sleep(float(os.environ.get('FAKE_BUILD_DELAY', '0')))
     sys.exit(int(os.environ.get('FAKE_BUILD_STATUS', '0')))
-elif args[:2] == ['container', 'exists']:
-    sys.exit(int(os.environ.get('FAKE_EXISTS_STATUS', '0')))
+elif args[0] == 'ps':
+    if '--filter' in args:
+        print(os.environ.get('FAKE_RECOVERY_ID', 'a' * 64) if state.exists() else '')
+    else:
+        print(os.environ.get('FAKE_NAMES', ''))
 elif args[0] == 'create':
-    calls = [json.loads(line) for line in pathlib.Path(os.environ['FAKE_LOG']).read_text().splitlines()]
-    attempt = sum(c[0] == 'create' for c in calls)
-    if attempt <= int(os.environ.get('FAKE_COLLISIONS', '0')):
-        print('synthetic collision', file=sys.stderr)
+    if os.environ.get('FAKE_NETWORK') and any(a.startswith('io.') and '.egress=' in a for a in args):
+        pathlib.Path(args[args.index('--cidfile') + 1]).write_text('b' * 64 + '\n')
+        print('b' * 64)
+        sys.exit(0)
+    collision = pathlib.Path(str(log) + '.collision')
+    if os.environ.get('FAKE_COLLISION') and (not collision.exists() or os.environ.get('FAKE_ALWAYS_COLLIDE')):
+        collision.touch()
+        # FAKE_NAME_OWNER=self: the name holds this session's own container.
+        pathlib.Path(str(log) + '.collision-token').write_text(args[args.index('--label') + 1].split('=', 1)[1])
         sys.exit(125)
-    status = int(os.environ.get('FAKE_CREATE_STATUS', '0'))
-    if status and not os.environ.get('FAKE_FAIL_WITH_CID'):
-        print('synthetic create failure', file=sys.stderr)
-        sys.exit(status)
-    cid = 'a' * 64
-    cidfile = pathlib.Path(args[args.index('--cidfile') + 1])
-    mode = os.environ.get('FAKE_CREATE_MODE', '')
-    def publish():
-        cidfile.write_text(cid + '\0\n' if os.environ.get('FAKE_CID_NUL')
-                           else os.environ.get('FAKE_CID_RAW', cid + '\n'))
-    if mode == 'cid-on-term':
-        def on_term(signum, frame):
-            publish()
-            sys.exit(42)
-        signal.signal(signal.SIGTERM, on_term)
-    elif os.environ.get('FAKE_CLIENT_IGNORE_TERM'):
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    if mode not in ('stall', 'cid-on-term'):
-        publish()
-    if os.environ.get('FAKE_CREATE_BARRIER'):
-        barrier = pathlib.Path(os.environ['FAKE_CREATE_BARRIER'])
-        barrier.with_suffix('.pid').write_text(str(os.getpid()))
-        barrier.with_suffix('.ready').touch()
-        if mode:
-            while True: time.sleep(0.01)
-        while not barrier.with_suffix('.release').exists(): time.sleep(0.01)
-    print(cid)
-    sys.exit(status)
-elif args[0] in ('kill', 'rm'):
-    if os.environ.get('FAKE_CONTROL_STALL') == args[0]:
-        if os.environ.get('FAKE_CONTROL_IGNORE_TERM'):
-            signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        while True: time.sleep(0.01)
-    status = int(os.environ.get('FAKE_' + args[0].upper() + '_STATUS', '0'))
-    if not status and os.environ.get('FAKE_SESSION'):
-        if args[0] == 'rm' or not os.environ.get('FAKE_IGNORE_SIGNAL'):
-            pathlib.Path(os.environ['FAKE_SESSION'] + '.done').touch()
-    sys.exit(status)
-elif args[0] == 'start' and os.environ.get('FAKE_SLOW'):
-    time.sleep(float(os.environ['FAKE_SLOW']))
-    sys.exit(255)
-elif args[0] in ('run', 'start'):
-    if os.environ.get('FAKE_CLIENT_IGNORE_TERM'):
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    print('mask:' + oct(os.umask(0)))
-    pathlib.Path(os.environ['FAKE_LOG'] + '.env').write_text(json.dumps(dict(os.environ)))
-    if os.environ.get('FAKE_ECHO_INPUT'):
-        sys.stdout.write(sys.stdin.read())
+    if os.environ.get('FAKE_CREATE_FAILURE'):
+        print('create failed', file=sys.stderr)
+        sys.exit(125)
+    token = args[args.index('--label') + 1].split('=', 1)[1]
+    state.write_text(token)
+    from decimal import Decimal
+    flag = lambda name: next((a.split('=', 1)[1] for a in args if a.startswith(name + '=')), '0')
+    pathlib.Path(str(log) + '.budgets').write_text(' '.join((flag('--memory'),
+        str(int(Decimal(flag('--cpus')) * 10**9)), flag('--pids-limit'))))
+    pause = os.environ.get('FAKE_CREATE_PAUSE')
+    if pause != 'before':
+        # FAKE_CID_CONTENT replaces the private creation record (escapes allowed).
+        cid = os.environ.get('FAKE_CID_CONTENT', 'a' * 64 + '\\n').encode().decode('unicode_escape')
+        pathlib.Path(args[args.index('--cidfile') + 1]).write_text(cid)
+    if pause:
+        pathlib.Path(str(log) + '.create-pid').write_text(str(os.getpid()))
+        pathlib.Path(str(log) + '.creating').touch()
+        while True:
+            time.sleep(0.05)
+    print('a' * 64)
+    sys.exit(int(os.environ.get('FAKE_CREATED_STATUS', '0')))
+elif args[0] == 'inspect':
+    if '{{.HostConfig.Memory}}' in args[-2]:
+        # Report the created configuration unless a test overrides it.
+        budgets = pathlib.Path(str(log) + '.budgets')
+        if 'FAKE_AGENT_BUDGETS' in os.environ:
+            print(os.environ['FAKE_AGENT_BUDGETS'])
+        elif budgets.exists():
+            print(budgets.read_text())
+        sys.exit(0)
+    if os.environ.get('FAKE_NETWORK') and args[-1] == 'b' * 64 and args[-2] == '{{json .HostConfig}}':
+        print(os.environ.get('FAKE_PROXY_CONFIG', '{"PidsLimit":128,"Memory":268435456}'))
+        sys.exit(0)
+    owner = pathlib.Path(str(log) + '.collision-token')
+    if os.environ.get('FAKE_NAME_OWNER') == 'self' and owner.exists() and args[-1] != 'a' * 64:
+        print(owner.read_text())
+    else:
+        print(state.read_text() if state.exists() and args[-1] == 'a' * 64 else 'foreign-session')
+elif args[0] == 'exec' and os.environ.get('FAKE_NETWORK'):
+    print(os.environ.get('FAKE_PROXY_EFFECTIVE', '{"pids":128,"memory":268435456,"capabilities":[0,0,0,0,0],"no_new_privs":1,"seccomp":2}'))
+elif args[:2] == ['container', 'exists']:
+    sys.exit(0 if os.environ.get('FAKE_COLLISION') else 1)
+elif args[0] == 'kill':
+    pid = pathlib.Path(str(log) + '.pid')
+    if pid.exists():
+        os.kill(int(pid.read_text()), signal.SIGTERM)
+elif args[0] == 'rm':
+    if os.environ.get('FAKE_NETWORK') and args[-1] == 'b' * 64:
+        sys.exit(0)
+    assert args[-1] == 'a' * 64, 'refusing to remove unrelated identity'
+    state.unlink(missing_ok=True)
+    pid = pathlib.Path(str(log) + '.pid')
+    if pid.exists():
+        try:
+            os.kill(int(pid.read_text()), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+elif args[0] == 'start':
+    if os.environ.get('FAKE_NETWORK') and args[-1] == 'b' * 64:
+        sys.exit(0)
     if os.environ.get('FAKE_START_STDERR'):
-        sys.stderr.write(os.environ['FAKE_START_STDERR']); sys.stderr.flush()
-    if os.environ.get('FAKE_SESSION'):
-        session = pathlib.Path(os.environ['FAKE_SESSION'])
-        session.with_suffix('.ready').touch()
-        while not session.with_suffix('.done').exists(): time.sleep(0.01)
+        sys.stderr.write(os.environ['FAKE_START_STDERR'])
+        sys.stderr.flush()
+    time.sleep(float(os.environ.get('FAKE_START_DELAY', '0')))
+    if os.environ.get('FAKE_WAIT'):
+        for name in ('TERM', 'INT', 'HUP'):
+            signal.signal(getattr(signal, 'SIG' + name),
+                          signal.SIG_IGN if os.environ.get('FAKE_IGNORE_SIGNALS') else signal.SIG_DFL)
+        pathlib.Path(str(log) + '.pid').write_text(str(os.getpid()))
+        pathlib.Path(str(log) + '.started').touch()
+        time.sleep(20)
+    if not os.environ.get('FAKE_NO_STDIN'):
+        print('stdin:' + sys.stdin.read())
     sys.exit(int(os.environ.get('FAKE_EXIT', '0')))
 else:
-    print('UNEXPECTED podman command: ' + repr(args), file=sys.stderr)
+    print('fake podman: unsupported command: ' + ' '.join(args), file=sys.stderr)
     sys.exit(99)

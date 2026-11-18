@@ -15,8 +15,9 @@ isolation, delegation, launcher and image specifications in `openspec/specs/`.
 ## Reference and intentional differences
 
 The shared components are copied unchanged from `sandbox-container` at tag
-`sandbox-ref-21` (commit `4b25eaeb688c2917b5b9cc7e346473ebbe07f3ec`):
+`sandbox-ref-25` (commit `6bed77040c3482591e36c9c3500bca89dec61941`):
 
+- `launcher/` (the shared launcher core);
 - `network/` (except the build output `network/bin/`);
 - `setup/`;
 - the shared tests listed in that tag's `tests/test_alignment.py`.
@@ -26,8 +27,9 @@ The Pi port added three reference fixes:
 - the optional profile field `install.files` (`sandbox-ref-6`), so setup and
   qualification install `.version`;
 - the optional profile field `install.runtime_build` (`sandbox-ref-7`), so setup
-  builds the runtime image through the wrapper's build-only `--container-build`
-  with Pi's build arguments and staleness label;
+  built the runtime image through the wrapper's build-only `--container-build`
+  with Pi's build arguments and staleness label; since the shared launcher core
+  every wrapper's setup builds this way and the field is gone;
 - the shared setup test patching the runtime build dispatch point
   (`sandbox-ref-21`).
 
@@ -43,17 +45,18 @@ Intentional differences are limited to per-agent files:
 
 | File | Pi value or behavior |
 | --- | --- |
-| `agent/profile.json` | Identity: `pi-container`, prefix `PI_CONTAINER`, labels `io.pi-container.*`. Images: `localhost/pi-container`, `localhost/pi-egress`, `localhost/pi-guard-toolchain`. Runtime: home `/pi-home`, command `pi`. State: configuration `.pi` with override `PI_CONTAINER_CONFIG_DIR`, shared `.agents`. Approval variable `PI_CONTAINER_YOLO` (validated; warns when enabled, because Pi has no approval layer). Four API-key methods. Installation file `.version` (`install.files`); runtime built through the wrapper (`install.runtime_build`) |
+| `agent/profile.json` | Identity: `pi-container`, prefix `PI_CONTAINER`, labels `io.pi-container.*`. Images: `localhost/pi-container`, `localhost/pi-egress`, `localhost/pi-guard-toolchain`. Runtime: home `/pi-home`, command `pi`. State: configuration `.pi` with override `PI_CONTAINER_CONFIG_DIR`, shared `.agents`. Approval variable `PI_CONTAINER_YOLO` (validated; a notice when enabled, because Pi has no approval layer). Four API-key methods. Installation file `.version` (`install.files`) |
 | `agent/policies/default.json` | `anthropic-api`, `openai-api`, `gemini-api` and `openrouter-api`, revision `pi-2026-11-10-v1` |
-| `pi-container.sh` | Pi arguments, shared or isolated state, noexec `/pi-home` with the npm cache tmpfs, read-only state mode, removed `PI_NETWORK`, protected `PI_OFFLINE`, `PI_SKIP_VERSION_CHECK` and `PI_TELEMETRY` values, profile-selected key, no host proxy or CA variables in restricted modes, build-only `--container-build`, `--container-setup` and the `setup required:` message, diagnostics filter |
+| `pi-container.sh` | The thin entry script, identical to the reference's apart from the wrapper name |
+| `agent/launcher.sh` | Pi's data for the shared core: `AGENT_EXEC=/usr/local/bin/pi`, `.version` as an installed build input, one credential per policy profile, protected `PI_OFFLINE=1`, `PI_SKIP_VERSION_CHECK=1` and `PI_TELEMETRY=0` in restricted sessions; hooks for the gitconfig opt-in, the npm cache tmpfs, `PI_VERSION`, the `PI_CONTAINER_YOLO` notice and the help |
 | `Containerfile`, `.containerignore` | Pi image; copies `network/relay.py` and `network/mux.py`, which the staleness hash also covers |
-| `tests/test_wrapper.py`, `fake_podman.py`, `test_runtime.py`, `test_network_runtime.py`, `network_tls_fixture.py`, `run-runtime.sh`, `Containerfile.runner`, `test_image_pins.py`, `test_reference_copy.py` | Pi names, synthetic OpenAI-compatible Chat Completions fixture, provider host inventories |
+| `tests/test_wrapper.py`, `test_runtime.py`, `test_network_runtime.py`, `network_tls_fixture.py`, `run-runtime.sh`, `Containerfile.runner`, `test_image_pins.py`, `test_reference_copy.py` | Pi names, synthetic OpenAI-compatible Chat Completions fixture, provider host inventories |
 
 ## Modes
 
 | Mode | Agent access | Socket delegation |
 | --- | --- | --- |
-| unset or empty | Launch stops before engine calls and state creation | No session |
+| unset or empty | `provider`; without the provider settings the launch stops with setup guidance before engine calls and state creation | Rejected |
 | `offline` | Own loopback, pipes and connected socket pairs only | Rejected |
 | `provider` | As offline, plus one preconnected channel to an exact-destination proxy | Rejected |
 | `unrestricted` (explicit only) | Ordinary runtime networking | Exact opt-in allowed |
@@ -131,12 +134,12 @@ The same Pi row appears in `sandbox-container`, `claude-container`,
 
 | Wrapper | Contract adoption | Implementation | Real enforcement | Auth compatibility |
 | --- | --- | --- | --- | --- |
-| Sandbox (reference) | Reference (`sandbox-ref-21`) | Guard, qualification and guided setup integrated; no provider mode (no authentication method); provider mechanics covered by the fixture profile | WSL ABI 3: all runner modes passed (2026-11-15) | Not applicable |
-| Claude | Ported from `sandbox-ref-21`; shared files unchanged | Mandatory bootstrap, multiplexed proxy and guided setup integrated | See the Claude validation record | Account login, reuse and refresh passed; operator session with tool use passed (2026-11-11, `anthropic-account`); real-key API unavailable |
-| Codex | Ported from `sandbox-ref-21`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-09) | Operator session with tool use passed (2026-11-11, `openai-account`); refresh and API-key checks pending; synthetic Responses API streaming and tool call passed |
-| Antigravity | Ported from `sandbox-ref-21`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated; keyring removed | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Operator session with tool use passed (2026-11-11, `google-account`, policy `antigravity-2026-11-11-v2`); refresh and Gemini API-key checks pending; synthetic Gemini streaming and tool call passed |
+| Sandbox (reference) | Reference (`sandbox-ref-25`, shared launcher core) | Guard, qualification and guided setup integrated; no provider mode (no authentication method); provider mechanics covered by the fixture profile and the fixture agent part | WSL ABI 3: all runner modes passed (2026-11-17) | Not applicable |
+| Claude | Adopted `sandbox-ref-25`: shared launcher core | Shared launcher core, mandatory bootstrap, multiplexed proxy and guided setup integrated | WSL ABI 3: all runner modes passed (2026-11-17, shared launcher core); wrapper, setup and runtime runs passed on `sandbox-ref-25` (2026-11-18) | Account login, reuse and refresh passed; operator session with tool use passed (2026-11-11, `anthropic-account`); real-key API unavailable |
+| Codex | Adopted `sandbox-ref-25`: shared launcher core | Shared launcher core, guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes passed (2026-11-17, shared launcher core); wrapper, setup and runtime runs passed on `sandbox-ref-25` (2026-11-18) | Operator session with tool use passed (2026-11-11, `openai-account`); refresh and API-key checks pending; synthetic Responses API streaming and tool call passed |
+| Antigravity | Adopted `sandbox-ref-25`: shared launcher core | Shared launcher core, guard, multiplexed proxy, qualification and guided setup integrated; keyring removed | WSL ABI 3: all runtime modes passed (2026-11-17, shared launcher core); wrapper, setup and runtime runs passed on `sandbox-ref-25` (2026-11-18) | Operator session with tool use passed (2026-11-11, `google-account`, policy `antigravity-2026-11-11-v2`); refresh and Gemini API-key checks pending; synthetic Gemini streaming and tool call passed |
 | OpenCode | Ported from `sandbox-ref-21`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Operator session with tool use passed (2026-11-11, `anthropic-api`); the other three profiles pending; synthetic Chat Completions streaming and tool call passed |
-| Pi | Ported from `sandbox-ref-21`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Operator session with tool use passed (2026-11-11, `anthropic-api`); the other three profiles pending; synthetic Chat Completions streaming and tool call passed |
+| Pi | Adopted `sandbox-ref-25`: shared launcher core | Shared launcher core, guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes passed (2026-11-18, shared launcher core) | Operator session with tool use passed (2026-11-11, `anthropic-api`); the other three profiles pending; synthetic Chat Completions streaming and tool call passed |
 
 ## Port status
 

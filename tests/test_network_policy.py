@@ -154,6 +154,9 @@ class PolicyTests(unittest.TestCase):
             guard.chmod(0o500)
             (binary_dir / (GUARD + '.sha256')).write_text(hashlib.sha256(elf).hexdigest() + '  ' + GUARD + '\n')
             (install / PROFILE.wrapper).write_text('protected fixture')
+            (install / 'launcher').mkdir(mode=0o755)
+            for relative in ('launcher/core.sh', 'agent/launcher.sh'):
+                (install / relative).write_text('protected fixture')
             policy_file = install / 'policy.json'
             policy_file.write_text(json.dumps(self.value))
             workspace = root / 'workspace'
@@ -182,6 +185,14 @@ class PolicyTests(unittest.TestCase):
                 rejected = subprocess.run([*preflight, '--mount-target', target], capture_output=True, text=True)
                 self.assertNotEqual(rejected.returncode, 0, target)
                 self.assertIn('reserved private IPC hierarchy', rejected.stderr)
+            # The shared launcher core and the agent part must be protected files.
+            for relative in ('launcher/core.sh', 'agent/launcher.sh'):
+                with self.subTest(launcher_file=relative):
+                    (install / relative).chmod(0o666)
+                    rejected = subprocess.run(preflight, capture_output=True, text=True)
+                    self.assertNotEqual(rejected.returncode, 0)
+                    self.assertIn(relative, rejected.stderr)
+                    (install / relative).chmod(0o644)
             guard.chmod(0o700)
             guard.write_bytes(bytes(elf) + b'tampered')
             rejected = subprocess.run(preflight, capture_output=True, text=True)

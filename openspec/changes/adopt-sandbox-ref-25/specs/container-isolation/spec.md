@@ -73,7 +73,7 @@ Sessions SHALL use `HOME=/pi-home`. In shared-state mode and with read-only stat
 
 #### Scenario: Invalid isolated state
 - **WHEN** the value is relative, the directory is foreign-owned or grants group or other permissions, or it overlaps the workspace
-- **THEN** the wrapper exits with status 1 naming the variable before any image operation and changes nothing
+- **THEN** the wrapper exits with status 1 before any image operation and changes nothing, naming the variable for a relative or overlapping value and the directory for an ownership or permission refusal
 - **AND** a relative or overlapping value fails before any engine query
 
 #### Scenario: Escaping or shared child

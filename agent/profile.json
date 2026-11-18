@@ -13,8 +13,7 @@
   },
   "install": {
     "state_name": "pi-egress",
-    "files": [".version"],
-    "runtime_build": "wrapper"
+    "files": [".version"]
   },
   "native": {
     "home": "/pi-home",

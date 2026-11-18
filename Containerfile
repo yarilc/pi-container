@@ -10,7 +10,8 @@
 # docs/validation.md. The Pi version comes from .version via PI_VERSION.
 #
 # Build arguments:
-#   PI_VERSION        Pi Coding Agent version (set by pi-container.sh from .version)
+#   PI_VERSION        Pi Coding Agent version (agent/launcher.sh passes the first
+#                     line of .version to every build)
 #   OPENSPEC_VERSION  pinned OpenSpec release
 
 FROM docker.io/library/node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da

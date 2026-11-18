@@ -75,9 +75,15 @@ class ProfileSchemaTests(unittest.TestCase):
             lambda v: v['auth'].update(duplicate=dict(v['auth'][method])),
             lambda v: v['install'].update(files='.version'),
             lambda v: v['install'].update(files=['../escape']),
-            lambda v: v['install'].update(runtime_build='podman'),
-            lambda v: v['install'].update(runtime_build=['wrapper']),
-            lambda v: v['install'].update(runtime_build=''),
+            # Setup always builds through the wrapper; the field is obsolete.
+            lambda v: v['install'].update(runtime_build='wrapper'),
+            lambda v: v['install'].update(runtime_build='recipe'),
+            lambda v: v['native'].update(exec='usr/local/bin/agent'),
+            lambda v: v['native'].update(exec='/usr/local/../bin/agent'),
+            lambda v: v['native'].update(exec='/usr/local/bin/agent tool'),
+            lambda v: v['native'].update(exec=['/usr/local/bin/agent']),
+            lambda v: v['native'].update(exec_tmp=1),
+            lambda v: v['native'].update(exec_tmp='true'),
             lambda v: v['install'].update(files=['/absolute']),
             lambda v: v['install'].update(files=['network/relay.py']),
             lambda v: v['install'].update(files=['agent/profile.json']),
@@ -129,13 +135,23 @@ class ProfileSchemaTests(unittest.TestCase):
         value['native']['protected_env'] = ['AGENT_CODE_', 'DISABLE_TELEMETRY']
         self.assertEqual(agent_profile.validate(value).protected_env, ('AGENT_CODE_', 'DISABLE_TELEMETRY'))
 
-    def test_optional_runtime_build(self):
-        self.assertEqual(agent_profile.validate(self.value).runtime_build,
-                         self.value['install'].get('runtime_build', 'recipe'))
-        for mode in ('recipe', 'wrapper'):
-            value = copy.deepcopy(self.value)
-            value['install']['runtime_build'] = mode
-            self.assertEqual(agent_profile.validate(value).runtime_build, mode)
+    def test_optional_application_path_and_executable_temporary_storage(self):
+        value = copy.deepcopy(self.value)
+        value['native'].pop('exec', None)
+        value['native'].pop('exec_tmp', None)
+        profile = agent_profile.validate(value)
+        self.assertEqual(profile.exec, '/usr/local/bin/' + value['native']['command'])
+        self.assertIs(profile.exec_tmp, False)
+        value['native'].update(exec='/usr/local/bin/agent-entrypoint', exec_tmp=True)
+        profile = agent_profile.validate(value)
+        self.assertEqual(profile.exec, '/usr/local/bin/agent-entrypoint')
+        self.assertIs(profile.exec_tmp, True)
+
+    def test_default_mode_follows_the_authentication_methods(self):
+        value = copy.deepcopy(self.value)
+        self.assertEqual(agent_profile.validate(value).default_mode, 'provider' if value['auth'] else 'offline')
+        value['auth'] = {}
+        self.assertEqual(agent_profile.validate(value).default_mode, 'offline')
 
     def test_login_arguments_may_be_empty(self):
         # An empty list selects sign-in inside the interactive agent.

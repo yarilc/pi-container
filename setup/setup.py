@@ -345,8 +345,12 @@ def verify_socket(url, env):
     rootless, separator, host_path = output.partition(' ')
     # Podman 5 reports the service socket as a unix:// URL; earlier releases report the bare path.
     host_path = host_path.removeprefix('unix://')
-    if rootless != 'true' or not separator or not host_path.startswith('/'):
-        raise SetupError('The exact Podman socket must serve a rootless engine and report an absolute host socket path.')
+    # The reported path is a bind source: never the host root, and never a visible
+    # non-socket. A path not visible here is the remapped case of a containerized caller.
+    usable = (host_path.startswith('/') and host_path.strip('/') != ''
+              and (not os.path.lexists(host_path) or Path(host_path).is_socket()))
+    if rootless != 'true' or not separator or not usable:
+        raise SetupError('The exact Podman socket must serve a rootless engine and report a usable absolute host socket path.')
 
 
 def manual_service(url):
@@ -456,10 +460,9 @@ def build_image(release, recipe, tag, env, ca_bundle=''):
 
 
 def build_runtime(release, tag, env, ca_bundle=''):
-    # A wrapper-built runtime keeps the agent's own build arguments and labels.
-    if PROFILE.runtime_build == 'recipe':
-        return build_image(release, 'Containerfile', tag, env, ca_bundle)
-    # The build-only operation starts no session; the mode only admits it. The
+    # Every runtime is built by the wrapper's build-only operation, which keeps
+    # the agent's build arguments and the build-inputs-hash label. It starts no
+    # session; the mode only admits it. The
     # wrapper receives the trust selection and bundle explicitly and passes the
     # bundle to its own build as a build secret; without trust it gets none.
     run(['bash', release / PROFILE.wrapper, '--container-build'],
