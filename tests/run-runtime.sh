@@ -2,20 +2,21 @@
 # Execute credential-free acceptance from native Linux volume storage.
 set -Eeuo pipefail
 root=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-image=${PI_CONTAINER_IMAGE:-localhost/pi-container}
+image=${PI_CONTAINER_IMAGE:-localhost/pi-container:latest}
 command -v podman >/dev/null || { printf 'Podman is required\n' >&2; exit 1; }
 info=$(podman info --format '{{.Host.Security.Rootless}} {{.Host.OS}}')
 [[ "$info" == 'true linux' ]] || { printf 'A Linux rootless Podman engine is required\n' >&2; exit 1; }
-podman image exists "$image" || { printf 'Build the Pi image first: PI_CONTAINER_NETWORK=unrestricted PI_CONTAINER_MAINTENANCE=1 PI_CONTAINER_IMAGE=%s ./pi-container.sh --container-build --version\n' "$image" >&2; exit 1; }
+podman image exists "$image" || { printf 'Build the Pi image first: PI_CONTAINER_NETWORK=unrestricted PI_CONTAINER_MAINTENANCE=1 PI_CONTAINER_IMAGE=%s ./pi-container.sh --container-build\n' "$image" >&2; exit 1; }
 # Mode selection: the default runs the unrestricted runtime suite.
 pattern=test_runtime.py
 selection_env=(--env PI_RUNTIME_TESTS=1 --env SANDBOX_RUNTIME_TESTS=1)
 guard_environment=()
 project_mode=ro
-shared=(test_reference_copy test_alignment test_agent_profile test_network_policy test_mux test_tls_client_hello
+shared=(test_reference_copy test_alignment test_launcher test_agent_profile test_network_policy test_mux test_tls_client_hello
     test_tls_proxy test_platform test_qualification test_guard test_session test_network_feasibility)
 case "${1:-}" in
-    --wrapper) pattern=test_wrapper.py ;;
+    # The shared launcher tests and this wrapper's own: test_launcher.py, test_wrapper.py.
+    --wrapper) pattern='test_[lw][ar][au]*.py' ;;
     --shared) pattern='' ;;
     --qualification) pattern=test_qualification.py ;;
     --setup) pattern=test_setup.py; project_mode=rw ;;

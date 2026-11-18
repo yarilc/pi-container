@@ -74,7 +74,7 @@ jobs:
 
       - name: Shared sandbox suites (credential-free, no real engine)
         run: |
-          python3 -B -m unittest -v tests.test_reference_copy tests.test_agent_profile \
+          python3 -B -m unittest -v tests.test_reference_copy tests.test_alignment tests.test_launcher tests.test_agent_profile \
             tests.test_network_policy tests.test_mux tests.test_tls_client_hello tests.test_tls_proxy \
             tests.test_platform tests.test_qualification tests.test_guard tests.test_session \
             tests.test_network_feasibility tests.test_image_pins

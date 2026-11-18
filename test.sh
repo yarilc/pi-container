@@ -25,14 +25,11 @@ cleanup() {
 trap cleanup EXIT
 info=$(podman info --format '{{.Host.Security.Rootless}} {{.Host.OS}}')
 [[ "$info" == 'true linux' ]] || { printf 'Linux rootless Podman is required\n' >&2; exit 1; }
-version=$(head -1 "$root/.version" | tr -d '[:space:]')
-[[ -n "$version" ]] || exit 1
-hash=$(cat "$root/Containerfile" "$root/.containerignore" "$root/.version" "$root/network/relay.py" "$root/network/mux.py" | sha256sum)
-hash=${hash%% *}
-podman build --format docker --tag "$image" --file "$root/Containerfile" \
-    --build-arg "PI_VERSION=$version" \
-    --label "build-inputs-hash=$hash" "$root"
+# The wrapper's build-only operation builds the image with the launcher core's
+# build arguments and build-inputs-hash label.
 owned=1
+PI_CONTAINER_IMAGE="$image" PI_CONTAINER_NETWORK=unrestricted PI_CONTAINER_MAINTENANCE=1 \
+    bash "$root/pi-container.sh" --container-build
 # Actual wrapper acceptance verifies the built image, installation, ownership,
 # temp mounts, worktrees, delegated children, native timeout, and bounded signals.
 PI_CONTAINER_IMAGE="$image" bash "$root/tests/run-runtime.sh"

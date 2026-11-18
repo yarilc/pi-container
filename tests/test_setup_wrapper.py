@@ -2,9 +2,9 @@
 
 These tests launch the wrapper or its managed launcher, so they use the
 checkout's real profile and variable names. Wrappers differ in how they admit a
-missing network mode (this wrapper refuses an ordinary launch without one), so
-this file is per-agent and not part of the shared set; module-level setup
-checks live in the shared tests/test_setup.py.
+missing network mode (this wrapper defaults to provider and needs the saved
+provider settings), so this file is per-agent and not part of the shared set;
+module-level setup checks live in the shared tests/test_setup.py.
 """
 import json
 import os
@@ -200,6 +200,10 @@ class SetupWrapperTests(unittest.TestCase):
     def test_managed_real_wrapper_admits_saved_modes_and_preserves_network_overrides(self):
         release = self.release()
         command = Path(self.value['command'])
+        # Only the presence of the guard manifest is checked before the engine;
+        # the shared helper validates the installation later.
+        (release / 'network/bin').mkdir(mode=0o700, exist_ok=True)
+        (release / 'network/bin/guard.sha256').write_text('c' * 64 + '\n')
         for mode in ('offline', 'provider', 'unrestricted'):
             saved = self.value | {'network': mode, 'auth': 'none' if mode == 'offline' else PROVIDER_METHOD,
                                  'endpoint': 'default' if mode != 'unrestricted' else 'local',
@@ -217,8 +221,10 @@ class SetupWrapperTests(unittest.TestCase):
                                             env=env, capture_output=True, text=True, timeout=10)
                     self.assertEqual(result.returncode, 1, result.stderr)
                     self.assertEqual(result.stdout, '')
-                    if override == '':
-                        self.assertIn('setup required:', result.stderr)
+                    # The empty override selects the provider default, never the saved mode;
+                    # a saved offline mode has no provider settings, so that needs setup.
+                    if override == '' and mode == 'offline':
+                        self.assertIn('setup required: provider sessions', result.stderr)
                         self.assertFalse(self.calls())
                     elif override == 'invalid':
                         self.assertIn('must be offline, provider, or unrestricted', result.stderr)
@@ -233,6 +239,14 @@ class SetupWrapperTests(unittest.TestCase):
                         self.assertEqual(bool(endpoint), mode != 'unrestricted')
                     self.assertFalse((self.base / 'state').exists())
                     self.assertFalse((self.home / CONFIG_HOME).exists())
+        # Without the guard manifest the provider default gives setup guidance.
+        (release / 'network/bin/guard.sha256').unlink()
+        self.log.unlink(missing_ok=True)
+        result = subprocess.run([str(command), '--version'], cwd=self.workspace, env=self.env | {name('NETWORK'): ''},
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('setup required: provider sessions need a protected installation', result.stderr)
+        self.assertFalse(self.calls())
 
     def test_managed_help_bypasses_corrupt_json_python_and_podman(self):
         release = self.release()

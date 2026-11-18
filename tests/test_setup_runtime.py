@@ -46,7 +46,7 @@ class SetupRuntime(unittest.TestCase):
             + 'args=sys.argv[1:]\n'
             + "if args[:2] == ['image','exists'] and args[-1] in " + repr(('localhost/pi-container:latest', prepared_runtime)) + ":\n"
             + ' sys.exit(1 if Path(' + repr(str(self.base / 'withhold-runtime')) + ').exists() else 0)\n'
-            + "if args[:2] == ['image','inspect'] and args[-1] in " + repr(('localhost/pi-container:latest', prepared_runtime)) + ":\n"
+            + "if args[:2] == ['image','inspect'] and '{{.Id}}' in args and args[-1] in " + repr(('localhost/pi-container:latest', prepared_runtime)) + ":\n"
             + ' print(' + repr(prepared_runtime) + '); sys.exit(0)\n'
             + "if args[:2] == ['image','exists'] and args[-1] in " + repr(('localhost/pi-egress:local', prepared_proxy)) + ": sys.exit(0)\n"
             + "if args[:2] == ['image','inspect'] and args[-1] in " + repr(('localhost/pi-egress:local', prepared_proxy)) + ":\n"
@@ -209,7 +209,7 @@ class SetupRuntime(unittest.TestCase):
 
     def test_wrapper_built_runtime_passes_the_staleness_check(self):
         # With no reusable runtime image, setup builds through the installed
-        # wrapper (install.runtime_build = wrapper) under its own maintenance.
+        # wrapper (its build-only --container-build) under its own maintenance.
         (self.base / 'withhold-runtime').touch()
         code, output = self.setup_run('unrestricted')
         for line in output.splitlines():
@@ -217,7 +217,6 @@ class SetupRuntime(unittest.TestCase):
                 self.tags.add(line.split('Prepared runtime image tag: ', 1)[1].strip())
         self.assertEqual(code, 0, output)
         self.assertIn('Runtime build requested', output)
-        self.assertIn('Building Pi v' + VERSION + ' image', output)
         release = (self.root / 'current').resolve()
         saved = json.loads((release / 'setup.json').read_text())
         self.tags.add(saved['image'])
@@ -225,6 +224,11 @@ class SetupRuntime(unittest.TestCase):
                                          '{{index .Labels "build-inputs-hash"}}', saved['image']],
                                         env=self.env, text=True).strip()
         self.assertRegex(label, '^[0-9a-f]{64}$')
+        # The agent part passed PI_VERSION from .version to the wrapper's build.
+        version = subprocess.check_output([self.real_podman, 'image', 'inspect', '--format',
+                                           '{{index .Labels "org.opencontainers.image.version"}}', saved['image']],
+                                          env=self.env, text=True).strip()
+        self.assertEqual(version, VERSION)
         result = subprocess.run([str(self.command), '--version'], cwd=self.workspace,
                                 env={'PATH': self.env['PATH'], 'HOME': self.env['HOME']},
                                 stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
