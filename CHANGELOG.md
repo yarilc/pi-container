@@ -58,6 +58,12 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
 
 ### Changed
 
+- Pin Pi 1.5.2 and OpenSpec 2.0.0. The supported API-key destinations were
+  remeasured with dummy keys. Project trust controls access to the OpenSpec
+  skills under `.agents/skills`. Pi 1.x renamed the Azure provider to `azure`
+  and changed extension APIs.
+  [Pi 1.5.2 changelog](https://github.com/earendil-works/pi/blob/v1.5.2/packages/coding-agent/CHANGELOG.md)
+
 - Shared launcher core (`adopt-sandbox-ref-25`): `pi-container.sh` is the thin
   entry script of `sandbox-container` tag `sandbox-ref-25`, which runs the
   shared `launcher/core.sh` with Pi's agent part `agent/launcher.sh`.

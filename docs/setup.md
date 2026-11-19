@@ -25,11 +25,16 @@ packaged policy. Setup never asks for the key itself. First-run setup defaults
 to provider mode with the `anthropic` method, shared state, permission bypass
 off, current workspace only, delegation off and CA trust off.
 
-Pi 0.80.8 has no tool-approval layer: its tools run without prompts and the
+Pi 1.5.2 has no tool-approval layer: its tools run without prompts and the
 container is the only boundary. The permission-bypass question is kept so the
 managed launcher can save `PI_CONTAINER_YOLO=0` or `1` as for the other
 wrappers. `0` is silent; `1` prints a notice that the setting has no
 effect.
+
+Project trust controls whether Pi loads resources such as `.agents/skills`
+and `.pi/mcp.json`. Use `--approve` for one invocation or use `/trust` in
+the Pi UI to save the decision in `~/.pi/agent/trust.json`.
+
 Accept defaults with Enter; invalid choices are requested again. Existing saved
 choices are offered for review on rerun, including a previously selected offline
 mode. The managed launcher applies the saved network choice. A direct

@@ -6,7 +6,7 @@
     "https://github.com/earendil-works/pi-coding-agent/blob/main/docs/providers.md"
   ],
   "tested": {
-    "cli": "0.80.8 (version query; static endpoint inventory and logging-proxy runs 2026-11-10)",
+    "cli": "1.5.2 (version query, static endpoint inventory and logging-proxy runs on 2026-11-18)",
     "node": "22 (image base)",
     "authentication": "unverified: operator API-key requests for the four profiles not yet run"
   },

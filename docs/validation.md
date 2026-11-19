@@ -979,3 +979,149 @@ guard toolchain tagged from the setup image of this host.
 
 The installed and qualified code changes (entry script, core, agent part,
 profile): installations rerun `--container-setup`.
+
+## Pi 1.5.2 and OpenSpec 2.0.0 image pins (2026-11-18)
+
+`pin-pi-1-5-2` selects the newest stable releases at least 72 hours old at the
+2026-11-18 freeze. Pi 1.5.2 was released on November 10 and OpenSpec 2.0.0 on
+November 11. The base image is
+`node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da`.
+
+| Image | Image ID | Reported Pi | Reported OpenSpec |
+| --- | --- | --- | --- |
+| Baseline | `21762a3dcf255a82042d7d33935d79a7f2c17ad970750ba5bd89e6ff2a537ede` | 0.80.8 | 1.16.0 |
+| Updated | `f2097164a9e3a3cdc2d14be40bceec76f67b3251be597e954cb1dc40bd8ef89c` | 1.5.2 | 2.0.0 |
+
+The maintenance build used HTTPS Debian sources and recorded build-inputs hash
+`c6fd471da71276109eac82f7fdd3e4867c0a0be16fa975d74c78603a68b664c0`.
+The updated image reports Node 22.23.4 and Python 3.11.2. Validation used
+WSL2 6.6.87.2 x86_64, Podman client 4.3.1, rootless server 4.9.3 and Netavark.
+
+### Provider inventory and startup controls
+
+The offline inventory scanned literal URLs in the installed JavaScript and
+JSON of `pi-coding-agent` and `pi-ai` for both versions, plus `pi-mcp` and
+`pi-codemode` for 1.5.2. The four provider hosts remain in the installed
+provider code or catalog. The logging proxy received one CONNECT to each
+profile's host in a separate dummy-key `pi -p` run per profile. These containers
+had `--network=none` and the proxy returned HTTP 403 to every request.
+
+| Profile | Model | Key supplied | Destination in both versions and both control settings |
+| --- | --- | --- | --- |
+| `anthropic-api` | `claude-sonnet-4-6` | `ANTHROPIC_API_KEY` | `api.anthropic.com:443` |
+| `openai-api` | `gpt-4o` | `OPENAI_API_KEY` | `api.openai.com:443` |
+| `gemini-api` | `gemini-2.5-flash` | `GEMINI_API_KEY` | `generativelanguage.googleapis.com:443` |
+| `openrouter-api` | `anthropic/claude-sonnet-4.6` | `OPENROUTER_API_KEY` | `openrouter.ai:443` |
+
+| Probe | Additional CONNECT attempts on 0.80.8 | Additional CONNECT attempts on 1.5.2 |
+| --- | --- | --- |
+| Print mode, all controls unset | `pi.dev:443` once per provider | None |
+| Print mode, version check and telemetry flags only (Anthropic) | `pi.dev:443` once | None |
+| Print mode, all restricted controls | None | None |
+| Interactive startup, all controls unset | `api.github.com:443` (1), `pi.dev:443` (2) | `github.com:443` (3), `pi.dev:443` (2) |
+| Interactive startup, `PI_SKIP_VERSION_CHECK=1` | `api.github.com:443` (1), `pi.dev:443` (1) | `github.com:443` (3), `pi.dev:443` (1) |
+| Interactive startup, `PI_TELEMETRY=0` | `api.github.com:443` (1), `pi.dev:443` (1) | `github.com:443` (3), `pi.dev:443` (1) |
+| Interactive startup, all restricted controls | None | None |
+
+Each startup run used new settings with update checks and install telemetry
+enabled. The protected combination `PI_OFFLINE=1`,
+`PI_SKIP_VERSION_CHECK=1`, `PI_TELEMETRY=0` suppressed the startup traffic and
+still permitted model requests to reach the logging proxy. The four required
+destinations match policy revision `pi-2026-11-10-v1`.
+
+#### Additional hostname literals in 1.5.2
+
+- `a.co`, `accounts.google.com`, `ae.api.openai.com`,
+  `aiplatform.googleapis.com`, `api.meta.ai`, `api.typesafe.ai`,
+  `auth.kimi.com`, `auth.meta.com`, `aws.amazon.com`,
+  `cloudresourcemanager.googleapis.com`, `codeload.github.com`.
+- `developers.openai.com`, `docs.anthropic.com`, `docs.cloud.google.com`,
+  `docs.expo.dev`, `dummy.com`, `eu.api.openai.com`, `example.com`,
+  `gist.githubusercontent.com`, `help.openai.com`, `huggingface.co`,
+  `inference.baseten.co`.
+- `json-schema.invalid`, `learn.microsoft.com`, `mcp.sentry.dev`,
+  `mtls.api.openai.com`, `oauth2.googleapis.com`, `react-native.canny.io`,
+  `redacted.invalid`, `signin-fips.amazonaws-us-gov.com`, `sts.amazonaws.com`.
+- `token-plan.ap-southeast-1.maas.aliyuncs.com`,
+  `token-plan.cn-beijing.maas.aliyuncs.com`, `us.api.openai.com`,
+  `us.openrouter.ai`, `vercel.com`, `workers-binding.ai`,
+  `www.googleapis.com`, `www.gstatic.com`.
+
+Only 0.80.8 contained literals for `api.github.com`, `gist.github.com`,
+`mistral.ai` and `raw.githubusercontent.com`. The interactive startup
+comparison measures which GitHub host the CLI attempted. The provider runs
+above exercised the four default API routes.
+
+### Guard, MCP and state
+
+The packaged codemode worker ran a QuickJS script and called a synthetic
+tool under guard `abi3-seccomp-mux-v1`. A user-level `mcp.json` pointed at
+`mcp.example.invalid`. The proxy logged `policy-denied` and `pi mcp list`
+reported `failed` with exit 1. Pi's MCP OAuth callback server bound and
+accepted a synthetic callback on the session's private loopback.
+
+The 0.80.8 SDK serialized a session in isolated state with settings, a user
+skill and a separate project skill. Pi 1.5.2 read the copy and continued the
+session against the synthetic API. The session header stayed at format 3 and
+the settings matched byte for byte. The model request contained the old reply
+and the user skill. The default print run skipped the project skill and
+`--approve` loaded it for a single invocation.
+
+The ordinary TUI executed a synthetic Bash tool call without a tool-approval
+prompt. The interactive `/trust` command saved the canonical project path
+in the persistent `~/.pi/agent/trust.json`. A subsequent print run loaded the
+project skill using the saved decision. The TUI also reported that `fd` was
+absent and skipped its download under `PI_OFFLINE=1`.
+
+### Offline OpenSpec round trip
+
+OpenSpec 2.0.0 read the 1.16.0 settings in a qualified offline shell. It
+initialized a temporary project with `--tools none`, created a change with
+`skip_specs: true`, validated it strictly, and listed it. The names and
+checksums of the legacy configuration files matched before and after.
+
+### Generated OpenSpec skills
+
+`openspec update` ran on the checkout from the qualified offline shell in the
+updated image. The dry run identified the six tracked skill files and a global
+configuration file in the disposable home. The update regenerated all six
+`.agents/skills/openspec-*/SKILL.md` files with `generatedBy: "2.0.0"`.
+
+### Acceptance checks
+
+Runtime acceptance ran on November 18–19, 2026 UTC. Both versions passed
+all 13 checks in `./test-wrapper.sh` and seven image-pin tests. Unit discovery
+on the updated image ran 453 cases with 73 skips and
+passed the reference-copy comparison against the sibling `sandbox-ref-25`
+checkout.
+
+| Check | Result |
+| --- | --- |
+| `./test.sh` | Built a disposable image through the wrapper and passed all 18 default runtime tests. |
+| `bash tests/run-runtime.sh --wrapper` | 119 passed in the full run. The synthetic lifetime-boundary case passed on a targeted rerun. |
+| `bash tests/run-runtime.sh --shared` | Ran 288 cases with 29 skips. All other cases passed. |
+| `bash tests/run-runtime.sh --setup` | Passed all 67 tests. |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed all four tests. |
+| `bash tests/run-runtime.sh --qualification` | Passed all 29 tests. |
+| `bash tests/run-runtime.sh --network` | Passed all 22 tests, including the TUI, the native Bash tool through a synthetic API and TLS destination binding. |
+| `bash tests/run-runtime.sh --guard` | Ran 20 cases with the opt-in idle check skipped. All other cases passed. |
+| `bash tests/run-runtime.sh --guard-idle` | Passed. The guarded provider channel resumed after 305 seconds of inactivity. |
+| `bash tests/run-runtime.sh --network-feasibility` | Passed on rerun. The topology harness reproduced its expected unguarded Unix socket control. |
+| `bash tests/run-runtime.sh --network-policy` | Passed all 15 tests. |
+| `bash tests/run-runtime.sh --mux` | Passed all 26 tests. |
+
+In the full wrapper run, one iteration of the shared lifetime test printed
+the one-second expiry notice with the expected exit status 3. The same case
+passed in unit discovery, the targeted `--wrapper` rerun, and `--shared`.
+
+The first topology run stopped before a probe started. The OCI runtime
+reported a missing UID 0 mapping for one of the concurrently created
+containers. The same test passed on an isolated rerun.
+
+The guard tests used the prepared toolchain image
+`a33a4e7a708555af127d04f788dc341decf4402077064deb64bb345720365654`.
+
+`bash ../sandbox-container/tools/shellcheck.sh .` produced the same 71 findings
+before and after. The shared core accounted for 14 and the two launcher
+fixtures for 32 and 25. `git diff --check` and strict change validation passed.
+The local OpenSpec 1.16.0 and the image's OpenSpec 2.0.0 both validated the change.

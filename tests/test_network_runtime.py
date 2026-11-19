@@ -773,7 +773,7 @@ os.execv(real,[real,*args])
             result = subprocess.run([str(self.wrapper), '--version'], cwd=self.project, env=values, input='',
                                     text=True, capture_output=True, timeout=60)
             self.assert_success(result)
-            self.assertEqual(result.stdout.strip(), '0.80.8')
+            self.assertEqual(result.stdout.strip(), '1.5.2')
             self.assertFalse(list(self.runtime.iterdir()))
 
     def test_actual_pi_bash_tool_with_synthetic_chat_api(self):

@@ -320,7 +320,7 @@ grep -q ' /pi-home tmpfs ' /proc/mounts
 for tool in pi openspec podman bash bwrap bzip2 curl diff file find gawk git grep jq less nano patch ps python3 rg sed tar unzip xz zip; do
     command -v "$tool" >/dev/null || { echo "MISSING $tool"; exit 3; }
 done
-test "$(openspec --version)" = 1.16.0
+test "$(openspec --version)" = 2.0.0
 printf scratch > "$HOME/scratch"
 printf kept > "$HOME/.pi/home-sentinel"
 echo LAYOUT_OK

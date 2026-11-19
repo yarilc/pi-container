@@ -147,9 +147,9 @@ class ImagePinTests(unittest.TestCase):
     def test_version_matches_policy_tested_cli(self):
         version = (ROOT / '.version').read_text().strip()
         self.assertEqual(cli_mismatch(version, self.tested_cli), None)
-        message = cli_mismatch('0.80.9', self.tested_cli)
-        self.assertIn('0.80.9', message)
-        self.assertIn('0.80.8', message)
+        message = cli_mismatch('1.5.3', self.tested_cli)
+        self.assertIn('1.5.3', message)
+        self.assertIn('1.5.2', message)
 
     def test_mutated_recipes_are_rejected(self):
         digest = re.search(r'@sha256:[a-f0-9]{64}', self.recipe)
@@ -159,7 +159,7 @@ class ImagePinTests(unittest.TestCase):
                                                   '@fission-ai/openspec@latest'),
             'unversioned package': self.recipe.replace('"@fission-ai/openspec@${OPENSPEC_VERSION}"',
                                                        '@fission-ai/openspec'),
-            'version range': self.recipe.replace('ARG OPENSPEC_VERSION=1.16.0', 'ARG OPENSPEC_VERSION=^1.16.0'),
+            'version range': self.recipe.replace('ARG OPENSPEC_VERSION=2.0.0', 'ARG OPENSPEC_VERSION=^2.0.0'),
             'missing package': self.recipe.replace('"@fission-ai/openspec@${OPENSPEC_VERSION}" \\\n', ''),
             'remote installer': self.recipe.replace('RUN npm install --global --omit=dev \\\n',
                                                     'RUN curl -fsSL https://example.invalid/install.sh | bash \\\n'

@@ -779,7 +779,7 @@ warning; it relaxes no other check.
 
 ### Permissions
 
-Pi runs its tools (read, bash, edit, write and extension tools) without
+Pi 1.5.2 runs its tools (read, bash, edit, write and extension tools) without
 approval prompts, so the container is the only boundary around Pi's tools.
 `PI_CONTAINER_YOLO` is accepted like the other wrappers' permission-bypass
 switch (`0`, `1`, `true`, `false`, `yes` or `no`; other values fail) so that
@@ -790,6 +790,15 @@ and the qualification probe ignore it. Pi's `--approve`/`--no-approve` options d
 whether project-local files are trusted for a run; they do not approve tool
 use.
 
+In print mode, the default `ask` setting skips protected project resources
+without a saved trust decision. Pass `--approve` to load them for one run,
+including project `.agents/skills`. Use `/trust` in the interactive UI to save
+a decision under `~/.pi/agent/trust.json`.
+
+Pi's `mcp` command and opt-in `codemode` tool run inside the container. MCP
+clients use the selected network profile. The MCP OAuth callback listener can
+bind on the container's private loopback.
+
 ## Included Tools
 
 `Containerfile` builds the image on `docker.io/library/node:22-bookworm-slim`,
@@ -798,11 +807,19 @@ pinned by digest, with the toolset shared with the other wrappers: `bash`,
 `file`, `findutils`, `gawk`, `git`, `grep`, `jq`, `less`, `nano`, `patch`,
 `podman`, `procps`, `python3`, `ripgrep`, `sed`, `tar`, `unzip`, `util-linux`,
 `xz-utils` and `zip`. Pi (`@earendil-works/pi-coding-agent` at the version in
-`.version`) and OpenSpec (`@fission-ai/openspec@1.16.0`) are installed from npm
+`.version`) and OpenSpec (`@fission-ai/openspec@2.0.0`) are installed from npm
 at exact versions; npm verifies each package's registry integrity, and the
 build fails unless `pi --version` and `openspec --version` report the recorded
 versions. The Podman client is part of every image; host socket access stays
 the separate `PI_CONTAINER_PODMAN=1` opt-in.
+
+OpenSpec 2.0.0 uses the project's `.agents/skills` directory. In Pi, trust the
+project to use commands such as `/skill:openspec-propose`.
+
+Pi 1.x renamed `azure-openai-responses` to `azure` and changed extension APIs.
+The standard profiles cover Anthropic, OpenAI, Gemini and OpenRouter. Review
+the upstream changelog before reusing custom providers or old extensions.
+[Pi 1.5.2 changelog](https://github.com/earendil-works/pi/blob/v1.5.2/packages/coding-agent/CHANGELOG.md)
 
 ### Image build policy
 
@@ -900,7 +917,7 @@ ask for `--container-build`.
 | `podman: command not found` | Podman not installed | [Install Podman](https://podman.io/docs/installation) |
 | Pi hangs on non-interactive use | `-t` flag allocated without TTY | Script now auto-detects TTY and omits `-t` when not available |
 | `pi: command not found` | npm install failed | Rebuild: `PI_CONTAINER_MAINTENANCE=1 ./pi-container.sh --container-build` |
-| `.version` missing or empty | Version file absent | Ensure `.version` contains the Pi version (e.g., `0.80.8`); the launch stops before any image operation without it |
+| `.version` missing or empty | Version file absent | Ensure `.version` contains the Pi version (e.g., `1.5.2`); the launch stops before any image operation without it |
 | Slow first start | apt + npm install during build | One-time cost; subsequent runs use cached image |
 | API key not recognized | Key not forwarded | Provider mode forwards only the selected profile's key; unrestricted mode needs `PI_CONTAINER_ENV_VARS` to list it |
 | `image ... is stale for the current build inputs` | `Containerfile`, `.containerignore`, `.version`, `network/relay.py` or `network/mux.py` changed | Run `PI_CONTAINER_MAINTENANCE=1 pic --container-build` |

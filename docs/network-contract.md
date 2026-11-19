@@ -92,23 +92,28 @@ Restricted launches follow the Claude wrapper order:
 
 | Profile | Destination | Key | Status |
 | --- | --- | --- | --- |
-| `anthropic-api` | `api.anthropic.com:443` | `ANTHROPIC_API_KEY` | Measured on 0.80.8; real key unverified |
-| `openai-api` | `api.openai.com:443` | `OPENAI_API_KEY` | Measured on 0.80.8; real key unverified |
-| `gemini-api` | `generativelanguage.googleapis.com:443` | `GEMINI_API_KEY` | Measured on 0.80.8; real key unverified |
-| `openrouter-api` | `openrouter.ai:443` | `OPENROUTER_API_KEY` | Measured on 0.80.8; real key unverified |
+| `anthropic-api` | `api.anthropic.com:443` | `ANTHROPIC_API_KEY` | Measured on 1.5.2 with a dummy key |
+| `openai-api` | `api.openai.com:443` | `OPENAI_API_KEY` | Measured on 1.5.2 with a dummy key |
+| `gemini-api` | `generativelanguage.googleapis.com:443` | `GEMINI_API_KEY` | Measured on 1.5.2 with a dummy key |
+| `openrouter-api` | `openrouter.ai:443` | `OPENROUTER_API_KEY` | Measured on 1.5.2 with a dummy key |
 
 In provider mode the profile selects the only forwarded key; offline forwards
 none. Unrestricted mode keeps forwarding `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`
-and `GOOGLE_API_KEY` (Pi 0.80.8 reads `GEMINI_API_KEY` for Gemini).
+and `GOOGLE_API_KEY` (Pi 1.5.2 reads `GEMINI_API_KEY` for Gemini).
 Subscription and browser-callback logins, cloud providers, gateways, custom
 base URLs and local model servers have no profile.
 
 Restricted sessions set `PI_OFFLINE=1`, `PI_SKIP_VERSION_CHECK=1` and
-`PI_TELEMETRY=0` after forwarding. On 0.80.8 these remove the startup request
-to `pi.dev` (version check and install telemetry), and a writable
-`~/.pi/agent/settings.json` cannot re-enable it. Runtime package installs from
-package registries fail; extensions are preinstalled in unrestricted mode or
+`PI_TELEMETRY=0` after forwarding. On Pi 1.5.2, these suppressed startup
+requests to `pi.dev` and GitHub in the TUI even with update checks and
+telemetry enabled in the user's settings. Runtime package installs from
+package registries fail. Extensions are preinstalled in unrestricted mode or
 during maintenance.
+
+MCP clients use the same destination policy as model requests. The provider
+guard denied the out-of-profile host set in the user-level `mcp.json`. Pi's
+MCP OAuth listener bound on the private loopback and accepted a synthetic
+callback from inside the session.
 
 ## Limits
 
