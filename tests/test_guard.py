@@ -202,8 +202,12 @@ class GuardTests(unittest.TestCase):
         self.assertIn('runtime directory validation', result.stderr)
 
     def production_container(self, script, mode='offline', extra=(), program=None, timeout=60):
+        command = self.production_command(script, mode, extra, program)
+        return subprocess.run(command, input='', capture_output=True, text=True, timeout=timeout)
+
+    def production_command(self, script, mode='offline', extra=(), program=None):
         image = os.environ.get(profile_env('IMAGE'), AGENT_IMAGE)
-        command = ['podman', 'run', '--rm', '--interactive', '--network=none',
+        return ['podman', 'run', '--rm', '--interactive', '--network=none',
                    '--pid=private', '--ipc=private', '--read-only',
                    '--cap-drop=all', '--security-opt=no-new-privileges',
                    '--userns=keep-id', '--user', f'{os.getuid()}:{os.getgid()}',
@@ -218,7 +222,103 @@ class GuardTests(unittest.TestCase):
                    '--volume', f'{ROOT / "network/resolv.conf"}:/etc/resolv.conf:ro',
                    *extra, '--entrypoint', '/usr/local/bin/guard', image,
                    '--' + mode, '--', *(program or ['/usr/bin/python3', '-I', '-c', script])]
-        return subprocess.run(command, input='', capture_output=True, text=True, timeout=timeout)
+
+    def run_in_terminal(self, program, keys=b'\x03', timeout=40):
+        # A guarded container on a pseudo-terminal, as an interactive session; the
+        # keys are typed once the application prints 'ready'.
+        import pty
+        import select
+        import time
+        command = self.production_command(None, extra=('--tty',), program=program)
+        pid, fd = pty.fork()
+        if pid == 0:
+            try:
+                os.execvp(command[0], command)
+            finally:
+                os._exit(127)
+        output, typed, deadline = b'', None, time.monotonic() + timeout
+        try:
+            while time.monotonic() < deadline:
+                readable, _, _ = select.select([fd], [], [], 0.2)
+                if readable:
+                    try:
+                        chunk = os.read(fd, 4096)
+                    except OSError:
+                        break
+                    if not chunk:
+                        break
+                    output += chunk
+                if typed is None and b'ready' in output:
+                    time.sleep(0.5)
+                    os.write(fd, keys)
+                    typed = time.monotonic()
+            finished = time.monotonic()
+        finally:
+            done, status = os.waitpid(pid, os.WNOHANG)
+            if not done:
+                os.kill(pid, 9)
+                _, status = os.waitpid(pid, 0)
+            os.close(fd)
+        elapsed = None if typed is None else finished - typed
+        return os.waitstatus_to_exitcode(status), output.decode(errors='replace'), elapsed
+
+    def test_terminal_interrupt_reaches_an_application_without_a_handler(self):
+        # PID 1 of a namespace ignores a signal it has no handler for; the
+        # guard keeps that role, so Ctrl+C ends the application as with --init.
+        status, output, elapsed = self.run_in_terminal(['/bin/sh', '-c', 'echo ready; exec sleep 30'])
+        self.assertEqual(status, 130, output)
+        self.assertIsNotNone(elapsed, output)
+        self.assertLess(elapsed, 10, output)
+
+    def test_terminal_interrupt_is_delivered_once(self):
+        script = ('import signal, time\ncount = []\nsignal.signal(signal.SIGINT, lambda *_: count.append(1))\n'
+                  'print("ready", flush=True)\ntime.sleep(3)\nprint("interrupts=%d" % len(count), flush=True)\n')
+        status, output, _ = self.run_in_terminal(['/usr/bin/python3', '-I', '-c', script])
+        self.assertEqual(status, 0, output)
+        self.assertIn('interrupts=1', output)
+
+    def test_term_sent_to_the_container_reaches_the_application(self):
+        import time
+        name = 'guard-term-' + os.urandom(6).hex()
+        command = self.production_command(None, extra=('--name', name),
+                                          program=['/bin/sh', '-c', 'echo ready; exec sleep 30'])
+        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(process.stdout.readline().strip(), 'ready')
+            started = time.monotonic()
+            subprocess.run(['podman', 'kill', '--signal', 'TERM', name], capture_output=True, timeout=20, check=True)
+            process.wait(timeout=20)
+            self.assertLess(time.monotonic() - started, 10)
+            self.assertEqual(process.returncode, 143, process.stderr.read())
+        finally:
+            if process.poll() is None:
+                subprocess.run(['podman', 'rm', '--force', '--time', '0', name], capture_output=True, timeout=30)
+                process.kill()
+                process.wait()
+            process.stdout.close()
+            process.stderr.close()
+
+    def test_exit_status_does_not_wait_for_background_processes(self):
+        import time
+        started = time.monotonic()
+        result = self.production_container(None, program=['/bin/sh', '-c', 'sleep 30 & exit 37'])
+        self.assertEqual(result.returncode, 37, result.stderr)
+        self.assertLess(time.monotonic() - started, 20)
+
+    def test_waiting_guard_is_confined_and_keeps_only_standard_error(self):
+        script = ('import os\n'
+                  'def status(pid):\n'
+                  '    fields = dict(line.split(":\\t", 1) for line in open("/proc/%s/status" % pid).read().splitlines() if ":\\t" in line)\n'
+                  '    return fields["NoNewPrivs"], fields["Seccomp"], fields["Seccomp_filters"]\n'
+                  'assert sorted(os.listdir("/proc/1/fd")) == ["2"], os.listdir("/proc/1/fd")\n'
+                  'assert open("/proc/1/comm").read().strip() == "guard", open("/proc/1/comm").read()\n'
+                  'assert status(1) == status("self"), (status(1), status("self"))\n'
+                  'assert status(1)[0] == "1" and status(1)[1] == "2"\n'
+                  'print("supervisor-confined")\n')
+        result = self.production_container(script)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('supervisor-confined', result.stdout)
 
     def test_production_filter_and_landlock_on_real_rootless_kernel(self):
         endpoint = self.fixture / 'external.sock'
@@ -357,7 +457,8 @@ class GuardTests(unittest.TestCase):
                 connection.sendall(b'policy-channel-only')
         worker = threading.Thread(target=peer)
         worker.start()
-        script = "import os,socket; s=socket.socket(fileno=3); s.setblocking(True); s.sendall(b'approved-channel'); assert s.recv(32)==b'policy-channel-only'; print('provider-channel-ok')"
+        # The waiting guard keeps only standard error: fd 3 belongs to the application.
+        script = "import os,socket; assert sorted(os.listdir('/proc/1/fd'))==['2'], os.listdir('/proc/1/fd'); s=socket.socket(fileno=3); s.setblocking(True); s.sendall(b'approved-channel'); assert s.recv(32)==b'policy-channel-only'; print('provider-channel-ok')"
         result = self.production_container(script, mode='provider', extra=(
             '--volume', f'{endpoint.parent}:/run/sandbox-egress:ro'))
         worker.join(12)

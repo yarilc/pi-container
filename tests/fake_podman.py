@@ -41,6 +41,19 @@ elif args[0] == 'info':
     if args[-1] == '{{.Host.CgroupControllers}}':
         print(os.environ.get('FAKE_CONTROLLERS', '[cpu memory pids]'))
         sys.exit(int(os.environ.get('FAKE_CONTROLLERS_STATUS', '0')))
+    if args[-1] == '{{.Host.CgroupManager}}':
+        if 'FAKE_CGROUP_MANAGER_RAW' in os.environ:
+            sys.stdout.write(os.environ['FAKE_CGROUP_MANAGER_RAW'].encode().decode('unicode_escape'))
+        else:
+            print(os.environ.get('FAKE_CGROUP_MANAGER', 'systemd'))
+        sys.exit(int(os.environ.get('FAKE_CGROUP_MANAGER_STATUS', '0')))
+    if args[-1] == '{{.Host.Kernel}}':
+        # FAKE_KERNEL_RAW replaces the whole response (escapes allowed).
+        if 'FAKE_KERNEL_RAW' in os.environ:
+            sys.stdout.write(os.environ['FAKE_KERNEL_RAW'].encode().decode('unicode_escape'))
+        else:
+            print(os.environ.get('FAKE_KERNEL', '6.6.87.2-microsoft-standard-WSL2'))
+        sys.exit(int(os.environ.get('FAKE_KERNEL_STATUS', '0')))
     sys.stdout.write(os.environ.get('FAKE_INFO_RAW', os.environ.get('FAKE_INFO', 'true linux false') + '\n'))
     sys.exit(int(os.environ.get('FAKE_INFO_STATUS', '0')))
 elif args[0] == 'version':
@@ -83,8 +96,11 @@ elif args[0] == 'create':
     state.write_text(token)
     from decimal import Decimal
     flag = lambda name: next((a.split('=', 1)[1] for a in args if a.startswith(name + '=')), '0')
+    # Requested rlimits as the inspect template lists them: [NAME=soft:hard,...].
+    rlimits = ''.join('RLIMIT_' + args[i + 1].split('=', 1)[0].upper() + '=' + args[i + 1].split('=', 1)[1] + ','
+                      for i, a in enumerate(args) if a == '--ulimit')
     pathlib.Path(str(log) + '.budgets').write_text(' '.join((flag('--memory'),
-        str(int(Decimal(flag('--cpus')) * 10**9)), flag('--pids-limit'))))
+        str(int(Decimal(flag('--cpus')) * 10**9)), flag('--pids-limit'), '[' + rlimits + ']')))
     pause = os.environ.get('FAKE_CREATE_PAUSE')
     if pause != 'before':
         # FAKE_CID_CONTENT replaces the private creation record (escapes allowed).
@@ -115,7 +131,7 @@ elif args[0] == 'inspect':
     else:
         print(state.read_text() if state.exists() and args[-1] == 'a' * 64 else 'foreign-session')
 elif args[0] == 'exec' and os.environ.get('FAKE_NETWORK'):
-    print(os.environ.get('FAKE_PROXY_EFFECTIVE', '{"pids":128,"memory":268435456,"capabilities":[0,0,0,0,0],"no_new_privs":1,"seccomp":2}'))
+    print(os.environ.get('FAKE_PROXY_EFFECTIVE', '{"pids":128,"memory":268435456,"capabilities":[0,0,0,0,0],"no_new_privs":1,"seccomp":2,"nproc":[63948,63948]}'))
 elif args[:2] == ['container', 'exists']:
     sys.exit(0 if os.environ.get('FAKE_COLLISION') else 1)
 elif args[0] == 'kill':

@@ -36,6 +36,7 @@ replaces. Pi's agent part already starts with
 `# shellcheck shell=bash disable=SC2034,SC2154`.
 
 **Pi's own tests.**
+
 - `tests/test_setup_wrapper.py` is byte for byte the file Codex had before its
   adoption. Claude, Codex, Antigravity and OpenCode now share one adapted
   version.
@@ -48,6 +49,7 @@ replaces. Pi's agent part already starts with
 
 **Pi specifics on Windows.** The shim reads every wrapper-specific value from
 `agent/profile.json`:
+
 - `native.command` is `pi`, so `tools/windows-validate.ps1` runs its cases
   with `--container-shell`.
 - The four methods (`anthropic`, `openai`, `gemini`, `openrouter`) are API key
@@ -210,3 +212,8 @@ guard toolchain exists only under a `setup-*` tag.
   operator reruns `--container-setup` on the Linux hosts and on Windows.
 - [Timing-sensitive shared tests fail under load.] → Decision 7 runs the suites
   alone and records any rerun.
+- [Two shared-code defects surfaced when the first Windows setup ran under
+  load: candidate-tag cleanup crashes on a `podman image exists` timeout, and
+  a timed-out qualification probe leaves its container.] → The operator
+  decided to fix them in a dedicated `sandbox-container` change. This adoption
+  records them and does not wait for that fix.

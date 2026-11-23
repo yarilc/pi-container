@@ -43,9 +43,9 @@ class QualificationContracts(unittest.TestCase):
         return dict(mode='provider', revision=records.REVISION, runtime='a'*64, proxy='b'*64,
                     policy='c'*64, platform=dict(abi=3), code={'guard':'d'*64},
                     hardening=dict(capabilities=[], no_new_privs=True, pids=128, memory=268435456,
-                                   enforced=['memory', 'pids'],
+                                   enforced=['memory', 'pids'], process='cgroup',
                                    agent=dict(capabilities=[], no_new_privs=True, enforced=['cpu', 'memory', 'pids'],
-                                              memory=4294967296, nano_cpus=2000000000, pids=512, timeout=0)))
+                                              process='cgroup', memory=4294967296, nano_cpus=2000000000, pids=512, timeout=0)))
 
     def report(self):
         identity = self.identity()
@@ -71,7 +71,11 @@ class QualificationContracts(unittest.TestCase):
     def test_each_enforcement_identity_change_invalidates_evidence(self):
         report = self.report()
         for mutate in (lambda i: i['hardening'].update(enforced=['pids']),
-                       lambda i: i['hardening']['agent'].update(enforced=['memory', 'pids'])):
+                       lambda i: i['hardening']['agent'].update(enforced=['memory', 'pids']),
+                       # A change of process-budget mechanism, for the proxy or the agent.
+                       lambda i: i['hardening'].update(enforced=['memory'], process='rlimit'),
+                       lambda i: i['hardening']['agent'].update(enforced=['cpu', 'memory'], process='rlimit'),
+                       lambda i: i['hardening']['agent'].update(enforced=['cpu', 'memory'], process='none')):
             changed = self.identity(); mutate(changed)
             with self.subTest(enforced=changed['hardening']), self.assertRaises(ValueError):
                 records.validate_report(report, changed)
@@ -188,7 +192,7 @@ class QualificationContracts(unittest.TestCase):
         workspace = '/qualification/project'
         base = dict(schema=1, token='a' * 32, workspace=workspace, provider=False, tls=False, agent=PROFILE.command,
                     budgets=dict(capabilities=[], no_new_privs=True, enforced=['cpu', 'memory', 'pids'],
-                                 memory=1, nano_cpus=1, pids=1, timeout=0))
+                                 process='cgroup', memory=1, nano_cpus=1, pids=1, timeout=0))
         accept = (dict(base, ipv6=True, addresses=['10.89.0.2', 'fd00::2']),
                   dict(base, ipv6=False, addresses=['10.89.0.2']))
         for value in accept:
@@ -207,16 +211,24 @@ class QualificationContracts(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertFalse(control.fixed_qualification_input(value, PROFILE.command, 'offline', workspace))
         self.assertFalse(control.fixed_qualification_input(accept[1], PROFILE.command, 'offline', None))
-        for enforced in (['memory', 'pids'], ['cpu'], []):
-            with self.subTest(enforced=enforced):
-                value = dict(accept[1], budgets=dict(base['budgets'], enforced=enforced))
+        for enforced, process in ((['memory', 'pids'], 'cgroup'), (['cpu'], 'rlimit'), (['cpu', 'memory'], 'none'),
+                                  ([], 'rlimit'), ([], 'none')):
+            with self.subTest(enforced=enforced, process=process):
+                value = dict(accept[1], budgets=dict(base['budgets'], enforced=enforced, process=process))
                 self.assertTrue(control.fixed_qualification_input(value, PROFILE.command, 'offline', workspace))
         for enforced in (['pids', 'memory'], ['cpu', 'cpu'], ['io'], 'cpu', [['cpu']], None):
             with self.subTest(enforced=enforced):
                 value = dict(accept[1], budgets=dict(base['budgets'], enforced=enforced))
                 self.assertFalse(control.fixed_qualification_input(value, PROFILE.command, 'offline', workspace))
-        missing = dict(accept[1], budgets={k: v for k, v in base['budgets'].items() if k != 'enforced'})
-        self.assertFalse(control.fixed_qualification_input(missing, PROFILE.command, 'offline', workspace))
+        # The process mechanism is known and is the pids cgroup exactly when pids is enforced.
+        for enforced, process in ((['cpu', 'memory', 'pids'], 'rlimit'), (['cpu', 'memory', 'pids'], 'none'),
+                                  (['cpu', 'memory'], 'cgroup'), (['cpu'], 'other'), (['cpu'], None)):
+            with self.subTest(enforced=enforced, process=process):
+                value = dict(accept[1], budgets=dict(base['budgets'], enforced=enforced, process=process))
+                self.assertFalse(control.fixed_qualification_input(value, PROFILE.command, 'offline', workspace))
+        for key in ('enforced', 'process'):
+            missing = dict(accept[1], budgets={k: v for k, v in base['budgets'].items() if k != key})
+            self.assertFalse(control.fixed_qualification_input(missing, PROFILE.command, 'offline', workspace))
 
     def protected_function(self, path, name):
         # The probe programs run only inside containers; load one function by name.
@@ -267,23 +279,75 @@ class QualificationContracts(unittest.TestCase):
 
     def test_agent_hardening_follows_the_effective_environment(self):
         import agent_budgets
-        full = '[cpu memory pids]'
-        default = agent_budgets.agent_hardening({}, PROFILE, full)
+        full, kernel = '[cpu memory pids]', '6.6.87.2-microsoft-standard-WSL2'
+        default = agent_budgets.agent_hardening({}, PROFILE, full, 'systemd', kernel)
         self.assertEqual(default, self.identity()['hardening']['agent'])
         saved = {name('MEMORY_LIMIT'): '8g', name('CPU_LIMIT'): '1.5', name('PIDS_LIMIT'): '1024',
                  name('RUN_TIMEOUT'): '3600'}
-        self.assertEqual(agent_budgets.agent_hardening(saved, PROFILE, full),
-                         dict(capabilities=[], no_new_privs=True, enforced=['cpu', 'memory', 'pids'],
+        self.assertEqual(agent_budgets.agent_hardening(saved, PROFILE, full, 'systemd', kernel),
+                         dict(capabilities=[], no_new_privs=True, enforced=['cpu', 'memory', 'pids'], process='cgroup',
                               memory=8 << 30, nano_cpus=1500000000, pids=1024, timeout=3600))
         for suffix, value in (('PIDS_LIMIT', '2048'), ('RUN_TIMEOUT', '1'), ('CPU_LIMIT', '2.5'), ('MEMORY_LIMIT', '4097m')):
             with self.subTest(suffix=suffix):
-                self.assertNotEqual(agent_budgets.agent_hardening(saved | {name(suffix): value}, PROFILE, full),
-                                    agent_budgets.agent_hardening(saved, PROFILE, full))
+                self.assertNotEqual(agent_budgets.agent_hardening(saved | {name(suffix): value}, PROFILE, full, 'systemd', kernel),
+                                    agent_budgets.agent_hardening(saved, PROFILE, full, 'systemd', kernel))
         with self.assertRaises(agent_budgets.BudgetError):
-            agent_budgets.agent_hardening({name('PIDS_LIMIT'): '0'}, PROFILE, full)
+            agent_budgets.agent_hardening({name('PIDS_LIMIT'): '0'}, PROFILE, full, 'systemd', kernel)
         # A different delegated-controller set changes the hardening identity.
-        self.assertNotEqual(agent_budgets.agent_hardening(saved, PROFILE, '[memory pids]'),
-                            agent_budgets.agent_hardening(saved, PROFILE, full))
+        self.assertNotEqual(agent_budgets.agent_hardening(saved, PROFILE, '[memory pids]', 'systemd', kernel),
+                            agent_budgets.agent_hardening(saved, PROFILE, full, 'systemd', kernel))
+        # Without pids, the kernel decides between the process rlimit and no process budget.
+        self.assertEqual(agent_budgets.agent_hardening(saved, PROFILE, '[cpu memory]', 'systemd', kernel)['process'], 'rlimit')
+        self.assertEqual(agent_budgets.agent_hardening(saved, PROFILE, '[cpu memory]', 'systemd', '5.10.0-28-amd64')['process'],
+                         'none')
+        self.assertEqual(agent_budgets.agent_hardening(saved, PROFILE, full, 'systemd', '5.10.0-28-amd64')['process'], 'cgroup')
+
+    def test_only_the_systemd_manager_delegates_controllers(self):
+        import agent_budgets
+        full = '[cpuset cpu io memory hugetlb pids rdma]'
+        self.assertEqual(agent_budgets.delegated(full, 'systemd'), ['cpu', 'cpuset', 'hugetlb', 'io', 'memory', 'pids', 'rdma'])
+        for manager in ('cgroupfs', 'none', 'other'):
+            with self.subTest(manager=manager):
+                self.assertEqual(agent_budgets.delegated(full, manager), [])
+                self.assertEqual(agent_budgets.cgroup_reason('memory', manager),
+                                 f'the rootless engine uses the {manager} cgroup manager, which applies no cgroup limits')
+        self.assertEqual(agent_budgets.cgroup_reason('cpu', 'systemd'),
+                         'cgroup controller cpu is not delegated to the rootless engine')
+        for manager in ('', 'Systemd', 'system d', 'systemd\n', 'x' * 33, None, 1):
+            with self.subTest(manager=manager), self.assertRaises(agent_budgets.ControllerError):
+                agent_budgets.delegated(full, manager)
+        with self.assertRaises(agent_budgets.ControllerError):
+            agent_budgets.delegated('cpu memory', 'systemd')
+        # The hardening record follows the delegated set: cgroupfs enforces no cgroup budget.
+        kernel = '6.6.87.2-microsoft-standard-WSL2'
+        record = agent_budgets.agent_hardening({}, PROFILE, full, 'cgroupfs', kernel)
+        self.assertEqual((record['enforced'], record['process']), ([], 'rlimit'))
+        record = agent_budgets.agent_hardening({}, PROFILE, full, 'systemd', kernel)
+        self.assertEqual((record['enforced'], record['process']), (['cpu', 'memory', 'pids'], 'cgroup'))
+
+    def test_process_mechanism_follows_controllers_and_kernel(self):
+        import agent_budgets
+        rlimit = ('6.6.87.2-microsoft-standard-WSL2', '6.18.58.1-microsoft-standard-WSL2', '5.14',
+                  '5.14.0', '5.14.0-427.13.1.el9_4.x86_64', '5.15.0-91-generic', '6.1.0-18-amd64',
+                  '6.7.4-arch1-1', '6.8.9+deb13', '10.0', '5.140')
+        none = ('5.13.19', '5.13', '5.10.0-28-amd64', '4.18.0-553.el8_10.x86_64', '3.10.0', '5.9',
+                '', '5', '5.', 'x5.14', '5.14 ', ' 5.14', '5.14\n', '5.14-\x1b[0m', '5.14/x', '5.x',
+                '12345.1', '5.14.0-' + '\u00e9', None, 514, ['5.14'])
+        for kernel in rlimit:
+            with self.subTest(kernel=kernel):
+                self.assertEqual(agent_budgets.process_mechanism('[cpu memory]', kernel), 'rlimit')
+                self.assertEqual(agent_budgets.process_mechanism('[cpu memory pids]', kernel), 'cgroup')
+                self.assertIn(kernel, agent_budgets.fallback_reason(kernel))
+        for kernel in none:
+            with self.subTest(kernel=kernel):
+                self.assertEqual(agent_budgets.process_mechanism('[]', kernel), 'none')
+                self.assertEqual(agent_budgets.process_mechanism('[pids]', kernel), 'cgroup')
+        # A parsed old kernel is named; an unrecognized value is never echoed.
+        self.assertIn('kernel 5.10.0-28-amd64 counts the process rlimit per user',
+                      agent_budgets.fallback_reason('5.10.0-28-amd64'))
+        self.assertEqual(agent_budgets.fallback_reason('5.14-\x1b[0m'), 'unrecognized kernel version')
+        with self.assertRaises(agent_budgets.ControllerError):
+            agent_budgets.process_mechanism('pids', '6.6')
 
     def test_enforced_budgets_follow_the_engine_controllers(self):
         import agent_budgets
@@ -347,6 +411,28 @@ class QualificationContracts(unittest.TestCase):
                         (base / key).unlink()
                     with self.assertRaises(AssertionError):
                         namespace['effective_budgets'](dict(budgets, enforced=['cpu', 'memory', 'pids']), base, membership)
+            # The process rlimit fallback: no pids cgroup limit and 'Max processes' at the budget.
+            limits = base / 'limits'
+            fallback = dict(budgets, enforced=['cpu', 'memory'], process='rlimit')
+            def rlimit(soft, hard):
+                limits.write_text('Limit Soft Limit Hard Limit Units\nMax open files 1024 1024 files\n'
+                                  f'Max processes {soft} {hard} processes\n')
+            write(pids='max')
+            rlimit(512, 512)
+            namespace['effective_budgets'](fallback, base, membership, limits)
+            (base / 'pids.max').unlink()
+            namespace['effective_budgets'](fallback, base, membership, limits)
+            for soft, hard in ((256, 256), (512, 1024), ('unlimited', 'unlimited')):
+                with self.subTest(soft=soft, hard=hard), self.assertRaises(AssertionError):
+                    rlimit(soft, hard)
+                    namespace['effective_budgets'](fallback, base, membership, limits)
+            limits.write_text('Max open files 1024 1024 files\n')
+            with self.assertRaises(AssertionError):
+                namespace['effective_budgets'](fallback, base, membership, limits)
+            rlimit(512, 512)
+            write(pids='512')
+            with self.assertRaises(AssertionError):
+                namespace['effective_budgets'](fallback, base, membership, limits)
 
     def test_missing_report_names_budgets_as_a_cause(self):
         with tempfile.TemporaryDirectory(dir=test_setting('TEST_TMPDIR')) as temporary:

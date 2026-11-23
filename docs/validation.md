@@ -1125,3 +1125,144 @@ The guard tests used the prepared toolchain image
 before and after. The shared core accounted for 14 and the two launcher
 fixtures for 32 and 25. `git diff --check` and strict change validation passed.
 The local OpenSpec 1.16.0 and the image's OpenSpec 2.0.0 both validated the change.
+
+## Adoption of `sandbox-ref-28`: 2026-11-23
+
+Change `adopt-sandbox-ref-28`, from `sandbox-ref-25` directly. It takes in
+`sandbox-ref-26`, `sandbox-ref-27` and `sandbox-ref-28`:
+
+- the process rlimit fallback and systemd-only cgroup delegation;
+- the shared launcher files passing ShellCheck;
+- Windows support on a Podman machine;
+- the Windows setup guidance for agent wrappers.
+
+Copied from `sandbox-container` tag `sandbox-ref-28` (commit `ba1ef14`):
+
+- updated: `launcher/core.sh`, `network/README.md`, `network/agent_budgets.py`,
+  `network/control.py`, `network/guard.c`, `network/proxy_hardening.py`,
+  `network/qualification_probe.py`, `network/qualification_records.py`,
+  `network/session.py`, `setup/common.py`, `setup/launch.py`, `setup/setup.py`,
+  `setup/smoke.py`, `tests/fake_podman.py`, both fixture `launcher.sh`,
+  `tests/test_alignment.py`, `tests/test_guard.py`, `tests/test_launcher.py`,
+  `tests/test_qualification.py`, `tests/test_session.py` and
+  `tests/test_setup.py`;
+- added: the five `launcher/windows/` files, `tests/test_windows_bootstrap.py`,
+  `tests/test_windows_enter.py` and `tests/windows/shim_tests.ps1`.
+
+The `tests/test_reference_copy.py` manifest moved to the tag, and
+`CONTRIBUTING.md` names it. Pi was the last wrapper on `sandbox-ref-25`, so
+no parity row needed restoring: every other row already matched
+`sandbox-container`.
+
+By hand, as `docs/propagation.md` says:
+
+- `pi-container.ps1` is a byte-for-byte copy of `sandbox-container.ps1`;
+- `.gitattributes` was copied. The LF rewrite changed nothing: every tracked
+  file was already LF in the index and the working tree;
+- `agent/launcher.sh` already had the ShellCheck header of the reference agent
+  part, so it did not change.
+
+Pi's own tests changed where the shared behavior did, as in the other
+wrappers:
+
+- `tests/test_setup_wrapper.py` is the shared adapted file, byte for byte: the
+  files were identical before. It adds a failing `systemctl`, the budget plan
+  with the rlimit fallback and `cgroupfs`, and the case for setup without a
+  launch service;
+- `tests/test_runtime.py`: `engine_budgets()` reads the delegated controllers
+  and the process mechanism with the rule of `network/agent_budgets.py`.
+  `test_effective_hardening_and_budgets` follows them, reads a missing
+  controller file as unlimited and checks the process rlimit and the launch
+  notices. `test_process_limit_enforced` uses a budget of 128 with 200
+  children, and is skipped when the engine enforces no process budget.
+
+The README, `docs/setup.md`, `AGENTS.md`, `SECURITY.md` and `CHANGELOG.md`
+cover:
+
+- the Windows entry for Pi, with the four API key methods through
+  `$env:<KEY>`;
+- `PI_NPM_CACHE_SIZE`, which reaches a session from Windows only through
+  `PI_CONTAINER_ENV_VARS`, and `PI_CONTAINER_GITCONFIG`;
+- the installer;
+- host CA trust on Windows;
+- the Windows limits, including Bitdefender, and the Windows sensitive
+  folders;
+- the `cgroupfs` budgets, the rlimit fallback and the guard as init;
+- the setup changes.
+
+The change's OpenSpec files, the README, `docs/setup.md`, `AGENTS.md`,
+`SECURITY.md`, `CHANGELOG.md` and this file pass markdownlint
+(`markdownlint-cli2` v0.18.1, MD013 and MD033 off), as this repository
+requires: the delta specs, `design.md` and `docs/setup.md` gained the missing
+blank lines around headings, lists and code fences.
+
+**This runner.** WSL2 `6.18.58.1-microsoft-standard-WSL2`, Podman server
+4.9.3, the `systemd` cgroup manager and controllers `[cpu memory pids]`.
+
+- The engine had no `localhost/pi-container:latest`. Its
+  `localhost/pi-container:setup-b4718cbdce044a7b9d2d6ea52f01ce06`
+  (`9ed2a78259d9`) predates the Pi 1.5.2 pin (`build-inputs-hash`
+  `7797baa9...`, Pi 0.80.8). The adoption changes no build input.
+- `localhost/pi-container:latest` `70c03c7e3703` was rebuilt with
+  `--container-build`, `build-inputs-hash` `c6fd471d...`, Pi 1.5.2 and
+  OpenSpec 2.0.0. The runner's network intercepts TLS, so the build used host
+  CA trust with the session's CA bundle as the build secret.
+- For the guard toolchain,
+  `localhost/pi-guard-toolchain:setup-b4718cbdce044a7b9d2d6ea52f01ce06`
+  (`101d7cadcd1c`) was also tagged `localhost/pi-guard-toolchain:development`,
+  the name that `--guard`, `--qualification` and `--network` use.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest tests.test_reference_copy tests.test_alignment` (host Python, siblings present) | Passed: 26 tests, no skips |
+| `bash tools/shellcheck.sh ../pi-container`, `bash tools/powershell.sh ../pi-container` (from `sandbox-container`) | Passed: no finding, 62 shim cases |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 508 tests, 81 skipped |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 124 tests, 1 skipped (no drive root under `/mnt`). A first run, while the operator's first Windows setup and a file transfer also loaded the computer, took 1540 s and failed the timing-sensitive shared tests `test_lifetime_notice_preserves_status` (seven boundary attempts), `test_int_and_hup_forwarding` and `test_term_forwarding`; the rerun on its own passed |
+| `bash tests/run-runtime.sh --shared` | Passed: 303 tests, 35 skipped. A first run failed the shared signal test `test_int_and_hup_forwarding`, which passed in `--wrapper`; the rerun on its own passed |
+| `bash tests/run-runtime.sh --setup` | Passed: 88 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 4 tests |
+| `bash tests/run-runtime.sh --qualification` | Passed: 31 tests |
+| `bash tests/run-runtime.sh --guard` | Passed: 25 tests, 1 skipped (`--guard-idle`) |
+| `bash tests/run-runtime.sh --network` | Passed: 22 tests |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 18 tests, including the budget checks above |
+| `git diff --check` | Passed |
+
+**Windows** (operator, 2026-11-23). Windows WSL 3.0.5.0, kernel 6.18.58.1-1,
+Landlock ABI 7. The Podman Desktop machine `podman-machine-default` uses the
+`cgroupfs` manager, with Ubuntu running. The checkouts were snapshots of this
+branch and of `sandbox-container` in `C:\Work`.
+
+| Step | Result |
+| --- | --- |
+| Setup from `pi-container.ps1`: provider networking with the `openrouter` method, shared state, host CA trust with `/etc/ssl/certs/ca-certificates.crt`, permission bypass on | The plan printed `enforced agent budgets: none`, the `cgroupfs` notices and the process rlimit for the agent (512) and the proxy (128). Images built in the machine, `Sandbox qualification: locally-qualified`, `Sandbox: ready`. Setup said `Set $env:OPENROUTER_API_KEY = '...' in PowerShell before pi-container.ps1`, with no distribution path. A first attempt failed; see the notes |
+| A Pi session with `$env:OPENROUTER_API_KEY` | Provider session with `openrouter-api`, Pi 1.5.2, model Flint (free) through OpenRouter. Pi wrote `hello.txt` in the project with its tools. `$LASTEXITCODE` was 0 after `/quit` and after two quick Ctrl+C presses (two sessions), as on Linux; once it was 130, see the notes. `podman ps -a` then listed no container of the sessions (operator) |
+| `$env:PI_NPM_CACHE_SIZE = '1g'`, then `--container-shell -c 'df -h /pi-home/.npm'` | The tmpfs was 256M; with `$env:PI_CONTAINER_ENV_VARS = 'PI_NPM_CACHE_SIZE'` it was 1.0G |
+| `windows-validate.ps1 -Checkout C:\Work\pi-container -Install -StopMachine`, Windows PowerShell 5.1 | 55 passed, 0 failed, 1 skipped (restricted mode without a prepared installation, because setup saved provider). Installer, user `PATH`, uninstall, stopped machine, a distribution started by WSL alone, the restart with Podman, the Windows folders, "Offline qualification", "Offline session", "Redirected input" and "One engine for sessions and the machine" passed |
+| The same without `-Install -StopMachine`, PowerShell 7.7.0 | 43 passed, 0 failed, 3 skipped |
+
+Notes:
+
+- **The first setup attempt failed under load.** The computer also ran the
+  runner's `--wrapper` suite and an operator file transfer. After the image
+  builds, the qualification's security probe timed out (30 s), so setup
+  stopped with `run --container-qualify or rerun --container-setup`. Its
+  cleanup of the candidate tags then timed out on `podman image exists`
+  (20 s) and ended in a `subprocess.TimeoutExpired` traceback, which left the
+  candidate tags `setup-f9a1801e...` in the machine; they were removed before
+  the rerun. A timed-out probe can also leave its container in `Created`
+  state. The rerun, with the runner idle, passed. Both defects are in shared
+  setup and qualification code, so `sandbox-container` fixes them in a
+  dedicated change; the next tag brings the fix.
+- **One session ended with 130.** Pi had written the file, then two Ctrl+C
+  presses ended the session with 130, the status the launcher selects for an
+  INT signal. Two later sessions ended with 0 after two quick Ctrl+C presses.
+  The cause of the single 130 is not established.
+- **`fd not found. Offline mode enabled`.** Pi prints it at startup because
+  restricted sessions set `PI_OFFLINE=1`, as on Linux.
+- **The `transport-closed` diagnostic.** At session end, the
+  `recent protected egress diagnostics` line with `transport-closed` is the
+  behavior already recorded on Linux.
+- **The machine keeps the method of the last setup** (`openrouter`).
+
+The installed launcher core, setup and guard change, so installations rerun
+`--container-setup`.

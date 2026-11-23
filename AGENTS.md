@@ -15,6 +15,16 @@ English. Communicate with the user in the language and style the user asks for.
   `agent_mounts` (the `~/.npm` tmpfs, the read-only gitconfig),
   `agent_build_args` (`PI_VERSION` from `.version`), `agent_approval_bypass`
   (the `PI_CONTAINER_YOLO` notice) and `agent_help`.
+- `pi-container.ps1` is the thin Windows entry, identical in every wrapper
+  under the wrapper's name: it runs the shared shim `launcher/windows/core.ps1`,
+  which starts the managed installation inside a Podman machine's WSL
+  distribution through `launcher/windows/bootstrap.sh`, and runs sessions and
+  setup in the machine's systemd namespaces through `launcher/windows/enter.sh`.
+  Windows supports every network mode that setup prepared, without Podman
+  delegation; see the README's Windows section. `launcher/windows/` is shared
+  like `launcher/core.sh`. The shim forwards only `PI_CONTAINER_*`, the four
+  method keys and the names in `PI_CONTAINER_ENV_VARS`, so `PI_NPM_CACHE_SIZE`
+  needs that list from Windows; document this, and never work around it here.
 - `Containerfile` and `.containerignore` define the Pi image (digest-pinned
   base, common toolset with the Podman client, Pi from `.version`, pinned
   OpenSpec) and its five-file build context
@@ -32,7 +42,7 @@ English. Communicate with the user in the language and style the user asks for.
   `test_tls_client_hello.py`, `test_tls_proxy.py`, `test_platform.py`,
   `test_qualification.py`, `test_guard.py`, `test_session.py`,
   `test_network_feasibility.py`, `test_toolchains.py` and their fixtures) are copied unchanged from
-  `sandbox-container` at tag `sandbox-ref-25`. Never edit them here, and never
+  `sandbox-container` at tag `sandbox-ref-28`. Never edit them here, and never
   add a profile identifier (`pi-container`, `anthropic`, `openai`, `gemini`,
   `openrouter`) to them; fix a defect in `sandbox-container` first, then copy the
   files again and update `tests/test_reference_copy.py`.
@@ -61,7 +71,22 @@ bash tests/run-runtime.sh                       # real rootless checks with nati
 bash tests/run-runtime.sh --network             # restricted modes (also --wrapper, --shared, --setup, ...)
 ./test.sh                                       # disposable image build plus real checks
 bash -n pi-container.sh agent/launcher.sh test-wrapper.sh test.sh tests/run-runtime.sh
+bash ../sandbox-container/tools/shellcheck.sh .   # ShellCheck at warning level
+bash ../sandbox-container/tools/powershell.sh .   # PSScriptAnalyzer and shim tests
 ```
+
+Every tracked `*.sh` file, the shared `launcher/core.sh` and launcher fixtures
+included, passes `tools/shellcheck.sh` of `sandbox-container` (pinned
+ShellCheck, warning level). Pi's agent part `agent/launcher.sh` starts with
+`# shellcheck shell=bash disable=SC2034,SC2154`, because the core reads its data
+and defines the state its hooks read.
+
+Every tracked `*.ps1` file passes `tools/powershell.sh` of `sandbox-container`
+(pinned PSScriptAnalyzer, warning level), which also runs the shared shim tests
+`tests/windows/shim_tests.ps1` against a fake `wsl.exe`. The thin entry and the
+shim stay ASCII and run on Windows PowerShell 5.1 and PowerShell 7; Windows
+PowerShell 5.1 itself is validated on a Windows host. Scripts keep LF line
+endings through `.gitattributes`.
 
 Lint through containers when the tools are not installed:
 
@@ -128,7 +153,15 @@ changes.
   only when the engine delegates its cgroup v2 controller
   (`Host.CgroupControllers`), announce unenforced ones, never require host
   changes to delegate them, and start a session only when enforced budgets
-  match and unenforced ones are absent.
+  match and unenforced ones are absent. Reported controllers count as delegated
+  only with the `systemd` cgroup manager (`Host.CgroupManager`): a rootless
+  `cgroupfs` engine reports controllers but applies no limits, so it delegates
+  none (`delegated()` in `network/agent_budgets.py`, mirrored in
+  `launcher/core.sh`). The process budget alone falls back to a soft and hard
+  process rlimit (`--ulimit nproc`) when the engine kernel (`Host.Kernel`) is
+  Linux 5.14 or later, which counts it per container; the mechanism (`cgroup`,
+  `rlimit` or `none`) is one rule in `network/agent_budgets.py` and
+  `launcher/core.sh`, verified and qualified like a cgroup budget.
 - Keep automatic read-only tmpfs provisioning and leave `/dev` and its `devpts`
   to the engine (an explicit `devpts` gets `ptmxmode=000`, so no
   pseudo-terminal can be opened). Mount empty read-only `/dev/shm` and
@@ -138,8 +171,9 @@ changes.
   builds only as the `build-ca` secret, selected before any build including the
   build-only refresh, and never enters `build-inputs-hash`.
 - Refuse a workspace or worktree parent that physically is `/`, a system
-  directory, `/tmp`, the physical home or a `/mnt/<letter>` drive root, unless
-  exactly `PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1`.
+  directory, `/tmp`, the physical home, a `/mnt/<letter>` drive root or a
+  Windows system or profile folder on such a drive, unless exactly
+  `PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1`.
 - An unset or empty `PI_CONTAINER_NETWORK` selects `provider`, which needs the
   provider settings or stops with setup guidance; never fall
   back to unrestricted networking after a restricted failure. Restricted modes

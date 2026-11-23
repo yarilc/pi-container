@@ -58,6 +58,20 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
 
 ### Changed
 
+- Shared files from `sandbox-container` tag `sandbox-ref-28`
+  (`adopt-sandbox-ref-28`). Every installation runs `--container-setup` again.
+  Visible changes:
+  - `pi-container.ps1` starts Pi from PowerShell on Windows, inside a Podman
+    machine (WSL provider), in every network mode prepared by setup and
+    without Podman delegation; `--container-install` adds it as a command.
+    From Windows, `PI_NPM_CACHE_SIZE` reaches a session only when
+    `PI_CONTAINER_ENV_VARS` lists it;
+  - cgroup budgets count as enforced only with the `systemd` cgroup manager;
+    with `cgroupfs` the memory and CPU budgets are announced as not enforced;
+  - without the `pids` controller, the process budget uses a process rlimit
+    on Linux 5.14 or later;
+  - the Windows profile and system folders on a drive mount are refused as
+    workspaces.
 - Pin Pi 1.5.2 and OpenSpec 2.0.0. The supported API-key destinations were
   remeasured with dummy keys. Project trust controls access to the OpenSpec
   skills under `.agents/skills`. Pi 1.x renamed the Azure provider to `azure`

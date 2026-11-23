@@ -1,4 +1,7 @@
 # Fixture shell part for the shared launcher tests: data only, no hooks.
+# The core sources this file: it reads the AGENT_* data and hook outputs and
+# defines the core state the hooks read.
+# shellcheck shell=bash disable=SC2034,SC2154
 AGENT_NAME=fixture-shell
 AGENT_DISPLAY_NAME='Fixture shell'
 AGENT_WRAPPER=fixture-shell.sh

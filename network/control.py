@@ -26,11 +26,15 @@ def fixed_qualification_input(value, command, mode, workspace):
         return not (not isinstance(value, dict) or
                 set(value) != {'schema', 'token', 'addresses', 'ipv6', 'workspace', 'provider', 'tls', 'agent', 'budgets'} or
                 value['agent'] != command or not isinstance(budgets, dict) or
-                set(budgets) != {'capabilities', 'no_new_privs', 'enforced', 'memory', 'nano_cpus', 'pids', 'timeout'} or
+                set(budgets) != {'capabilities', 'no_new_privs', 'enforced', 'process', 'memory', 'nano_cpus', 'pids',
+                                 'timeout'} or
                 # Enforced budgets: a sorted, duplicate-free subset of the agent controllers.
                 not isinstance(budgets['enforced'], list) or
                 budgets['enforced'] != sorted(set(budgets['enforced'])) or
                 not set(budgets['enforced']) <= {'cpu', 'memory', 'pids'} or
+                # The process budget uses the pids cgroup exactly when that controller is enforced.
+                budgets['process'] not in ('cgroup', 'rlimit', 'none') or
+                (budgets['process'] == 'cgroup') != ('pids' in budgets['enforced']) or
                 any(type(budgets[key]) is not int for key in ('memory', 'nano_cpus', 'pids', 'timeout')) or
                 budgets['capabilities'] != [] or budgets['no_new_privs'] is not True or
                 type(value['schema']) is not int or value['schema'] != 1 or

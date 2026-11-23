@@ -1,7 +1,7 @@
 # Interactive sandbox setup
 
 The durable contract is [container-setup](../openspec/specs/container-setup/spec.md).
-It is copied unchanged from `sandbox-container` at tag `sandbox-ref-25`
+It is copied unchanged from `sandbox-container` at tag `sandbox-ref-28`
 (`setup/`); Pi values come from `agent/profile.json`. The archived change
 `openspec/changes/archive/<date>-add-container-setup/` retains the design, tasks
 and delta specifications.
@@ -44,6 +44,32 @@ setup guidance before engine queries or state creation. Setup is never started
 automatically. An explicit empty network override on a managed invocation also
 selects `provider`, never the saved mode; remove the override to use the saved
 choice. Offline mode cannot reach any model provider.
+
+Offline networking, provider networking and delegation need a same-host Unix
+Podman service. Before the network question, setup checks, without changing
+anything, whether a service answers at `CONTAINER_HOST`, at the saved endpoint
+or at the default endpoint. It also checks whether a usable systemd user manager
+(`systemctl --user show-environment`) could start the user `podman.socket`.
+
+In a Podman machine distribution on WSL both checks succeed only inside the
+PID and mount namespaces of the machine's systemd, where the Windows entry runs
+setup ([Windows with Podman machine](#windows-with-podman-machine)). In a plain
+`wsl.exe` shell of that distribution neither succeeds. When neither check
+succeeds, setup offers only unrestricted networking:
+
+- it explains why, and asks `Continue with unrestricted networking?`, which
+  defaults to no;
+- it saves the local engine as the launch endpoint;
+- it skips the delegation and endpoint questions.
+
+A saved offline or provider mode is never changed silently: setup states that
+it cannot be kept and asks for the same confirmation. Declining ends setup
+without changes. To keep a restricted mode, make a service available first,
+then rerun setup:
+
+- start a foreground `podman system service` with a private runtime directory;
+- or set `CONTAINER_HOST` to the `unix://` endpoint of an existing same-host
+  service.
 
 After the worktree question, setup asks for the agent budgets and lifetime:
 `Agent memory limit` (default `4g`), `Agent CPU limit` (default `2`),
@@ -126,13 +152,30 @@ disables security policy or silently selects unrestricted networking.
 Every agent container, in every mode, and every provider proxy drops all
 capabilities and enables no-new-privileges. Setup smoke verifies zero capability
 sets, no-new-privileges and the effective agent `memory.max`, `pids.max` and
-`cpu.max` in every mode, so rootless cgroup v2 `cpu`, `memory` and `pids`
-controllers must be delegated. Provider proxies additionally receive 256 MiB and
-128 processes.
+`cpu.max` in every mode. Provider proxies additionally receive 256 MiB and 128
+processes.
+Setup adapts to the cgroup v2 controllers the rootless engine delegates
+(`podman info --format '{{.Host.CgroupControllers}}'`). Reported controllers
+count as delegated only with the `systemd` cgroup manager
+(`{{.Host.CgroupManager}}`): a rootless `cgroupfs` engine, such as a Podman
+machine on WSL, reports every controller and applies none, so the plan prints
+`enforced agent budgets: none` and names the `cgroupfs` manager. A budget whose
+controller is not delegated is not enforced: the setup plan, the smoke and every
+launch name it, and setup continues without asking. Without `pids`, the process
+budget falls back to a per-session process rlimit at the saved value when the
+engine kernel (`podman info --format '{{.Host.Kernel}}'`) is Linux 5.14 or
+later. The plan then prints
+`agent process budget enforced through the process rlimit (512 tasks of the session user, threads included)`,
+and the smoke compares the effective `Max processes` with the saved budget. On
+older or unrecognized kernels the plan line names the reason the fallback was
+not applied. Enforced budgets are still verified exactly, unenforced ones must
+be absent, and the enforced set and the process-budget mechanism are bound into
+restricted qualification. Without memory or process budgets an agent can
+exhaust host memory or processes for your user; without a CPU budget it can
+saturate every CPU. Provider proxy process budgets use the same fallback.
 The installed wrapper verifies the effective limits and proxy hardening before
-its smoke agent starts. An unavailable controller, ignored limit or incompatible
-image makes setup incomplete and preserves the previous working release.
-Inspect controller delegation and image compatibility separately; setup never
+its smoke agent starts. An ignored delegated limit or an incompatible image
+makes setup incomplete and preserves the previous working release. Setup never
 adds privileges, changes host security policy or removes limits to proceed.
 
 Before activation, setup runs `--container-qualify` against its protected
@@ -176,7 +219,9 @@ For restricted launch or optional delegation, setup verifies the selected
 same-host rootless Unix service. `default` derives the socket from the current
 `XDG_RUNTIME_DIR` (or `/run/user/<uid>`) on every invocation; an explicit
 `unix:///absolute/socket` is retained literally. `local` is available for
-unrestricted launch without delegation. TCP/SSH, named contexts and implicitly
+unrestricted launch without delegation. When a restricted mode is chosen and
+the saved endpoint is `local`, setup proposes `default` instead. TCP/SSH, named
+contexts and implicitly
 remote engines remain unsupported. Bind/build paths must exist at their real
 absolute paths on that same Linux host, including when running from a container.
 
@@ -229,6 +274,19 @@ Default paths:
 Source may be on a Windows mount; installation, private state and executable
 guard output need permission-enforcing native storage with protected ancestors.
 Setup copies an explicit input manifest, never a whole checkout or credentials.
+Every manifest input must have LF line endings. Bash cannot run a script with
+CRLF line endings. Setup refuses an input that contains a carriage return,
+names the file, and creates no release. The repository's `.gitattributes`
+keeps scripts LF even when Git for Windows has `core.autocrlf=true`. However, a
+clone made before that file existed keeps its CRLF working files. In such a
+checkout without local changes, rewrite the files with LF:
+
+```bash
+git rm -r -q --cached . && git reset --hard
+```
+
+Cloning the repository again works too. `git add --renormalize .` does not
+help: it fixes the index, not the working files.
 Group/other-writable ancestors, unsafe existing modes and paths overlapping the
 writable workspace/worktree/state are rejected without recursive repairs.
 An existing safe flat manual installation can coexist with managed releases.
@@ -301,12 +359,121 @@ The previous release is retained. For rollback, stop setup updates, take the
 same installation lock, inspect the previous release and its `setup.json`, then
 atomically replace `current` with a symlink to that release. Alternatively run
 the prior manual wrapper with its explicit environment. Never delete state to
-roll back. Automatic pruning is not provided. New image tags and enabled user
-sockets can remain after failure; setup reports persistent effects and does not
-remove shared engine resources or undo service enablement automatically.
+roll back. Automatic pruning is not provided. A setup that does not activate
+its candidate, because it failed, was cancelled or was interrupted, removes the
+`setup-<release>` tags it created for that candidate (runtime, toolchain,
+proxy). It keeps every other name of those images, and reports an image left
+without a name with `podman image rm <id>`. Enabled user sockets and other
+persistent effects remain and are reported; setup does not remove shared
+engine resources or undo service enablement automatically.
+
+Tags of earlier runs that ended before this rule, or that were killed, can
+remain. Several installation roots share one image repository, so setup does
+not remove them on its own. To remove them by hand:
+
+```bash
+podman images --format '{{.Repository}}:{{.Tag}}' | grep ':setup-'
+cat <installation>/releases/*/setup.json | grep '"image"'   # for every installation root
+podman untag <tag> <tag>   # only for a tag that no setup.json names
+```
+
 If rolling back across a command-path or dispatcher-protocol change, restore
 the matching command/configuration as well; changing only `current` does not
 recreate a retired command or adapt an older launch helper's interface.
+
+## Windows with Podman machine
+
+On Windows, setup runs from the checkout through the PowerShell entry, in an
+interactive window:
+
+```powershell
+.\pi-container.ps1 --container-setup
+```
+
+The entry first checks these things, and stops with status 1 when one fails:
+
+- `pi-container.sh`, `launcher/core.sh`, `agent/launcher.sh` and
+  `launcher/windows/enter.sh` have LF line endings; the message names the
+  first file with CRLF and the command above;
+- the WSL distribution is registered: `podman-machine-default`, or
+  `PI_CONTAINER_WSL_DISTRO`;
+- the distribution is running: start the machine with Podman Desktop or
+  `podman machine start`. The entry never starts it with `wsl.exe`;
+- the user's runtime directory `/run/user/<uid>` exists and is writable in the
+  distribution. Podman creates it when it starts the machine. A distribution
+  that `wsl.exe` alone started lacks it, and no `podman` command works there
+  (status 125). Run `wsl --terminate podman-machine-default`, then start the
+  machine with Podman.
+
+It then runs `bash pi-container.sh --container-setup` inside that
+distribution as its user (`user`, or `PI_CONTAINER_WSL_USER`), starting in
+the checkout's drive mount, for example `/mnt/c/Work/pi-container`.
+
+Setup runs through the checkout's `launcher/windows/enter.sh`. The machine runs
+systemd, its user manager and the Podman service in PID and mount namespaces
+of their own; its login shells enter them with `/usr/local/bin/enterns`.
+The helper enters them the same way:
+
+- `sudo -n nsenter --target <systemd> --mount --pid`, then `sudo -n -u <user>`
+  back to the user;
+- the environment crosses `sudo` in a private file under `/run/user/<uid>`,
+  which the inner part reads and removes;
+- the working directory, the terminal and the exit status stay;
+- `XDG_RUNTIME_DIR` becomes `/run/user/<uid>`.
+
+The machine's user needs `sudo` without a password, which Podman machines
+provide; otherwise setup stops with status 1 and says so. Inside those
+namespaces setup and the machine's service share one rootless user namespace,
+and the service check and the user manager work as on Linux.
+
+No Windows variable is forwarded to setup, except `WRAPPER_WINDOWS_SETUP=1`.
+That marker makes setup leave out the Linux `PATH` guidance and the
+managed-command lines, and print that the Windows entry starts sessions; the
+entry then prints the exact command. The pending authentication step is for
+PowerShell too: setup asks to set the saved method's key, for example
+`$env:ANTHROPIC_API_KEY = '...'`, in PowerShell before `pi-container.ps1`. The
+entry forwards the four method keys by name. Pi's state stays in the machine
+user's `~/.pi` and `~/.agents` in shared state mode, separate from Pi on
+Windows. `PI_NPM_CACHE_SIZE` needs `PI_CONTAINER_ENV_VARS` from Windows; see
+[Windows with Podman machine](../README.md#windows-with-podman-machine).
+
+`.\pi-container.ps1 --container-install` runs the same checks, copies
+the checkout's setup inputs and Windows scripts into
+`%LOCALAPPDATA%\Programs\pi-container`, adds that folder to the user
+`PATH`, and then runs setup from that copy. Later, `pi-container
+--container-setup` also runs from the installed copy, so the checkout can be
+deleted.
+
+Setup then works as on Linux:
+
+- the checkout on drvfs is only the source; the installation, the command and
+  the state go to the distribution's native storage, at the default paths
+  above;
+- setup finds the machine's own service at
+  `/run/user/<uid>/podman/podman.sock`, so it offers provider, offline and
+  unrestricted networking, with provider and the `anthropic` method as the
+  default (see [Choices and preparation](#choices-and-preparation));
+- host CA trust offers the machine's system bundle. On a network that
+  intercepts TLS, that bundle contains the interception CA only after
+  `podman machine set --import-native-ca` (Podman 6.0 or later), which fails
+  while the machine runs: stop it first. Podman then imports the CAs that
+  Windows trusts at every machine start and runs `update-ca-trust`. Run it
+  before setup, then answer yes to host CA trust and keep the proposed bundle;
+  otherwise pulls, builds and sessions fail certificate verification. The
+  README section
+  [Trusting a host CA on Windows](../README.md#trusting-a-host-ca-on-windows)
+  gives the commands;
+- the engine uses the `cgroupfs` manager: the memory and CPU budgets are not
+  enforced, and the process budget uses the process rlimit, as the launch
+  notices state;
+- the images are built by the machine's engine.
+
+After a successful setup the entry says to start sessions with
+`pi-container.ps1` from a project directory. A launch looks for the
+installation at `~/.local/lib/pi-container` in the distribution. When
+setup installed it elsewhere, set `PI_CONTAINER_WSL_INSTALLATION` to that
+absolute path. When the machine is recreated, the installation is gone, and a
+launch asks to rerun setup.
 
 ## Readiness and authentication
 
@@ -372,11 +539,13 @@ The `container-setup` requirement coverage is:
 | --- | --- |
 | Dedicated interactive setup invocation | PTY early-dispatch, mixed-argument/pipeline rejection and help precedence tests |
 | Workflow questionnaire with explicit defaults | Default/retry/conflict PTY checks; saved-choice rerun; real provider/offline/unrestricted paths |
+| Setup without a launch service offers only unrestricted networking | Probe order and user-manager unit tests; confirmed, declined and saved-offline questionnaires; real-wrapper PTY run with a failing `systemctl` |
 | Optional authority requires deliberate selection | Delegation conflict questionnaire; separate service confirmation; saved worktree/TTY checks |
 | Installed host prerequisites only | Missing command, unsupported context/platform and strict failed/malformed engine-response tests |
 | User-scoped Podman service preparation | Synthetic accepted/declined/unavailable systemd and exact-endpoint tests; real existing-service reuse |
 | Reviewed setup mutations and maintenance | Declined plan has no filesystem/image mutation; scoped maintenance/environment tests |
 | Protected complete installation | Native manifest copy from Windows checkout; path/ancestor/overlap/state/privacy checks |
+| Installation inputs with carriage returns are refused | CRLF manifest input refused before a release exists, with the LF re-checkout command |
 | Mode-specific image and guard preparation | Inspection/recipe pin/build failure/guard preflight tests; real compilation and provider/offline/unrestricted smoke |
 | Persistent non-secret managed launch preferences | Schema/privacy/secret rejection, empty overrides, argv/stdin/cwd/TTY/status/signal and future-mount tests |
 | Credential-preserving authentication assistance | Synthetic direct-terminal login success/failure/cancellation and absent-key cases; real login separately opt-in |
