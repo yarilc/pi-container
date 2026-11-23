@@ -157,7 +157,10 @@ SELinux denials require explicit host policy/permission inspection. The
 sensitive-workspace guard compares physical paths and rejects /, the caller's
 home, /home, /root, /etc, /usr, /var, /bin, /sbin, /lib, /lib64, /boot, /opt,
 /srv, /mnt, /media, /proc, /sys, /dev, /run, /tmp and /mnt/<letter> drive
-roots unless exactly `PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1` is set. Worktree mode applies
+roots, and on a drive mount the Windows `Users`, profile, `Documents`,
+`OneDrive`, `Windows`, `Program Files` and `ProgramData` folders and anything
+inside the profile's `AppData`, in any letter case, unless exactly
+`PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1` is set. Worktree mode applies
 the guard to the immediate parent it exposes. That explicit mode permits
 read/write access to siblings in the whole parent while retaining the
 original workdir. Always use a suitably narrow project directory.
@@ -175,9 +178,15 @@ workspaces for untrusted tasks.
 
 Every session has validated memory, CPU and process budgets
 (`PI_CONTAINER_MEMORY_LIMIT`, `PI_CONTAINER_CPU_LIMIT`,
-`PI_CONTAINER_PIDS_LIMIT`; defaults 4g, 2 and 512). The wrapper inspects the
-created container and starts it only when the engine applied them. Budgets do
-not bound workspace or state storage growth.
+`PI_CONTAINER_PIDS_LIMIT`; defaults 4g, 2 and 512). Each budget is enforced
+only when the rootless engine delegates its cgroup v2 controller, which needs
+the `systemd` cgroup manager; with `cgroupfs`, as on a Podman machine on
+Windows, no controller counts as delegated. Without the `pids` controller, the
+process budget falls back to a per-container process rlimit on Linux 5.14 or
+later. A budget without a mechanism stays unenforced, and every launch prints a
+notice for it. The wrapper inspects the created container and starts it only
+when every enforced budget equals its value and no unenforced one is present.
+Budgets do not bound workspace or state storage growth.
 
 ### Podman Socket (Opt-In, Dangerous)
 

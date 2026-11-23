@@ -6,6 +6,15 @@ import sys
 
 PIDS_LIMIT = 128
 MEMORY_LIMIT = 256 * 1024 * 1024
+PROCESS = ('cgroup', 'rlimit', 'none')
+
+
+def process_rlimit(text):
+    # Soft and hard 'Max processes' of a /proc/<pid>/limits table; None is unlimited.
+    for line in text.splitlines():
+        if line.startswith('Max processes '):
+            return [None if value == 'unlimited' else int(value) for value in line.split()[2:4]]
+    raise ValueError('missing process rlimit')
 
 
 def probe():
@@ -32,12 +41,21 @@ def probe():
         'capabilities': [int(status[key], 16) for key in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')],
         'no_new_privs': int(status['NoNewPrivs']),
         'seccomp': int(status['Seccomp']),
+        'nproc': process_rlimit(Path('/proc/1/limits').read_text()),
     }
 
 
-def verify(config, effective, enforced=('memory', 'pids')):
-    """Exact enforced budgets; budgets whose controller is not delegated must be absent."""
-    if type(config) is not dict or type(effective) is not dict or not set(enforced) <= {'memory', 'pids'}:
+def verify(config, effective, enforced=('memory', 'pids'), process=None):
+    """Exact enforced budgets; budgets whose controller is not delegated must be absent.
+
+    The process budget uses the pids cgroup, the process rlimit fallback (exactly
+    one RLIMIT_NPROC entry at the budget, measured in the proxy) or nothing; an
+    engine default process rlimit is not a budget and is otherwise accepted.
+    """
+    if process is None:
+        process = 'cgroup' if 'pids' in enforced else 'none'
+    if type(config) is not dict or type(effective) is not dict or not set(enforced) <= {'memory', 'pids'} or \
+            process not in PROCESS or (process == 'cgroup') != ('pids' in enforced):
         raise ValueError('invalid hardening records')
     pids, memory = config.get('PidsLimit', 0), config.get('Memory', 0)
     if type(pids) is not int or type(memory) is not int:
@@ -45,9 +63,22 @@ def verify(config, effective, enforced=('memory', 'pids')):
     if (pids != PIDS_LIMIT if 'pids' in enforced else pids > 0) or \
             (memory != MEMORY_LIMIT if 'memory' in enforced else memory != 0):
         raise ValueError('proxy configured budgets differ')
+    rlimits = config.get('Ulimits')
+    rlimits = [] if rlimits is None else rlimits
+    if type(rlimits) is not list or any(type(entry) is not dict for entry in rlimits):
+        raise ValueError('proxy configured budgets differ')
+    nproc = [entry for entry in rlimits if entry.get('Name') == 'RLIMIT_NPROC']
+    if process == 'rlimit' and (len(nproc) != 1 or any(
+            type(nproc[0].get(key)) is not int or nproc[0][key] != PIDS_LIMIT for key in ('Soft', 'Hard'))):
+        raise ValueError('proxy configured budgets differ')
+    measured = effective.get('nproc')
+    if type(measured) is not list or len(measured) != 2 or \
+            any(value is not None and type(value) is not int for value in measured) or \
+            (process == 'rlimit' and measured != [PIDS_LIMIT, PIDS_LIMIT]):
+        raise ValueError('proxy effective hardening differs')
     expected = dict(pids=PIDS_LIMIT if 'pids' in enforced else None,
                     memory=MEMORY_LIMIT if 'memory' in enforced else None,
-                    capabilities=[0] * 5, no_new_privs=1, seccomp=2)
+                    capabilities=[0] * 5, no_new_privs=1, seccomp=2, nproc=measured)
     if effective != expected or any(type(effective.get(key)) is not int
                                     for key in ('no_new_privs', 'seccomp')):
         raise ValueError('proxy effective hardening differs')
@@ -69,9 +100,9 @@ if __name__ == '__main__':
     try:
         if sys.argv[1:] == ['probe']:
             print(json.dumps(probe(), sort_keys=True))
-        elif len(sys.argv) == 5 and sys.argv[1] == 'verify':
+        elif len(sys.argv) == 6 and sys.argv[1] == 'verify':
             enforced = tuple(name for name in sys.argv[4].split(',') if name)
-            verify(read_record(sys.argv[2]), read_record(sys.argv[3]), enforced)
+            verify(read_record(sys.argv[2]), read_record(sys.argv[3]), enforced, sys.argv[5])
         else:
             raise ValueError('invalid operation')
     except (OSError, ValueError, KeyError, TypeError, IndexError):
@@ -85,6 +116,7 @@ if __name__ == '__main__':
             except ImportError:
                 pass
         print(prefix + 'proxy hardening unavailable or invalid; require effective '
-              'cgroup v2 pids=128/memory=256MiB where delegated, zero capabilities, no-new-privileges '
-              'and standard seccomp; inspect rootless controller delegation and the proxy image', file=sys.stderr)
+              'cgroup v2 pids=128/memory=256MiB where delegated, or a process rlimit of 128 under the '
+              'process rlimit fallback, zero capabilities, no-new-privileges and standard seccomp; '
+              'inspect rootless controller delegation and the proxy image', file=sys.stderr)
         sys.exit(1)

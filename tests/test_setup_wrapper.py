@@ -18,7 +18,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sandbox_profile import REAL_PROFILE as PROFILE, REAL_ROOT as ROOT, REAL_WRAPPER as WRAPPER, \
     real_env as name, test_setting
-from test_setup import FAKE_PODMAN_TEMPLATE, pty_run
+from test_setup import FAKE_PODMAN_TEMPLATE, install_fake_systemctl, pty_run
 
 COMMAND = PROFILE.name
 CONFIG_HOME = PROFILE.config_home
@@ -71,6 +71,7 @@ class SetupWrapperTests(unittest.TestCase):
         fake = self.bin / 'podman'
         fake.write_text(FAKE_PODMAN)
         fake.chmod(0o700)
+        install_fake_systemctl(self.bin)
         self.value = self.harness(op='defaults', installation=str(self.base / 'installed'))
         self.value.update(network='unrestricted', auth=PROVIDER_METHOD, endpoint='local',
                           command=str(self.bin / COMMAND))
@@ -171,24 +172,77 @@ class SetupWrapperTests(unittest.TestCase):
         self.assertFalse(any(c['args'][0] in ('build', 'pull', 'tag') for c in self.calls()))
 
     def test_setup_plan_names_unenforced_budgets_without_a_question(self):
-        for controllers, notices in (('[memory pids]', ['agent CPU budget not enforced: cgroup controller cpu']),
-                                     ('[cpu pids]', ['agent memory budget not enforced: cgroup controller memory']),
-                                     ('[cpu memory pids]', [])):
-            with self.subTest(controllers=controllers):
+        rlimit = ('agent process budget enforced through the process rlimit (512 tasks of the session user, '
+                  'threads included): cgroup controller pids is not delegated')
+        for controllers, kernel, notices in (
+                ('[memory pids]', None, ['agent CPU budget not enforced: cgroup controller cpu']),
+                ('[cpu pids]', None, ['agent memory budget not enforced: cgroup controller memory']),
+                ('[cpu memory]', None, [rlimit]),
+                ('[cpu memory]', '5.10.0-28-amd64', ['agent process budget not enforced: cgroup controller pids',
+                                                     'kernel 5.10.0-28-amd64 counts the process rlimit per user']),
+                ('[cpu memory pids]', None, []),
+                ('[cpuset cpu io memory hugetlb pids rdma]', 'cgroupfs',
+                 ['enforced agent budgets: none',
+                  'agent memory budget not enforced: the rootless engine uses the cgroupfs cgroup manager',
+                  'agent CPU budget not enforced: the rootless engine uses the cgroupfs cgroup manager',
+                  'agent process budget enforced through the process rlimit (512 tasks of the session user, '
+                  'threads included): the rootless engine uses the cgroupfs cgroup manager'])):
+            with self.subTest(controllers=controllers, kernel=kernel):
                 env = self.env | {name('NETWORK'): 'provider', 'SETUP_TEST_MISSING': '1',
                                   'SETUP_TEST_ENGINE': 'true linux false', 'SETUP_TEST_CONTROLLERS': controllers}
+                if kernel == 'cgroupfs':
+                    env['SETUP_TEST_CGROUP_MANAGER'] = kernel
+                elif kernel:
+                    env['SETUP_TEST_KERNEL'] = kernel
                 answers = self.answers() + [('Refresh prepared images', 'no'), ('Apply this installation', 'no')]
                 code, output = pty_run(['bash', str(WRAPPER), '--container-setup'], env,
                                        self.workspace, answers)
                 self.assertEqual(code, 1, output)
-                self.assertIn('enforced agent budgets: ' + ', '.join(controllers[1:-1].split()), output)
+                if kernel != 'cgroupfs':
+                    self.assertIn('enforced agent budgets: ' + ', '.join(controllers[1:-1].split()), output)
                 for notice in notices:
                     self.assertIn(notice, output)
                 if not notices:
                     self.assertNotIn('budget not enforced', output)
+                    self.assertNotIn('process rlimit', output)
                 # This questionnaire selects unrestricted mode, which has no proxy.
                 self.assertNotIn('proxy memory budget', output)
+                self.assertNotIn('proxy process budget', output)
                 self.assertIn('cancelled before', output)
+
+    def test_setup_without_a_launch_service_offers_only_unrestricted_networking(self):
+        # As in a Podman machine distribution: no socket and a failing user manager.
+        (self.bin / 'systemctl').write_text('#!/bin/sh\nexit 1\n')
+        runtime = str(self.base / 'wslg-runtime-dir')
+        env = self.env | {'XDG_RUNTIME_DIR': runtime, 'SETUP_TEST_MISSING': '1'}
+        answers = [('Protected native installation directory', self.value['installation']),
+                   ('Continue with unrestricted networking', 'yes')]
+        if PROFILE.auth:
+            answers += [('Authentication method', PROVIDER_METHOD)]
+        answers += [('State mode', 'isolated'), ('Private isolated state directory', str(self.base / 'state'))]
+        if PROFILE.approval_bypass_env:
+            answers += [('Enable ' + PROFILE.display_name + ' permission bypass', 'no')]
+        answers += [('Use parent-directory worktree scope', 'no'), ('Agent memory limit', ''),
+                    ('Agent CPU limit', ''), ('Agent process limit', ''), ('Session lifetime in seconds', ''),
+                    ('Trust a host CA bundle', 'no'), ('Managed launch command path', self.value['command']),
+                    ('Refresh prepared images', 'no'), ('Apply this installation', 'no')]
+        code, output = pty_run(['bash', str(WRAPPER), '--container-setup'], env, self.workspace, answers)
+        self.assertEqual(code, 1, output)
+        for text in ('No same-host Podman launch service answers', 'network: unrestricted', 'endpoint: local',
+                     'podman: False', 'cancelled before'):
+            self.assertIn(text, output)
+        for text in ('Network mode [', 'Delegate the host Podman API', 'Podman launch endpoint', runtime):
+            self.assertNotIn(text, output)
+        self.assertFalse(Path(self.value['installation']).exists())
+        # Declining ends setup before any engine query or installation change.
+        self.log.unlink(missing_ok=True)
+        code, output = pty_run(['bash', str(WRAPPER), '--container-setup'], env, self.workspace,
+                               answers[:1] + [('Continue with unrestricted networking', 'no')])
+        self.assertEqual(code, 1, output)
+        self.assertIn('Unrestricted networking not confirmed', output)
+        self.assertIn('CONTAINER_HOST', output)
+        self.assertFalse(self.calls())
+        self.assertFalse(Path(self.value['installation']).exists())
 
     def test_questionnaire_cancellation_has_no_mutation(self):
         code, output = pty_run(['bash', str(WRAPPER), '--container-setup'],

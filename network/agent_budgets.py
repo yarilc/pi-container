@@ -110,6 +110,26 @@ def controllers(value):
     return tuple(sorted(set(names)))
 
 
+MANAGER = re.compile(r'[a-z]{1,32}')
+
+
+def delegated(available, manager):
+    """Controllers whose limits apply: a rootless engine applies cgroup limits only
+    through the systemd cgroup manager. cgroupfs may report every controller and
+    still ignore the limits (Podman machine on WSL), so it delegates none."""
+    names = controllers(available)
+    if not isinstance(manager, str) or not MANAGER.fullmatch(manager):
+        raise ControllerError('unverifiable cgroup manager')
+    return list(names) if manager == 'systemd' else []
+
+
+def cgroup_reason(controller, manager):
+    """Why a budget's cgroup limit is not requested."""
+    if manager == 'systemd':
+        return f'cgroup controller {controller} is not delegated to the rootless engine'
+    return f'the rootless engine uses the {manager} cgroup manager, which applies no cgroup limits'
+
+
 def enforced(available, kind='agent'):
     """Sorted controllers whose budgets are enforced for the agent or the proxy."""
     mapping = {'agent': AGENT_CONTROLLERS, 'proxy': PROXY_CONTROLLERS}[kind]
@@ -117,6 +137,35 @@ def enforced(available, kind='agent'):
     return sorted(name for name in mapping.values() if name in present)
 
 
-def agent_hardening(environ, profile, available):
-    return dict(capabilities=[], no_new_privs=True, enforced=enforced(available),
-                **from_environment(environ, profile))
+# Process budgets fall back to the process rlimit when the pids controller is
+# missing. Since Linux 5.14 RLIMIT_NPROC is counted per user namespace, and
+# keep-id gives every container its own, so the limit is per session. Older or
+# unrecognized kernels may count every process of the host user: no fallback.
+# launcher/core.sh implements the same rule; tests feed identical cases to both.
+KERNEL = re.compile(r'([0-9]{1,4})\.([0-9]{1,4})(?:[-.+_~][0-9A-Za-z._+~-]*)?')
+RLIMIT_KERNEL = (5, 14)
+
+
+def process_mechanism(available, kernel):
+    """Mechanism enforcing a process budget: 'cgroup', 'rlimit' or 'none'."""
+    if 'pids' in controllers(available):
+        return 'cgroup'
+    match = KERNEL.fullmatch(kernel) if isinstance(kernel, str) else None
+    if match and (int(match[1]), int(match[2])) >= RLIMIT_KERNEL:
+        return 'rlimit'
+    return 'none'
+
+
+def fallback_reason(kernel):
+    """Why a missing pids controller left the process budget unenforced."""
+    if isinstance(kernel, str) and KERNEL.fullmatch(kernel):
+        return (f'kernel {kernel} counts the process rlimit per user, not per container '
+                '(Linux 5.14 or later is required)')
+    return 'unrecognized kernel version'
+
+
+def agent_hardening(environ, profile, available, manager, kernel):
+    # Budgets follow the delegated controllers, never the raw engine report.
+    effective = delegated(available, manager)
+    return dict(capabilities=[], no_new_privs=True, enforced=enforced(effective),
+                process=process_mechanism(effective, kernel), **from_environment(environ, profile))

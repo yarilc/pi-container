@@ -33,7 +33,8 @@ SHARED_TESTS = (
     'tests/fixtures/agent/profile.json', 'tests/fixtures/agent/policies/default.json',
     'tests/fixtures/shell-agent/profile.json', 'tests/fixtures/shell-agent/policies/default.json',
     'tests/fixtures/agent/launcher.sh', 'tests/fixtures/shell-agent/launcher.sh', 'tests/fake_podman.py',
-    'tests/test_launcher.py',
+    'tests/test_launcher.py', 'tests/test_windows_bootstrap.py', 'tests/test_windows_enter.py',
+    'tests/windows/shim_tests.ps1',
 )
 FIXTURE_FILES = 'tests/fixtures/'
 SKIPPED_PARTS = ('__pycache__', 'bin')
@@ -103,6 +104,42 @@ def neutral_collisions(root, prefix):
     return sorted(name for name in names if name.startswith(prefix + '_'))
 
 
+def repository_files(root):
+    """Tracked and new unignored files of a Git checkout, or every file of a plain copy."""
+    listing = subprocess.run(['git', '-C', str(root), 'ls-files', '-z', '--cached', '--others', '--exclude-standard'],
+                             capture_output=True, check=False)
+    if listing.returncode == 0:
+        return sorted(root / name for name in listing.stdout.decode().split('\0') if name and (root / name).is_file())
+    return sorted(path for path in root.rglob('*') if path.is_file()
+                  and not {'.git', '__pycache__'} & set(path.relative_to(root).parts))
+
+
+def carriage_returns(root):
+    """Text files with a carriage return; a file with a NUL byte counts as binary."""
+    found = []
+    for path in repository_files(root):
+        data = path.read_bytes()
+        if b'\r' in data and b'\0' not in data:
+            found.append(str(path.relative_to(root)))
+    return found
+
+
+class LineEndings(unittest.TestCase):
+    """Scripts also run from Windows checkouts, where Git may convert LF to CRLF."""
+
+    def test_repository_text_files_have_no_carriage_return(self):
+        self.assertEqual([], carriage_returns(ROOT))
+
+    def test_carriage_return_is_detected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            copy = Path(directory)
+            (copy / 'launcher').mkdir()
+            (copy / 'launcher/core.sh').write_bytes(b'set -e\r\ntrue\n')
+            (copy / 'image.bin').write_bytes(b'\0\r\n')
+            (copy / 'README.md').write_bytes(b'text\n')
+            self.assertEqual(['launcher/core.sh'], carriage_returns(copy))
+
+
 class SharedComponentAlignment(unittest.TestCase):
     def test_neutral_names_stay_outside_the_wrapper_prefix(self):
         self.assertEqual(neutral_collisions(ROOT, PROFILE.env_prefix), [])
@@ -139,15 +176,18 @@ class SharedComponentAlignment(unittest.TestCase):
         self.assertEqual(violations(ROOT, identifiers), [])
 
     def test_scan_detects_an_injected_identifier(self):
-        with tempfile.TemporaryDirectory() as directory:
-            copy = Path(directory)
-            for name in (*SHARED_DIRECTORIES, 'tests'):
-                shutil.copytree(ROOT / name, copy / name, ignore=shutil.ignore_patterns('__pycache__'))
-            target = copy / 'network/control.py'
-            target.write_text(target.read_text() + '\n# ' + PROFILE.identifiers[0].title() + ' literal\n')
-            found = violations(copy, PROFILE.identifiers)
-            self.assertEqual(len(found), 1)
-            self.assertTrue(found[0].startswith('network/control.py:'))
+        for name in ('network/control.py', 'launcher/windows/core.ps1', 'launcher/windows/bootstrap.sh',
+                     'launcher/windows/enter.sh',
+                     'launcher/windows/install.ps1', 'launcher/windows/user-path.ps1', 'tests/windows/shim_tests.ps1'):
+            with self.subTest(file=name), tempfile.TemporaryDirectory() as directory:
+                copy = Path(directory)
+                for shared in (*SHARED_DIRECTORIES, 'tests'):
+                    shutil.copytree(ROOT / shared, copy / shared, ignore=shutil.ignore_patterns('__pycache__'))
+                target = copy / name
+                target.write_text(target.read_text() + '\n# ' + PROFILE.identifiers[0].title() + ' literal\n')
+                found = violations(copy, PROFILE.identifiers)
+                self.assertEqual(len(found), 1)
+                self.assertTrue(found[0].startswith(name + ':'))
 
     def test_fixture_identifiers_stay_in_the_fixtures(self):
         found = [line for line in violations(ROOT, FIXTURE_PROFILE.identifiers)
@@ -167,6 +207,18 @@ INTERNAL = ('QUALIFICATION_INPUT',)
 # authentication methods has no provider mode, so its help need not name them.
 PROVIDER_ONLY = ('NETWORK_PROFILE', 'NETWORK_POLICY', 'NETWORK_RUNTIME_DIR', 'EGRESS_IMAGE')
 ENTRY_SOURCE = 'source "$wrapper_dir/launcher/core.sh" "$wrapper_dir/agent/launcher.sh" "$@"'
+# The thin PowerShell entry <name>.ps1: the same text in every wrapper.
+POWERSHELL_ENTRY = '''# Thin Windows entry: identical in every wrapper. The shared shim
+# (launcher/windows/core.ps1) does everything with this wrapper's profile;
+# see docs/launcher-contract.md (Windows entry).
+Set-StrictMode -Version 3
+$ErrorActionPreference = 'Stop'
+& ([IO.Path]::Combine($PSScriptRoot, 'launcher', 'windows', 'core.ps1')) -EntryDirectory $PSScriptRoot -Arguments $args -PipelineInput:$MyInvocation.ExpectingInput
+exit $LASTEXITCODE
+'''
+# PowerShell files that Windows PowerShell 5.1 reads: ASCII only (no BOM needed).
+POWERSHELL_SHARED = ('launcher/windows/core.ps1', 'launcher/windows/install.ps1', 'launcher/windows/user-path.ps1',
+                     'tests/windows/shim_tests.ps1')
 SCALARS = ('AGENT_NAME', 'AGENT_DISPLAY_NAME', 'AGENT_WRAPPER', 'AGENT_ENV_PREFIX', 'AGENT_LABEL_NAMESPACE',
            'AGENT_IMAGE', 'AGENT_PROXY_IMAGE', 'AGENT_HOME', 'AGENT_COMMAND', 'AGENT_EXEC', 'AGENT_CONFIG_DIR_ENV',
            'AGENT_CONFIG_HOME', 'AGENT_PRIVATE_SHARED_DIRS', 'AGENT_APPROVAL_BYPASS_ENV', 'AGENT_EXEC_TMP')
@@ -235,6 +287,19 @@ class LauncherConsistency(unittest.TestCase):
             self.assertNotIn(value, self.entry)
         code = [line for line in self.entry.splitlines() if line.strip() and not line.lstrip().startswith('#')]
         self.assertLessEqual(len(code), 14)
+
+    def test_powershell_entry_is_the_fixed_thin_entry(self):
+        self.assertEqual(sorted(path.name for path in ROOT.glob('*.ps1')), [PROFILE.name + '.ps1'])
+        self.assertEqual((ROOT / (PROFILE.name + '.ps1')).read_text(), POWERSHELL_ENTRY)
+        for value in (PROFILE.name, PROFILE.env_prefix, PROFILE.home):
+            self.assertNotIn(value, POWERSHELL_ENTRY)
+        code = [line for line in POWERSHELL_ENTRY.splitlines() if line.strip() and not line.startswith('#')]
+        self.assertLessEqual(len(code), 4)
+
+    def test_powershell_files_are_ascii(self):
+        for name in (PROFILE.name + '.ps1', *POWERSHELL_SHARED):
+            with self.subTest(file=name):
+                self.assertTrue((ROOT / name).read_bytes().isascii())
 
     def test_agent_parts_match_their_profiles(self):
         from sandbox_profile import AGENT_FIXTURE, SHELL_FIXTURE

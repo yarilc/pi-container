@@ -5,7 +5,8 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
-    from common import PROFILE, SetupError, agent_profile, load, protect_mounts, runtime_environment, trusted
+    from common import (PROFILE, EntryOverlap, SetupError, agent_profile, load, protect_mounts,
+                        runtime_environment, trusted)
 except ValueError as error:
     # Invalid profile: there is no trustworthy wrapper name to report.
     print('sandbox-egress: invalid managed installation (' + str(error) + '); rerun --container-setup.', file=sys.stderr)
@@ -46,6 +47,9 @@ def main():
 if __name__ == '__main__':
     try:
         main()
+    except EntryOverlap as error:
+        print(PROFILE.message_prefix + str(error), file=sys.stderr)
+        sys.exit(1)
     except (SetupError, OSError, ValueError):
         print(PROFILE.message_prefix + 'invalid or unsafe managed configuration; rerun --container-setup or use a different workspace.', file=sys.stderr)
         sys.exit(1)

@@ -55,10 +55,12 @@ def unix_control(names):
             peer.sendall(b'qualification-positive')
 
 
-def effective_budgets(budgets, cgroup=Path('/sys/fs/cgroup'), membership=Path('/proc/self/cgroup')):
+def effective_budgets(budgets, cgroup=Path('/sys/fs/cgroup'), membership=Path('/proc/self/cgroup'),
+                      limits=Path('/proc/self/limits')):
     # Effective agent budgets in this container's private cgroup v2 namespace.
     # Enforced budgets must match exactly; a budget whose controller the engine
-    # does not delegate must be absent (missing interface or 'max').
+    # does not delegate must be absent (missing interface or 'max'). Under the
+    # process rlimit fallback, the soft and hard 'Max processes' equal the budget.
     assert membership.read_text() == '0::/\n', 'unsupported cgroup namespace'
     enforced = budgets['enforced']
 
@@ -74,6 +76,9 @@ def effective_budgets(budgets, cgroup=Path('/sys/fs/cgroup'), membership=Path('/
         assert pids and pids[0] != 'max' and int(pids[0]) == budgets['pids'], 'agent process budget is not effective'
     else:
         assert pids in (None, ['max']), 'unenforced agent process budget is present'
+        if budgets['process'] == 'rlimit':
+            rows = [line.split()[2:4] for line in limits.read_text().splitlines() if line.startswith('Max processes ')]
+            assert rows == [[str(budgets['pids'])] * 2], 'agent process rlimit fallback is not effective'
     if 'cpu' in enforced:
         assert cpu and len(cpu) == 2 and cpu[0] != 'max' and \
             int(cpu[0]) * 10**9 == budgets['nano_cpus'] * int(cpu[1]), 'agent CPU budget is not effective'

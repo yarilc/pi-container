@@ -1,6 +1,9 @@
 # Fixture agent part for the shared launcher tests: every data array and hook.
 # Hooks append one line per call to FIXTURE_HOOK_LOG (when set), recording their
 # inputs and whether session identity is visible to them.
+# The core sources this file: it reads the AGENT_* data and hook outputs and
+# defines the core state the hooks read.
+# shellcheck shell=bash disable=SC2034,SC2154
 AGENT_NAME=fixture-agent
 AGENT_DISPLAY_NAME=Fixture
 AGENT_WRAPPER=fixture-agent.sh

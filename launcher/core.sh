@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Shared launcher core, sourced by every wrapper's thin entry script as
 #   source launcher/core.sh agent/launcher.sh "$@"
 # The entry script sets the shell options, WRAPPER_INVOKED (the invoked path),
@@ -42,6 +43,8 @@ single_record() {
 }
 
 # Keep final LF bytes while retaining the query's own exit status and stderr.
+# ShellCheck cannot see this assignment: a variable it sets is read with a
+# SC2154 directive naming capture_response.
 capture_response() {
     local destination=$1 captured query_status
     shift
@@ -160,15 +163,22 @@ New Unix services are unavailable; fixed-peer pairs may have private inert names
 See network/README.md for packaging and docs/validation.md for measured evidence.
 Every session container, in all modes including delegation, drops all
 capabilities, enables no-new-privileges and receives the memory, CPU and process
-budgets whose cgroup v2 controller the rootless engine delegates; a budget whose
-controller is missing is not enforced and a notice names it. The created
-configuration is checked before the session starts; a delegated limit that
-is ignored stops startup. Without memory or process budgets a session can exhaust
-host memory or processes for your user.
+budgets whose cgroup v2 controller the rootless engine delegates (only with the
+systemd cgroup manager; cgroupfs delegates none); a budget whose controller is
+not delegated is not enforced and a notice names why. Without pids, the
+process budget falls back to a per-session process rlimit when the engine kernel
+is Linux 5.14 or later; container startup uses a few of those tasks. Memory and
+CPU have no fallback. The created configuration is checked before the session
+starts; a delegated limit or fallback that is ignored stops startup. Without
+memory or process budgets a session can exhaust host memory or processes for
+your user.
 Budgets and tmpfs sizes do not limit workspace or state storage growth.
 The workspace mount (the parent in worktree mode) must not be /, your home,
 /home, /root, /etc, /usr, /var, /bin, /sbin, /lib, /lib64, /boot, /opt, /srv,
 /mnt, /media, /proc, /sys, /dev, /run, /tmp or a WSL drive root such as /mnt/c.
+On a drive mount it must not be Users, a profile Users/<name>, its Documents,
+OneDrive or OneDrive/Documents, anything in its AppData, Windows, Program Files,
+Program Files (x86) or ProgramData, in any letter case.
 A reached lifetime limit is reported; the exit status is preserved.
 Qualification is credential-free, uses disposable fixed controls and never grants
 image maintenance or forwards a command. ABI queries alone do not qualify an
@@ -239,6 +249,7 @@ core_arguments() {
     if [[ "${1:-}" == --container-toolchain ]]; then
         [[ "${2:-}" != launch-env ]] || die 'usage: --container-toolchain add <recipe.json> | list | remove <name> | verify [<name>]'
         command -v python3 >/dev/null || die 'host Python 3 is required for the toolchain library'
+        # shellcheck disable=SC2154 # wrapper_dir is set by the entry script.
         exec python3 -I "$wrapper_dir/setup/toolchains.py" "${@:2}"
     fi
     for arg in "$@"; do
@@ -304,15 +315,21 @@ core_settings() {
     # Host tools are diagnosed later, so a missing readlink leaves the path empty here.
     script_path=$WRAPPER_PATH
     script_dir=${script_path%/*}
-    setup_wrapper=$WRAPPER_INVOKED
-    [[ "$setup_wrapper" == /* ]] || setup_wrapper="$PWD/$setup_wrapper"
-    printf -v setup_command 'bash %q --container-setup' "$setup_wrapper"
+    # A launch from the Windows entry (WRAPPER_WINDOWS_ENTRY, set by the
+    # bootstrap) prepares the machine with setup from Windows.
+    if [[ -n "${WRAPPER_WINDOWS_ENTRY:-}" ]]; then
+        setup_step="run $AGENT_NAME.ps1 --container-setup from Windows"
+    else
+        setup_wrapper=$WRAPPER_INVOKED
+        [[ "$setup_wrapper" == /* ]] || setup_wrapper="$PWD/$setup_wrapper"
+        printf -v setup_step 'run bash %q --container-setup and use the managed launcher' "$setup_wrapper"
+    fi
     # A restricted session needs a protected installation with the built guard and
     # its manifest. Without one, give setup guidance before any engine or state
     # operation; session.py prepare still validates the installation fully.
     if ((restricted)) \
         && { [[ -z "$script_path" ]] || ! compgen -G "$script_dir/network/bin/*.sha256" >/dev/null; }; then
-        die "setup required: $network_mode sessions need a protected installation; run $setup_command and use the managed launcher, or set ${P}_NETWORK=unrestricted for a direct session"
+        die "setup required: $network_mode sessions need a protected installation; $setup_step, or set ${P}_NETWORK=unrestricted for a direct session"
     fi
     # Provider mode needs the settings setup saves; a default provider launch
     # without them is a missing setup, an explicit one a configuration error.
@@ -320,7 +337,7 @@ core_settings() {
     if [[ "$network_mode" == provider ]]; then
         if [[ -z "${cfg_NETWORK:-}" ]] && [[ -z "${cfg_NETWORK_PROFILE:-}" || -z "${cfg_NETWORK_POLICY:-}" \
             || -z "${cfg_NETWORK_RUNTIME_DIR:-}" || -z "${cfg_EGRESS_IMAGE:-}" ]]; then
-            die "setup required: provider sessions, the default for $AGENT_DISPLAY_NAME, need the settings setup saves; run $setup_command and use the managed launcher"
+            die "setup required: provider sessions, the default for $AGENT_DISPLAY_NAME, need the settings setup saves; $setup_step"
         fi
         [[ -n "${cfg_NETWORK_PROFILE:-}" && -n "${cfg_NETWORK_POLICY:-}" ]] \
             || die "provider mode requires ${P}_NETWORK_PROFILE and ${P}_NETWORK_POLICY"
@@ -440,6 +457,13 @@ core_workspace_refusal() {
             unsafe_workspace=1 ;;
     esac
     [[ "$workspace_mount" != "$physical_home" && ! "$workspace_mount" =~ ^/mnt/[A-Za-z]$ ]] || unsafe_workspace=1
+    # Windows system and profile folders on a WSL drive mount, compared without
+    # case like drvfs does. Projects below them stay accepted.
+    # Documents and OneDrive hold the PowerShell profile and modules, and AppData
+    # the startup folder: code written there runs on Windows outside the sandbox.
+    windows_roots='^/mnt/[a-z](/users(/[^/]+(/documents|/onedrive( - [^/]+)?(/documents)?|/appdata(/.*)?)?)?'
+    windows_roots+='|/windows|/program files( \(x86\))?|/programdata)$'
+    [[ ! "${workspace_mount,,}" =~ $windows_roots ]] || unsafe_workspace=1
     if ((unsafe_workspace)); then
         [[ "${cfg_ALLOW_UNSAFE_WORKSPACE:-}" == 1 ]] \
             || die "refusing sensitive workspace $workspace_mount; launch from a project subdirectory or set exact ${P}_ALLOW_UNSAFE_WORKSPACE=1"
@@ -450,7 +474,12 @@ core_workspace_refusal() {
 # Phase 4: launch engine, cgroup controllers, restricted queries, delegation socket.
 core_engine() {
     # Unix service access also supports running this wrapper inside another container
-    # on the same host. TCP/SSH transports and Podman Machine are not supported.
+    # on the same host. TCP/SSH transports and the Podman machine's remote connection
+    # are not supported; inside the machine's own distribution the local engine is.
+    # Empty means the local engine here, but Podman treats a set CONTAINER_HOST
+    # or CONTAINER_CONNECTION as a remote context even when it is empty.
+    [[ -n "${CONTAINER_HOST:-}" ]] || unset CONTAINER_HOST
+    [[ -n "${CONTAINER_CONNECTION:-}" ]] || unset CONTAINER_CONNECTION
     [[ -z "${CONTAINER_CONNECTION:-}" ]] || die 'named remote connections are not supported; use local Podman or a local Unix CONTAINER_HOST'
     case "${CONTAINER_HOST:-}" in
         '') ;;
@@ -465,6 +494,7 @@ core_engine() {
         || die 'cannot query Podman; check the local rootless service'
     single_record runtime_info 'invalid Podman engine response: expected one record with at most one final LF'
     local rootless runtime_os extra
+    # shellcheck disable=SC2154 # set by capture_response
     read -r rootless runtime_os remote extra <<< "$runtime_info"
     [[ "$rootless" == true && "$runtime_os" == linux && "$remote" =~ ^(true|false)$ && -z "$extra" ]] \
         || die 'a verified Linux rootless Podman engine is required (unexpected engine response)'
@@ -476,6 +506,29 @@ core_engine() {
     core_engine_delegation
 }
 
+# Mechanism enforcing a process budget: the pids cgroup controller, the process
+# rlimit (Linux 5.14 and later count it per user namespace, and keep-id gives each
+# container its own), or none. Sets process_budget and, for none, process_reason.
+# network/agent_budgets.py (process_mechanism, fallback_reason) is the same rule.
+process_budget_rule() {
+    local controllers=$1 kernel=$2
+    local pattern='^([0-9]{1,4})\.([0-9]{1,4})([-.+_~][0-9A-Za-z._+~-]*)?$'
+    process_reason=''
+    if [[ " ${controllers:1:${#controllers}-2} " == *" pids "* ]]; then
+        process_budget=cgroup
+    elif [[ "$kernel" =~ $pattern ]]; then
+        if ((10#${BASH_REMATCH[1]} > 5 || (10#${BASH_REMATCH[1]} == 5 && 10#${BASH_REMATCH[2]} >= 14))); then
+            process_budget=rlimit
+        else
+            process_budget=none
+            process_reason="kernel $kernel counts the process rlimit per user, not per container (Linux 5.14 or later is required)"
+        fi
+    else
+        process_budget=none
+        process_reason='unrecognized kernel version'
+    fi
+}
+
 core_engine_session() {
     # A budget is enforced only when the verified engine reports its cgroup v2
     # controller as delegated. Unenforced budgets are not requested, are announced,
@@ -483,10 +536,28 @@ core_engine_session() {
     capture_response cgroup_controllers engine info --format '{{.Host.CgroupControllers}}' \
         || die 'cannot query the rootless cgroup controllers'
     single_record cgroup_controllers 'unverifiable cgroup controller list from the Podman engine'
+    # shellcheck disable=SC2154 # set by capture_response
     [[ "$cgroup_controllers" =~ ^\[([a-z_]+( [a-z_]+)*)?\]$ ]] \
         || die 'unverifiable cgroup controller list from the Podman engine'
+    # A rootless engine applies cgroup limits only through the systemd manager:
+    # cgroupfs may report every controller and ignore the limits (Podman machine
+    # on WSL), so it delegates none (network/agent_budgets.py delegated()).
+    capture_response cgroup_manager engine info --format '{{.Host.CgroupManager}}' \
+        || die 'cannot query the rootless cgroup manager'
+    single_record cgroup_manager 'unverifiable cgroup manager from the Podman engine'
+    # shellcheck disable=SC2154 # set by capture_response
+    [[ "$cgroup_manager" =~ ^[a-z]{1,32}$ ]] || die 'unverifiable cgroup manager from the Podman engine'
+    delegated_controllers=$cgroup_controllers
+    [[ "$cgroup_manager" == systemd ]] || delegated_controllers='[]'
     controller_delegated() {
-        [[ " ${cgroup_controllers:1:${#cgroup_controllers}-2} " == *" $1 "* ]]
+        [[ " ${delegated_controllers:1:${#delegated_controllers}-2} " == *" $1 "* ]]
+    }
+    cgroup_reason() {
+        if [[ "$cgroup_manager" == systemd ]]; then
+            printf 'cgroup controller %s is not delegated to the rootless engine' "$1"
+        else
+            printf 'the rootless engine uses the %s cgroup manager, which applies no cgroup limits' "$cgroup_manager"
+        fi
     }
     budget_args=()
     expected_memory=0
@@ -496,22 +567,35 @@ core_engine_session() {
         budget_args+=("--memory=$memory_bytes")
         expected_memory=$memory_bytes
     else
-        printf '%s: agent memory budget not enforced: cgroup controller memory is not delegated to the rootless engine\n' "$AGENT_NAME" >&2
+        printf '%s: agent memory budget not enforced: %s\n' "$AGENT_NAME" "$(cgroup_reason memory)" >&2
     fi
     if controller_delegated cpu; then
         budget_args+=("--cpus=$cpu_text")
         expected_cpu=$cpu_nano
     else
-        printf '%s: agent CPU budget not enforced: cgroup controller cpu is not delegated to the rootless engine\n' "$AGENT_NAME" >&2
+        printf '%s: agent CPU budget not enforced: %s\n' "$AGENT_NAME" "$(cgroup_reason cpu)" >&2
     fi
-    if controller_delegated pids; then
-        budget_args+=("--pids-limit=$pids_limit")
-        pids_enforced=1
-    else
-        # Override any containers.conf default that would request the missing controller.
-        budget_args+=(--pids-limit=-1)
-        printf '%s: agent process budget not enforced: cgroup controller pids is not delegated to the rootless engine\n' "$AGENT_NAME" >&2
-    fi
+    # The counting semantics of the process rlimit belong to the engine host's kernel.
+    capture_response engine_kernel engine info --format '{{.Host.Kernel}}' \
+        || die 'cannot query the engine kernel version'
+    single_record engine_kernel 'invalid engine kernel version response'
+    # shellcheck disable=SC2154 # set by capture_response
+    process_budget_rule "$delegated_controllers" "$engine_kernel"
+    case "$process_budget" in
+        cgroup)
+            budget_args+=("--pids-limit=$pids_limit")
+            pids_enforced=1
+            ;;
+        rlimit)
+            # Override any containers.conf default that would request the missing controller.
+            budget_args+=(--pids-limit=-1 --ulimit "nproc=$pids_limit:$pids_limit")
+            printf '%s: agent process budget enforced through the process rlimit (%s tasks of the session user, threads included): %s\n' "$AGENT_NAME" "$pids_limit" "$(cgroup_reason pids)" >&2
+            ;;
+        *)
+            budget_args+=(--pids-limit=-1)
+            printf '%s: agent process budget not enforced: %s; %s\n' "$AGENT_NAME" "$(cgroup_reason pids)" "$process_reason" >&2
+            ;;
+    esac
     if [[ "$network_mode" != unrestricted ]]; then
         command -v python3 >/dev/null || die 'host Python 3 is required for restricted network policy validation'
         [[ "$remote" == true ]] || die 'restricted networking currently requires the tested same-host Unix service; local-engine enforcement is unverified'
@@ -716,6 +800,7 @@ core_build_image() {
             capture_response image_hash engine image inspect --format '{{index .Labels "build-inputs-hash"}}' "$image" \
                 || die "cannot inspect image: $image"
             single_record image_hash "invalid image label response: $image"
+            # shellcheck disable=SC2154 # set by capture_response
             [[ "$image_hash" == "$build_hash" ]] \
                 || die "image $image is stale for the current build inputs (image ${image_hash:-unlabeled}, inputs $build_hash); rebuild it with exact ${P}_MAINTENANCE=1 and --container-build"
             return
@@ -921,8 +1006,8 @@ core_application() {
 
 # Phase 5: toolchains, restricted preparation, image, container arguments, names.
 core_mounts_image() {
-    temporary_exec=noexec
-    ((AGENT_EXEC_TMP == 0)) || temporary_exec=exec
+    temporary_exec='noexec'
+    ((AGENT_EXEC_TMP == 0)) || temporary_exec='exec'
     # A session without a writable isolated home gets an ephemeral tmpfs home
     # below its shared or read-only state directories (U7).
     home_mount=()
@@ -976,12 +1061,14 @@ core_mounts_image() {
             network_inputs+=(--policy "$cfg_NETWORK_POLICY" --profile "$cfg_NETWORK_PROFILE"
                 --proxy-image "$cfg_EGRESS_IMAGE" --runtime "$cfg_NETWORK_RUNTIME_DIR")
         fi
+        # shellcheck disable=SC2154 # set by capture_response
         prepare_inputs=(--mode "$network_mode" --server-version "${network_version%$'\n'}"
             --backend "${network_backend%$'\n'}" --endpoint "${CONTAINER_HOST:-}" --engine "$runtime_info")
         if ((qualification_probe)); then
             prepare_inputs+=(--probe --qualification-input "${cfg_QUALIFICATION_INPUT:-}"
                 --workspace "$workspace")
         fi
+        # shellcheck disable=SC2154 # set by capture_response
         prepared=$(printf '%s' "$network_platform" | "${session_helper[@]}" prepare "${network_inputs[@]}" "${prepare_inputs[@]}")
         read -r guard_digest qualification_token qualification_tls <<< "$prepared"
         if ((qualification_probe)); then
@@ -1010,6 +1097,7 @@ core_mounts_image() {
         capture_response runtime_image_id engine image inspect --format '{{.Id}}' "$image" \
             || die 'cannot resolve restricted runtime image identity'
         single_record runtime_image_id 'invalid restricted runtime image identity'
+        # shellcheck disable=SC2154 # set by capture_response
         [[ "$runtime_image_id" =~ ^(sha256:)?[a-f0-9]{64}$ ]] || die 'invalid restricted runtime image identity'
         image=$runtime_image_id
     fi
@@ -1019,6 +1107,7 @@ core_mounts_image() {
         capture_response image_environment engine image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$image" \
             || die 'cannot inspect the runtime image environment'
         image_path=''
+        # shellcheck disable=SC2154 # set by capture_response
         while IFS= read -r image_variable; do
             [[ "$image_variable" != PATH=* ]] || { image_path=${image_variable#PATH=}; break; }
         done <<<"$image_environment"
@@ -1046,13 +1135,13 @@ core_mounts_image() {
         # Mask engine default mounts at /run/secrets (RHEL subscription secrets from
         # mounts.conf): Podman skips its own mount there, leaving an empty read-only
         # tmpfs that the guard accepts and that exposes no host material.
-        --mount type=tmpfs,destination=/run/secrets,ro=true
+        --mount 'type=tmpfs,destination=/run/secrets,ro=true'
         # Podman forces /dev read-only with --read-only-tmpfs=false, and crun >= 1.27
         # must replace /dev/console to attach a terminal, so automatic provisioning
         # stays on. /dev and /dev/pts are left to the engine: an explicit /dev/pts mount
         # gets ptmxmode=000 (Podman rejects the option), so no pseudo-terminal could
         # be opened. Only /dev/shm is overridden, with an empty read-only tmpfs.
-        --mount type=tmpfs,destination=/dev/shm,ro=true
+        --mount 'type=tmpfs,destination=/dev/shm,ro=true'
         --volume "$workspace_mount:$workspace_mount:rw"
         "${home_mount[@]}"
         "${state_mounts[@]}"
@@ -1067,8 +1156,8 @@ core_mounts_image() {
         # The nested Podman client keeps its storage in private tmpfs mounts (U12).
         container_args+=(
             --volume "$host_socket:/run/podman/podman.sock:rw"
-            --tmpfs /var/lib/containers:rw,noexec,nosuid,nodev,mode=0700,U,size=256m
-            --tmpfs /run/containers:rw,noexec,nosuid,nodev,mode=0700,U,size=64m
+            --tmpfs '/var/lib/containers:rw,noexec,nosuid,nodev,mode=0700,U,size=256m'
+            --tmpfs '/run/containers:rw,noexec,nosuid,nodev,mode=0700,U,size=64m'
         )
     fi
     ((trust_host_ca == 0)) || container_args+=(--volume "$ca_bundle:$AGENT_HOME/ca/bundle.pem:ro")
@@ -1414,20 +1503,33 @@ core_create_start() {
     # Engine flags alone are not evidence: require the created configuration to
     # carry every enforced budget and no unenforced one. Setup smoke and
     # qualification measure the effective cgroups.
+    # The rlimits are listed by name in brackets, so the field is never empty.
     capture_response configured_budgets engine inspect --type container \
-        --format '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}}' "$container_id" \
+        --format '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}} [{{range .HostConfig.Ulimits}}{{.Name}}={{.Soft}}:{{.Hard}},{{end}}]' "$container_id" \
         || die 'cannot inspect agent resource budgets; agent not started'
-    read -r configured_memory configured_cpu configured_pids extra <<< "${configured_budgets%$'\n'}"
+    # shellcheck disable=SC2154 # set by capture_response
+    read -r configured_memory configured_cpu configured_pids configured_rlimits extra <<< "${configured_budgets%$'\n'}"
     budgets_applied=0
-    if [[ -z "${extra:-}" && "$configured_memory" == "$expected_memory" && "$configured_cpu" == "$expected_cpu" ]]; then
+    if [[ -z "${extra:-}" && "$configured_memory" == "$expected_memory" && "$configured_cpu" == "$expected_cpu" \
+            && "${configured_rlimits:-}" =~ ^\[([A-Z_]+=[0-9]+:[0-9]+,)*\]$ ]]; then
         if ((pids_enforced)); then
             [[ "$configured_pids" == "$pids_limit" ]] && budgets_applied=1
-        else
-            [[ "$configured_pids" =~ ^(0|-1)$ ]] && budgets_applied=1
+        elif [[ "$configured_pids" =~ ^(0|-1)$ ]]; then
+            # The fallback needs exactly one process rlimit entry at the budget; otherwise
+            # an engine default inherited from the user's own limits is not a budget.
+            if [[ "$process_budget" != rlimit ]]; then
+                budgets_applied=1
+            elif [[ "$configured_rlimits" == *"RLIMIT_NPROC=$pids_limit:$pids_limit,"* ]]; then
+                local other_rlimits=${configured_rlimits/"RLIMIT_NPROC=$pids_limit:$pids_limit,"/}
+                [[ "$other_rlimits" != *RLIMIT_NPROC=* ]] && budgets_applied=1
+            fi
         fi
     fi
+    if ((budgets_applied == 0)) && [[ "$process_budget" == rlimit ]]; then
+        die "agent resource budgets were not applied as expected (memory=$expected_memory nano_cpus=$expected_cpu process rlimit fallback nproc=$pids_limit:$pids_limit); engine reports controllers $cgroup_controllers with the $cgroup_manager cgroup manager; check the process rlimit fallback and rootless cgroup v2 controller delegation; agent not started"
+    fi
     ((budgets_applied)) \
-        || die "agent resource budgets were not applied as expected (memory=$expected_memory nano_cpus=$expected_cpu pids=$( ((pids_enforced)) && printf '%s' "$pids_limit" || printf 'unenforced')); engine reports controllers $cgroup_controllers; check rootless cgroup v2 controller delegation; agent not started"
+        || die "agent resource budgets were not applied as expected (memory=$expected_memory nano_cpus=$expected_cpu pids=$( ((pids_enforced)) && printf '%s' "$pids_limit" || printf 'unenforced')); engine reports controllers $cgroup_controllers with the $cgroup_manager cgroup manager; check rootless cgroup v2 controller delegation; agent not started"
 
     # Explicit stdin redirection prevents Bash from replacing stdin with /dev/null
     # for the background client; traps can forward signals while wait is active.

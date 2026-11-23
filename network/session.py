@@ -24,6 +24,7 @@ sys.path.insert(0, str(NETWORK))
 from policy import PolicyError  # noqa: E402
 import agent_budgets  # noqa: E402
 import agent_profile  # noqa: E402
+from proxy_hardening import PIDS_LIMIT as PROXY_PIDS_LIMIT  # noqa: E402
 from revisions import TLS_ENFORCEMENT as TLS  # noqa: E402
 
 GUARD = 'sandbox-egress-guard'
@@ -173,16 +174,31 @@ def start(args):
     # unenforced ones are announced and verified absent (never half-applied).
     controllers = run(['podman', 'info', '--format', '{{.Host.CgroupControllers}}'],
                       stdout=subprocess.PIPE, text=True).stdout.rstrip('\n')
+    # Without pids, the process budget falls back to the process rlimit when the
+    # engine kernel counts it per container (the same rule as the agent's).
+    kernel = run(['podman', 'info', '--format', '{{.Host.Kernel}}'],
+                 stdout=subprocess.PIPE, text=True).stdout.rstrip('\n')
+    # Only the systemd cgroup manager applies rootless cgroup limits.
+    manager = run(['podman', 'info', '--format', '{{.Host.CgroupManager}}'],
+                  stdout=subprocess.PIPE, text=True).stdout.rstrip('\n')
     try:
-        enforced = agent_budgets.enforced(controllers, 'proxy')
+        delegated = agent_budgets.delegated(controllers, manager)
+        enforced = agent_budgets.enforced(delegated, 'proxy')
+        process = agent_budgets.process_mechanism(delegated, kernel)
     except agent_budgets.ControllerError:
-        die('unverifiable cgroup controller list from the Podman engine; agent not started')
+        die('unverifiable cgroup controller list or cgroup manager from the Podman engine; agent not started')
+    limit = PROXY_PIDS_LIMIT
     budgets = ['--memory=256m' if 'memory' in enforced else None,
-               '--pids-limit=128' if 'pids' in enforced else '--pids-limit=-1']
-    for controller, label in (('memory', 'memory'), ('pids', 'process')):
-        if controller not in enforced:
-            note(f'proxy {label} budget not enforced: cgroup controller {controller} '
-                 'is not delegated to the rootless engine')
+               *{'cgroup': [f'--pids-limit={limit}'], 'rlimit': ['--pids-limit=-1', '--ulimit', f'nproc={limit}:{limit}'],
+                 'none': ['--pids-limit=-1']}[process]]
+    if 'memory' not in enforced:
+        note('proxy memory budget not enforced: ' + agent_budgets.cgroup_reason('memory', manager))
+    if process == 'rlimit':
+        note(f'proxy process budget enforced through the process rlimit ({limit} tasks of the proxy user, '
+             'threads included): ' + agent_budgets.cgroup_reason('pids', manager))
+    elif process == 'none':
+        note('proxy process budget not enforced: ' + agent_budgets.cgroup_reason('pids', manager) + '; '
+             + agent_budgets.fallback_reason(kernel))
     (session / 'proxy.pending').touch()
     with open(session / 'proxy.stdout', 'w') as output:
         run(['podman', 'create', '--name', PROFILE.state_name + '-' + token,
@@ -225,7 +241,7 @@ def start(args):
             die('cannot verify effective proxy hardening; check rootless cgroup v2 memory/pids controllers '
                 'and proxy image; agent not started')
     run([PYTHON, '-I', hardening, 'verify', session / 'proxy.config', session / 'proxy.effective',
-         ','.join(enforced)])
+         ','.join(enforced), process])
     print(policy_identity)
 
 

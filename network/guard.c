@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,6 +12,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/syscall.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "guard_landlock.h"
@@ -275,6 +277,75 @@ static void prepare_runtime(void)
         fail("runtime descriptor cleanup");
 }
 
+/* The confined guard stays as the container's init. Restricted containers have
+ * no engine init (the guard refuses its mount below /run), and a PID 1 without
+ * a handler ignores both the terminal's interrupt and the launcher's TERM. The
+ * application runs as a child in its own process group, which becomes the
+ * terminal's foreground group, so one Ctrl+C reaches it once. The guard keeps
+ * only standard error, forwards the signals sent to it, reaps orphans and exits
+ * with the application's status; the kernel then ends the rest of the PID
+ * namespace. Landlock, the seccomp filter and no_new_privs cover both. */
+static void supervise(char **command, int provider)
+{
+    static const int forwarded[] = { SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGUSR1, SIGUSR2, SIGWINCH };
+    sigset_t waited, previous;
+    struct sigaction initial = { .sa_handler = SIG_DFL };
+    if (sigaction(SIGCHLD, &initial, NULL) < 0)
+        fail("child signal disposition");
+    sigemptyset(&waited);
+    sigaddset(&waited, SIGCHLD);
+    for (size_t i = 0; i < sizeof(forwarded) / sizeof(forwarded[0]); ++i)
+        sigaddset(&waited, forwarded[i]);
+    if (sigprocmask(SIG_BLOCK, &waited, &previous) < 0)
+        fail("signal mask");
+    pid_t application = fork();
+    if (application < 0)
+        fail("application process");
+    if (application == 0) {
+        if (sigprocmask(SIG_SETMASK, &previous, NULL) < 0 || setpgid(0, 0) < 0)
+            fail("application process group");
+        if (isatty(STDIN_FILENO)) {
+            struct sigaction ignore = { .sa_handler = SIG_IGN }, saved;
+            if (sigaction(SIGTTOU, &ignore, &saved) < 0)
+                fail("terminal signal disposition");
+            /* A terminal that is not the controlling one has no foreground group. */
+            if (tcsetpgrp(STDIN_FILENO, getpgrp()) < 0 && errno != ENOTTY)
+                fail("terminal foreground group");
+            if (sigaction(SIGTTOU, &saved, NULL) < 0)
+                fail("terminal signal disposition");
+        }
+        execv(command[0], command);
+        fail("application exec");
+    }
+    if (close(STDIN_FILENO) < 0 || close(STDOUT_FILENO) < 0 || (provider && close(3) < 0))
+        fail("supervisor descriptor cleanup");
+    for (;;) {
+        siginfo_t info;
+        int received = sigwaitinfo(&waited, &info);
+        if (received < 0) {
+            if (errno == EINTR)
+                continue;
+            fail("signal wait");
+        }
+        if (received != SIGCHLD) {
+            (void)kill(application, received);
+            continue;
+        }
+        for (;;) {
+            int status;
+            pid_t reaped = waitpid(-1, &status, WNOHANG);
+            if (reaped < 0 && errno == EINTR)
+                continue;
+            if (reaped <= 0)
+                break;
+            if (reaped == application && WIFEXITED(status))
+                _exit(WEXITSTATUS(status));
+            if (reaped == application && WIFSIGNALED(status))
+                _exit(128 + WTERMSIG(status));
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 2 && strcmp(argv[1], "--version") == 0) {
@@ -327,6 +398,6 @@ int main(int argc, char **argv)
     if (setenv("XDG_RUNTIME_DIR", GUARD_RUNTIME_PATH, 1) < 0)
         fail("private runtime environment");
     fprintf(stderr, "sandbox-egress-guard: enforced revision=%s abi=%ld\n", GUARD_REVISION, abi);
-    execv(argv[3], &argv[3]);
-    fail("application exec");
+    supervise(&argv[3], provider);
+    return 78;
 }
