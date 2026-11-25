@@ -24,3 +24,5 @@ package-lock.json
 .vscode/
 *.sublime-*
 todo.md
+.claude
+.agents
