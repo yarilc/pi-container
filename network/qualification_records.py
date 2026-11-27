@@ -17,6 +17,12 @@ REVISION = 'local-enforcement-v1'
 CHECKS = ('ip4', 'ip6', 'dns-udp', 'unix-existing-late', 'pairs-files-descendants',
           'alternate-syscalls', 'both-state-modes', 'container-hardening')
 PROVIDER_CHECKS = ('proxy-policy', 'proxy-budgets', 'tls-match', 'tls-mismatch-zero-bytes', 'proxy-loss')
+# The session container engine's containment, when the installation has an engine.
+ENGINE_CHECKS = ('session-engine',)
+ENGINE_SECCOMP = 'launcher/engine/seccomp.json'
+# The engine's cgroup delegation state the gate measured (support-nested-systemd-containers):
+# recorded with the engine's checks; an ineligible engine is not a failure.
+ENGINE_CGROUP = re.compile(r'delegated|ineligible: [ -~]{1,200}')
 GUARD = 'sandbox-egress-guard'
 # Shared code plus the agent profile and provider policy. The wrapper name comes
 # from the profile, so ``code_files`` binds the profile that selected it.
@@ -26,7 +32,11 @@ SHARED_CODE = ('network/control.py', 'network/platform_check.py', 'network/agent
                'network/qualification_probe.py', 'network/qualification_peer.py',
                'network/qualification_proxy.py', 'network/relay.py', 'network/mux.py',
                'network/resolv.conf', 'network/bin/' + GUARD, 'network/bin/' + GUARD + '.sha256',
-               'setup/toolchains.py', 'launcher/core.sh', agent_profile.PROFILE, agent_profile.POLICY)
+               'setup/toolchains.py', 'setup/engine.py', 'launcher/core.sh',
+               'launcher/engine/Containerfile', 'launcher/engine/.containerignore', 'launcher/engine/cgroup.sh',
+               'launcher/engine/containers.conf', 'launcher/engine/entrypoint.sh', 'launcher/engine/resolv.conf',
+               'launcher/engine/start.sh', 'launcher/engine/storage.conf', agent_profile.PROFILE,
+               agent_profile.POLICY)
 
 
 def selected_mode(profile, env):
@@ -52,8 +62,8 @@ STALE = ('missing or stale qualification for the current host, engine, code, pol
          'or agent budgets/lifetime; rerun --container-qualify or --container-setup')
 
 
-def expected_checks(provider):
-    return list(CHECKS + (PROVIDER_CHECKS if provider else ()))
+def expected_checks(provider, engine=False):
+    return list(CHECKS + (PROVIDER_CHECKS if provider else ()) + (ENGINE_CHECKS if engine else ()))
 
 
 def ipv6_state(sysctl='/proc/sys/net/ipv6'):
@@ -154,6 +164,19 @@ def fingerprint(root, env, run, platform, token):
                    env.get(profile.env('IMAGE')) or profile.image('agent', 'latest')])
     if not re.fullmatch(r'(?:sha256:)?[a-f0-9]{64}', runtime):
         raise PolicyError('unverifiable runtime image identity')
+    # The session container engine: its image and the prepared seccomp profile.
+    # Without both, launches that would start an engine are refused (qualify.py check --engine).
+    engine = ''
+    engine_reference = env.get(profile.env('ENGINE_IMAGE')) or profile.image('engine', 'latest')
+    engine_profile = root / ENGINE_SECCOMP
+    listed = run(['podman', 'image', 'ls', '--no-trunc', '--format', '{{.ID}} {{.Repository}}:{{.Tag}}'])
+    for line in listed.splitlines():
+        identifier, _, name = line.partition(' ')
+        if engine_profile.is_file() and engine_reference.removeprefix('sha256:') in (
+                identifier.removeprefix('sha256:'), name):
+            engine = dict(image=identifier.removeprefix('sha256:'),
+                          seccomp=digest(trusted_path(engine_profile, []).read_bytes()))
+            break
     selected_profile = env.get(profile.env('NETWORK_PROFILE'), '')
     mode = selected_mode(profile, env)
     if mode not in ('offline', 'provider'):
@@ -218,7 +241,7 @@ print(json.dumps({'boot':Path('/proc/sys/kernel/random/boot_id').read_text().str
         raise PolicyError('invalid ' + profile.env(str(error)) + ' agent budget or lifetime') from None
     identity = dict(revision=REVISION, platform=value, engine_configuration=engine_configuration,
                     endpoint=endpoint, host_socket=socket,
-                    security=security, code=code, runtime=runtime, proxy=proxy,
+                    security=security, code=code, runtime=runtime, proxy=proxy, engine=engine,
                     mode=mode, profile=selected_profile if mode == 'provider' else '', policy=policy_id,
                     hardening=dict(capabilities=[], no_new_privs=True, pids=PIDS_LIMIT, memory=MEMORY_LIMIT,
                                    enforced=proxy_enforced, process=proxy_process, agent=agent))
@@ -227,13 +250,21 @@ print(json.dumps({'boot':Path('/proc/sys/kernel/random/boot_id').read_text().str
     return identity, not (value['selinux'] or value['apparmor'])
 
 
+def report_keys(identity):
+    return {'schema', 'identity', 'fingerprint', 'checks', 'reusable', 'measured_at',
+            *(('engine_cgroup',) if identity['engine'] else ())}
+
+
 def validate_report(value, identity):
-    if (type(value) is not dict or set(value) != {'schema', 'identity', 'fingerprint', 'checks', 'reusable', 'measured_at'} or
+    if (type(value) is not dict or set(value) != report_keys(identity) or
+            (identity['engine'] and (type(value['engine_cgroup']) is not str
+                                     or not ENGINE_CGROUP.fullmatch(value['engine_cgroup']))) or
             type(value['schema']) is not int or value['schema'] != 1 or
             canonical(value['identity']) != canonical(identity) or value['fingerprint'] != digest(canonical(identity)) or
             type(value['reusable']) is not bool or not isinstance(value['measured_at'], str) or
             not re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+00:00', value['measured_at']) or
-            value['checks'] != {name: 'passed' for name in expected_checks(identity['mode'] == 'provider')}):
+            value['checks'] != {name: 'passed' for name in expected_checks(identity['mode'] == 'provider',
+                                                                           bool(identity['engine']))}):
         raise PolicyError(STALE)
     try:
         datetime.fromisoformat(value['measured_at'])
@@ -263,7 +294,7 @@ def read(root, identity, writable):
         return validate_report(decode(source.read(65537)), identity)
 
 
-def publish(root, identity, reusable, writable):
+def publish(root, identity, reusable, writable, engine_cgroup=None):
     root = trusted_path(root, writable, directory=True)
     directory = Path(root) / 'qualification'
     if directory.is_symlink():
@@ -275,7 +306,10 @@ def publish(root, identity, reusable, writable):
         raise PolicyError('qualification directory must be private and caller-owned')
     value = dict(schema=1, identity=identity, fingerprint=digest(canonical(identity)),
                  measured_at=datetime.now(timezone.utc).isoformat(timespec='seconds'),
-                 checks={name: 'passed' for name in expected_checks(identity['mode'] == 'provider')}, reusable=reusable)
+                 checks={name: 'passed' for name in expected_checks(identity['mode'] == 'provider',
+                                                                    bool(identity['engine']))}, reusable=reusable)
+    if identity['engine']:
+        value['engine_cgroup'] = engine_cgroup
     validate_report(value, identity)
     destination = directory / (value['fingerprint'] + '.json')
     if destination.is_symlink():

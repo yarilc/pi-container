@@ -9,18 +9,23 @@ Status: ported by the `add-network-egress` and `add-container-setup` changes.
   [the validation record](validation.md).
 
 The durable contract is [network-egress](../openspec/specs/network-egress/spec.md),
-with [host-ca-trust](../openspec/specs/host-ca-trust/spec.md) and the session,
-isolation, delegation, launcher and image specifications in `openspec/specs/`.
+with [host-ca-trust](../openspec/specs/host-ca-trust/spec.md),
+[session-container-engine](../openspec/specs/session-container-engine/spec.md),
+and the session, isolation, launcher, toolchain and image specifications in
+`openspec/specs/`.
 
 ## Reference and intentional differences
 
 The shared components are copied unchanged from `sandbox-container` at tag
-`sandbox-ref-28` (commit `ba1ef1428a57625b70bb45d55cade5f08f46eecc`):
+`sandbox-ref-36` (commit `ce2c9d28873838a4ac541da34edaf7d8b5264be4`):
 
-- `launcher/` (the shared launcher core);
+- `launcher/` (the shared launcher core, `launcher/engine/` and `launcher/windows/`);
 - `network/` (except the build output `network/bin/`);
-- `setup/`;
-- the shared tests listed in that tag's `tests/test_alignment.py`.
+- `setup/` (including `setup/engine.py` and `setup/toolchain-catalog/`);
+- the shared tests listed in that tag's `tests/test_alignment.py` (including
+  `tests/test_engine.py`, `tests/test_toolchains.py`,
+  `tests/test_windows_bootstrap.py`, `tests/test_windows_enter.py`,
+  `tests/guard_terminal_probe.py` and `tests/windows/shim_tests.ps1`).
 
 The Pi port added three reference fixes:
 
@@ -54,14 +59,17 @@ Intentional differences are limited to per-agent files:
 
 ## Modes
 
-| Mode | Agent access | Socket delegation |
+| Mode | Agent access | Session container engine |
 | --- | --- | --- |
-| unset or empty | `provider`; without the provider settings the launch stops with setup guidance before engine calls and state creation | Rejected |
-| `offline` | Own loopback, pipes and connected socket pairs only | Rejected |
-| `provider` | As offline, plus one preconnected channel to an exact-destination proxy | Rejected |
-| `unrestricted` (explicit only) | Ordinary runtime networking | Exact opt-in allowed |
+| unset or empty | `provider`; without the provider settings the launch stops with setup guidance before engine calls and state creation | Private engine on loopback TCP when the library holds images; no host socket |
+| `offline` | Own loopback, pipes and connected socket pairs only | Private engine inside the offline namespace when the library holds images; no host socket |
+| `provider` | As offline, plus one preconnected channel to an exact-destination proxy | Private engine inside the provider namespace when the library holds images; no host socket |
+| `unrestricted` (explicit only) | Ordinary runtime networking | Private engine inside the session namespace when the library holds images; no host socket |
 
-`PI_NETWORK` is rejected in every mode with migration guidance. Unknown modes
+Host Podman delegation was removed in every mode: exact `PI_CONTAINER_PODMAN=1`
+stops launches before engine queries with migration guidance pointing to image
+toolchains (`--container-toolchain add`), and earlier names such as `PI_NETWORK`
+have no effect. Unknown modes
 fail before image operations. Restricted failures never retry with unrestricted
 networking. Pi has no tool-approval layer, so the guard and proxy are the only
 enforcement. Writable `~/.pi` settings, models and auth files, extensions and
@@ -71,22 +79,22 @@ administration access. Every agent container, in every mode, drops all
 capabilities, enables no-new-privileges and has verified memory, CPU and
 process budgets.
 
-Restricted launches follow the Claude wrapper order:
+Restricted launches follow the shared launcher core order:
 
 1. arguments;
-2. mode, `PI_NETWORK` and delegation;
+2. mode and leftover delegation refusal (`PI_CONTAINER_PODMAN=1`);
 3. budgets and lifetime;
-4. engine verification;
+4. launch engine verification;
 5. restricted platform queries;
-6. state;
+6. state and toolchain library;
 7. CA;
 8. `network/session.py prepare`;
 9. image operations under the maintenance gate;
 10. the immutable image ID;
 11. `network/qualify.py check`;
-12. `session.py start` and `agent-args`;
+12. `session.py start`, optional private session engine startup, and `agent-args`;
 13. owned create and start;
-14. `session.py stop` within the remaining shutdown budget.
+14. engine stop and `session.py stop` within the remaining shutdown budget.
 
 ## Provider profiles
 
@@ -98,8 +106,8 @@ Restricted launches follow the Claude wrapper order:
 | `openrouter-api` | `openrouter.ai:443` | `OPENROUTER_API_KEY` | Measured on 1.5.2 with a dummy key |
 
 In provider mode the profile selects the only forwarded key; offline forwards
-none. Unrestricted mode keeps forwarding `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`
-and `GOOGLE_API_KEY` (Pi 1.5.2 reads `GEMINI_API_KEY` for Gemini).
+none. Unrestricted sessions forward a key only when `PI_CONTAINER_ENV_VARS`
+lists it.
 Subscription and browser-callback logins, cloud providers, gateways, custom
 base URLs and local model servers have no profile.
 
@@ -144,7 +152,7 @@ The same Pi row appears in `sandbox-container`, `claude-container`,
 | Codex | Adopted `sandbox-ref-36`: shared launcher core | Shared launcher core, guard, multiplexed proxy, qualification and guided setup integrated; session container engine for image toolchains, with systemd in nested containers, host Podman delegation removed; Windows entry on a Podman machine (WSL provider) with installer and every network mode | WSL ABI 3: all runner modes passed on `sandbox-ref-28` (2026-11-22), and on `sandbox-ref-36` natively, the terminal tests and the engine cases included, with the shared and wrapper modes passing on a rerun after timing failures under load (2026-11-26); Podman machine on Windows: setup, device-code login, a Codex session, Codex's own sandbox in `unrestricted` and the validation script on both PowerShell editions passed (2026-11-22), the `sandbox-ref-36` smoke test pending (release risk) | Operator session with tool use passed (2026-11-11, `openai-account`; 2026-11-22 on Windows); refresh and real-key API checks pending; synthetic Responses API streaming and tool call passed |
 | Antigravity | Adopted `sandbox-ref-36`: shared launcher core | Shared launcher core, guard, multiplexed proxy, qualification and guided setup integrated; private session engine for image toolchains with nested systemd; host delegation removed; keyring removed; Windows entry on a Podman machine (WSL provider) with installer and every network mode | WSL ABI 3: all runner modes passed on `sandbox-ref-28` (2026-11-23); Podman machine on Windows: setup, Google sign-in, an `agy` session with tool use, token reuse, the Gemini API key method with a dummy key and the validation script on both PowerShell editions passed (2026-11-23); `sandbox-ref-36` shared manifest, migration preflight and local synthetic suites recorded in the validation log, production checks scheduled after closure | Operator session with tool use passed (2026-11-11, `google-account`, policy `antigravity-2026-11-11-v2`; 2026-11-23 on Windows); refresh and real-key Gemini API checks pending; synthetic Gemini streaming and tool call passed |
 | OpenCode | Adopted `sandbox-ref-36`: shared launcher core | Shared launcher core, guard, multiplexed proxy, qualification and guided setup integrated; private session container engine for image toolchains with nested systemd, host Podman delegation removed; Windows entry on a Podman machine (WSL provider) with installer and every network mode | WSL ABI 3: all runner modes passed on `sandbox-ref-28` (2026-11-23); Podman machine on Windows: setup, an OpenCode session with tool use (`openrouter-api`), native variables through `OPENCODE_CONTAINER_ENV_VARS` and the validation script on both PowerShell editions passed (2026-11-23); `sandbox-ref-36` shared manifest, alignment, static checks, OpenSpec merge preview and full non-runtime synthetic suites passed in the working session (2026-11-27), production WSL/Linux and Windows checks scheduled after closure | Operator session with tool use passed (2026-11-11, `anthropic-api`; 2026-11-23 on Windows, `openrouter-api`); the `openai-api` and `opencode-zen` profiles pending; synthetic Chat Completions streaming and tool call passed |
-| Pi | Adopted `sandbox-ref-28`: shared launcher core | Shared launcher core, guard, multiplexed proxy, qualification and guided setup integrated; Windows entry on a Podman machine (WSL provider) with installer and every network mode, no delegation | WSL ABI 3: all runner modes passed on `sandbox-ref-28` (2026-11-23); Podman machine on Windows: setup, a Pi session with tool use (`openrouter-api`), `PI_NPM_CACHE_SIZE` through `PI_CONTAINER_ENV_VARS` and the validation script on both PowerShell editions passed (2026-11-23) | Operator session with tool use passed (2026-11-11, `anthropic-api`; 2026-11-23 on Windows, `openrouter-api`); the `openai-api` and `gemini-api` profiles pending; synthetic Chat Completions streaming and tool call passed |
+| Pi | Adopted `sandbox-ref-36`: shared launcher core | Shared launcher core, guard, multiplexed proxy, qualification and guided setup integrated; private session container engine for image toolchains with nested systemd, host Podman delegation removed; Windows entry on a Podman machine (WSL provider) with installer and every network mode | WSL ABI 3: all runner modes passed on `sandbox-ref-28` (2026-11-23); Podman machine on Windows: setup, a Pi session with tool use (`openrouter-api`), `PI_NPM_CACHE_SIZE` through `PI_CONTAINER_ENV_VARS` and the validation script on both PowerShell editions passed (2026-11-23); `sandbox-ref-36` shared manifest, alignment, static checks, OpenSpec merge preview and full non-runtime synthetic suites passed in the working session (2026-11-27), production WSL/Linux and Windows checks scheduled after closure | Operator session with tool use passed (2026-11-11, `anthropic-api`; 2026-11-23 on Windows, `openrouter-api`); the `openai-api` and `gemini-api` profiles pending; synthetic Chat Completions streaming and tool call passed |
 
 ## Port status
 

@@ -7,24 +7,25 @@ English. Communicate with the user in the language and style the user asks for.
 
 - `pi-container.sh` is the thin entry script shared by every wrapper: it only
   sources `launcher/core.sh` with `agent/launcher.sh`. The shared launcher core
-  owns runtime policy: setting resolution, engine and delegation verification,
-  state validation, mounts, hardening and budgets, environment forwarding,
-  naming and owned cleanup. `agent/launcher.sh` holds Pi's profile data for the
-  core (checked against `agent/profile.json` by `tests/test_alignment.py`) and
-  five hooks: `agent_validate` (gitconfig opt-in, `PI_NPM_CACHE_SIZE`),
-  `agent_mounts` (the `~/.npm` tmpfs, the read-only gitconfig),
-  `agent_build_args` (`PI_VERSION` from `.version`), `agent_approval_bypass`
-  (the `PI_CONTAINER_YOLO` notice) and `agent_help`.
+  owns runtime policy: setting resolution, launch-engine verification,
+  session container engine lifecycle, state validation, mounts, hardening and
+  budgets, environment forwarding, naming and owned cleanup. `agent/launcher.sh`
+  holds Pi's profile data for the core (checked against `agent/profile.json` by
+  `tests/test_alignment.py`) and five hooks: `agent_validate` (gitconfig opt-in,
+  `PI_NPM_CACHE_SIZE`), `agent_mounts` (the `~/.npm` tmpfs, the read-only
+  gitconfig), `agent_build_args` (`PI_VERSION` from `.version`),
+  `agent_approval_bypass` (the `PI_CONTAINER_YOLO` notice) and `agent_help`.
 - `pi-container.ps1` is the thin Windows entry, identical in every wrapper
   under the wrapper's name: it runs the shared shim `launcher/windows/core.ps1`,
   which starts the managed installation inside a Podman machine's WSL
   distribution through `launcher/windows/bootstrap.sh`, and runs sessions and
   setup in the machine's systemd namespaces through `launcher/windows/enter.sh`.
-  Windows supports every network mode that setup prepared, without Podman
-  delegation; see the README's Windows section. `launcher/windows/` is shared
-  like `launcher/core.sh`. The shim forwards only `PI_CONTAINER_*`, the four
-  method keys and the names in `PI_CONTAINER_ENV_VARS`, so `PI_NPM_CACHE_SIZE`
-  needs that list from Windows; document this, and never work around it here.
+  Windows supports every network mode that setup prepared and the private
+  session container engine for image toolchains; see the README's Windows
+  section. `launcher/windows/` is shared like `launcher/core.sh`. The shim
+  forwards only `PI_CONTAINER_*`, the four method keys and the names in
+  `PI_CONTAINER_ENV_VARS`, so `PI_NPM_CACHE_SIZE` needs that list from Windows;
+  document this, and never work around it here.
 - `Containerfile` and `.containerignore` define the Pi image (digest-pinned
   base, common toolset with the Podman client, Pi from `.version`, pinned
   OpenSpec) and its five-file build context
@@ -36,19 +37,26 @@ English. Communicate with the user in the language and style the user asks for.
   four provider profiles). Restricted preparation, proxy lifecycle and restricted
   container arguments come from `network/session.py` (`prepare`, `start`,
   `agent-args`, `stop`); never re-implement them inline.
-- `launcher/`, `network/`, `setup/` and the shared tests (`sandbox_profile.py`,
+- `launcher/` (including `launcher/engine/` and `launcher/windows/`),
+  `network/`, `setup/` (including `setup/engine.py` and
+  `setup/toolchain-catalog/`) and the shared tests (`sandbox_profile.py`,
   `test_alignment.py`, `test_launcher.py`, `fake_podman.py`, `test_setup.py`,
   `test_agent_profile.py`, `test_network_policy.py`, `test_mux.py`,
   `test_tls_client_hello.py`, `test_tls_proxy.py`, `test_platform.py`,
   `test_qualification.py`, `test_guard.py`, `test_session.py`,
-  `test_network_feasibility.py`, `test_toolchains.py` and their fixtures) are copied unchanged from
-  `sandbox-container` at tag `sandbox-ref-28`. Never edit them here, and never
+  `test_network_feasibility.py`, `test_toolchains.py`, `test_engine.py`,
+  `test_windows_bootstrap.py`, `test_windows_enter.py`, `guard_terminal_probe.py`,
+  `windows/shim_tests.ps1` and their fixtures) are copied unchanged from
+  `sandbox-container` at tag `sandbox-ref-36`. Never edit them here, and never
   add a profile identifier (`pi-container`, `anthropic`, `openai`, `gemini`,
   `openrouter`) to them; fix a defect in `sandbox-container` first, then copy the
   files again and update `tests/test_reference_copy.py`.
-- The shared `setup/toolchains.py` manages the operator toolchain library,
-  mounted read-only at `/toolchains`; the launcher owns only its dispatch,
-  mount and environment.
+- The shared `setup/toolchains.py` and `setup/engine.py` manage the operator
+  toolchain library (including the release catalog and `.images` store), mounted
+  read-only at `/toolchains`, and the private session container engine
+  (`localhost/pi-container-engine:latest`) started for sessions when the library
+  holds at least one image toolchain; the launcher owns only its dispatch, mount,
+  engine lifecycle and environment.
 - `README.md` documents setup, usage and security; `SECURITY.md`,
   `CONTRIBUTING.md` and `CHANGELOG.md` complement it.
 - `openspec/specs/` contains current behavior contracts; `openspec/changes/`
@@ -150,7 +158,7 @@ queries and state creation. The real-engine suite runs only through
 `tests/run-runtime.sh`, which provides private native Linux state and the host
 socket; use a pseudo-terminal for interactive checks and pipes for
 nonterminal ones. Cover budgets as effective cgroup v2 values, lifetime expiry,
-refused workspaces, delegation and owned cleanup. Record results and
+refused workspaces, session container engine containment and owned cleanup. Record results and
 limitations in `docs/validation.md`, keeping synthetic and real evidence apart,
 and never count a skipped check as a pass.
 
@@ -189,10 +197,11 @@ changes.
   `cgroupfs` engine reports controllers but applies no limits, so it delegates
   none (`delegated()` in `network/agent_budgets.py`, mirrored in
   `launcher/core.sh`). The process budget alone falls back to a soft and hard
-  process rlimit (`--ulimit nproc`) when the engine kernel (`Host.Kernel`) is
-  Linux 5.14 or later, which counts it per container; the mechanism (`cgroup`,
-  `rlimit` or `none`) is one rule in `network/agent_budgets.py` and
-  `launcher/core.sh`, verified and qualified like a cgroup budget.
+  process rlimit set by the container's first process (never `--ulimit nproc`)
+  when the engine kernel (`Host.Kernel`) is Linux 5.14 or later, which counts it
+  per container; the mechanism (`cgroup`, `rlimit` or `none`) is one rule in
+  `network/agent_budgets.py` and `launcher/core.sh`, verified and qualified like
+  a cgroup budget.
 - Keep automatic read-only tmpfs provisioning and leave `/dev` and its `devpts`
   to the engine (an explicit `devpts` gets `ptmxmode=000`, so no
   pseudo-terminal can be opened). Mount empty read-only `/dev/shm` and
@@ -211,9 +220,14 @@ changes.
   forward no host proxy or CA variables, only the network profile's key, and set
   `PI_OFFLINE=1`, `PI_SKIP_VERSION_CHECK=1` and `PI_TELEMETRY=0` after
   forwarding.
-- Delegate the host Podman socket only with exact `PI_CONTAINER_PODMAN=1` in
-  unrestricted mode, after verifying the rootless service; never start services
-  or fall back silently.
+- Host Podman delegation is removed in every mode: exact `PI_CONTAINER_PODMAN=1`
+  stops startup before engine queries with migration guidance pointing to image
+  toolchains (`--container-toolchain add`), and other values (plus
+  `PI_CONTAINER_PODMAN_SOCKET`) are ignored. Sessions with image toolchains get
+  a private rootless container engine (`localhost/pi-container-engine:latest`)
+  on `tcp://127.0.0.1:2375` inside the session network namespace with fixed
+  hardening exceptions (`SETUID`, `SETGID`, `SYS_CHROOT`, `CHOWN` declared in
+  `io.containers.capabilities`).
 - Keep every image input pinned and the build policy explicit: build a
   missing image only under exact `PI_CONTAINER_MAINTENANCE=1`, stop on a stale
   `build-inputs-hash` until `--container-build` under maintenance, and never pipe

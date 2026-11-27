@@ -8,6 +8,7 @@ import tempfile
 import unittest
 import uuid
 
+from sandbox_profile import REAL_PROFILE
 from test_setup import pty_run
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,17 +38,29 @@ class SetupRuntime(unittest.TestCase):
         prepared_runtime = subprocess.check_output([self.real_podman, 'image', 'inspect',
             '--format', '{{.Id}}', os.environ.get('PI_CONTAINER_IMAGE', 'localhost/pi-container:latest')],
             env=self.env, text=True).strip()
-        # Route prepared lookups to the requested runtime and disposable proxy.
+        engine_ref = os.environ.get('PI_CONTAINER_ENGINE_IMAGE', 'localhost/pi-container-engine:latest')
+        engine_lookup = subprocess.run([self.real_podman, 'image', 'inspect', '--format', '{{.Id}}', engine_ref],
+                                       env=self.env, capture_output=True, text=True, timeout=60)
+        prepared_engine = engine_lookup.stdout.strip() if engine_lookup.returncode == 0 else ''
+        # Route prepared lookups to the requested runtime, engine (when present) and disposable proxy.
         # Do not retag or replace any operator-owned image.
         shim_dir = self.base / 'test-engine'
         shim_dir.mkdir()
         shim = shim_dir / 'podman'
+        engine_shim = ''
+        if prepared_engine:
+            engine_shim = (
+                "if args[:2] == ['image','exists'] and args[-1] in " + repr(('localhost/pi-container-engine:latest', prepared_engine)) + ": sys.exit(0)\n"
+                + "if args[:2] == ['image','inspect'] and '{{.Id}}' in args and args[-1] in " + repr(('localhost/pi-container-engine:latest', prepared_engine)) + ":\n"
+                + ' print(' + repr(prepared_engine) + '); sys.exit(0)\n'
+            )
         shim.write_text('#!/usr/bin/env python3\nimport os,sys\nfrom pathlib import Path\n'
             + 'args=sys.argv[1:]\n'
             + "if args[:2] == ['image','exists'] and args[-1] in " + repr(('localhost/pi-container:latest', prepared_runtime)) + ":\n"
             + ' sys.exit(1 if Path(' + repr(str(self.base / 'withhold-runtime')) + ').exists() else 0)\n'
             + "if args[:2] == ['image','inspect'] and '{{.Id}}' in args and args[-1] in " + repr(('localhost/pi-container:latest', prepared_runtime)) + ":\n"
             + ' print(' + repr(prepared_runtime) + '); sys.exit(0)\n'
+            + engine_shim
             + "if args[:2] == ['image','exists'] and args[-1] in " + repr(('localhost/pi-egress:local', prepared_proxy)) + ": sys.exit(0)\n"
             + "if args[:2] == ['image','inspect'] and args[-1] in " + repr(('localhost/pi-egress:local', prepared_proxy)) + ":\n"
             + ' print(Path(' + repr(str(self.proxy_selection)) + ').read_text().strip()); sys.exit(0)\n'
@@ -68,6 +81,8 @@ class SetupRuntime(unittest.TestCase):
     def clean_tags(self):
         for path in self.root.glob('releases/*/setup.json'):
             self.tags.add(json.loads(path.read_text())['image'])
+            for kind in ('engine', 'toolchain', 'proxy'):
+                self.tags.add(REAL_PROFILE.image(kind, 'setup-' + path.parent.name))
         for tag in self.tags:
             subprocess.run(['podman', 'image', 'rm', tag], capture_output=True, timeout=30)
 
@@ -78,12 +93,15 @@ class SetupRuntime(unittest.TestCase):
         if mode != 'offline':
             answers += [('Authentication method', method)]
         answers += [('State mode', 'isolated'), ('Private isolated state directory', str(self.base / 'state')),
-                    ('Delegate the host Podman API', 'no'), ('Enable Pi permission bypass', 'no'),
+                    ('Enable Pi permission bypass', 'no'),
                     ('Use parent-directory worktree scope', 'no'), ('Agent memory limit', ''),
                     ('Agent CPU limit', ''), ('Agent process limit', ''), ('Session lifetime in seconds', ''),
                     ('Trust a host CA bundle', 'yes' if ca else 'no')]
         if ca:
-            answers += [('CA bundle file', '/etc/ssl/certs/ca-certificates.crt')]
+            # The engine and the runner both see the bundle at this native path.
+            bundle = self.base / 'ca-bundle.pem'
+            shutil.copyfile('/etc/ssl/certs/ca-certificates.crt', bundle)
+            answers += [('CA bundle file', str(bundle))]
         answers += [('Managed launch command path', str(self.command)),
                     ('Podman launch endpoint', self.env['CONTAINER_HOST'])]
         if mode == 'provider':
@@ -120,6 +138,10 @@ class SetupRuntime(unittest.TestCase):
         first = json.loads((release / 'setup.json').read_text())
         self.tags.add(first['image'])
         self.assertEqual(first['network'], 'provider')
+        self.assertEqual(first['schema_version'], 3)
+        self.assertRegex(first['engine_image'], r'^(?:sha256:)?[0-9a-f]{64}$')
+        self.assertNotIn('podman', first)
+        self.assertNotIn('delegation_socket', first)
         guard = (release / 'network/bin/sandbox-egress-guard').read_bytes()
         # No exported wrapper/network settings in this fresh launch environment.
         result = subprocess.run([str(self.command), '--version'], cwd=self.workspace,
@@ -148,8 +170,9 @@ class SetupRuntime(unittest.TestCase):
         self.assertEqual(set(self.root.joinpath('releases').iterdir()), old_candidates)
         self.proxy_selection.write_text(current_proxy)
         for line in output.splitlines():
-            if 'Prepared runtime image tag: ' in line:
-                self.tags.add(line.split('Prepared runtime image tag: ', 1)[1].strip())
+            for prefix in ('Prepared runtime image tag: ', 'Prepared engine image tag: '):
+                if prefix in line:
+                    self.tags.add(line.split(prefix, 1)[1].strip())
         code, output = self.setup_run('provider')
         self.assertEqual(code, 0, output)
         second = (self.root / 'current').resolve()
@@ -181,8 +204,9 @@ class SetupRuntime(unittest.TestCase):
         self.assertFalse((self.root / '.setup.lock').exists())
         # Capture only setup-owned tags from failure reporting for cleanup.
         for line in output.splitlines():
-            if 'Prepared runtime image tag: ' in line:
-                self.tags.add(line.split('Prepared runtime image tag: ', 1)[1].strip())
+            for prefix in ('Prepared runtime image tag: ', 'Prepared engine image tag: '):
+                if prefix in line:
+                    self.tags.add(line.split(prefix, 1)[1].strip())
 
     def test_unrestricted_fresh_setup_and_shell(self):
         code, output = self.setup_run('unrestricted')
@@ -213,8 +237,9 @@ class SetupRuntime(unittest.TestCase):
         (self.base / 'withhold-runtime').touch()
         code, output = self.setup_run('unrestricted')
         for line in output.splitlines():
-            if 'Prepared runtime image tag: ' in line:
-                self.tags.add(line.split('Prepared runtime image tag: ', 1)[1].strip())
+            for prefix in ('Prepared runtime image tag: ', 'Prepared engine image tag: '):
+                if prefix in line:
+                    self.tags.add(line.split(prefix, 1)[1].strip())
         self.assertEqual(code, 0, output)
         self.assertIn('Runtime build requested', output)
         release = (self.root / 'current').resolve()

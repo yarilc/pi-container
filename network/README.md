@@ -86,13 +86,19 @@ Each session proxy has `--pids-limit=128 --memory=256m` for each controller
 the rootless engine delegates; reported controllers count as delegated only
 with the `systemd` cgroup manager, because a rootless `cgroupfs` engine reports
 controllers but applies no limits. Without `pids`, the process budget falls back to
-`--ulimit nproc=128:128` when the engine kernel is Linux 5.14 or later, which
-counts the process rlimit per container. This is the same rule as the agent's,
-in `network/agent_budgets.py`. Otherwise the budget is unenforced and announced
-with the reason. After readiness, the session helper performs bounded inspect
-and exec checks of its actual cgroup v2 `pids.max=128` and
-`memory.max=268435456`, or of the single `RLIMIT_NPROC` entry and the effective
-`Max processes` of 128 under the fallback. It also checks zero capability sets,
+a process rlimit of 128 when the engine kernel is Linux 5.14 or later, which
+counts it per user namespace. This is the same rule as the agent's, in
+`network/agent_budgets.py`. The proxy then starts with `--entrypoint /bin/sh`
+and the fixed step of `agent_budgets.process_step`, which sets the limit inside
+the proxy and executes the proxy image's own entrypoint and default command;
+`--ulimit nproc` is never used,
+because the engine applies it before creating the container's user namespace
+and the kernel then counts every container of the user against it. Otherwise
+the budget is unenforced and announced with the reason. After readiness, the
+session helper performs bounded inspect and exec checks of its actual cgroup v2
+`pids.max=128` and `memory.max=268435456`, or under the fallback of the created
+command (the step at 128), the absence of a configured `RLIMIT_NPROC` at or
+below 128, and the effective `Max processes` of 128. It also checks zero capability sets,
 NoNewPrivs and standard seccomp before any agent runs.
 `network/proxy_hardening.py` is protected installed code; its fixed probe runs
 inside the proxy without extra mounts or an administration endpoint. Unknown

@@ -31,7 +31,8 @@ script=$(readlink -f -- "${BASH_SOURCE[0]}")
 release=${script%/launcher/windows/bootstrap.sh}
 [[ "$release" != "$script" ]] || die "the bootstrap must run from launcher/windows in a release"
 # One read of the release: the profile name for messages, the managed command,
-# and whether the saved preferences leave Podman delegation off.
+# and whether the saved preferences still enable the removed host Podman
+# delegation (schema 2); schema 3 preferences no longer have the setting.
 read_release='import json, sys
 release = sys.argv[1]
 name = json.load(open(release + "/agent/profile.json"))["name"]
@@ -40,7 +41,7 @@ command = saved["command"]
 assert command.startswith("/") and "\n" not in command and "\r" not in command
 print(name)
 print(command)
-print("supported" if saved.get("podman") is False else "unsupported")'
+print("supported" if saved.get("podman", False) is False else "unsupported")'
 details=$(python3 -I -c "$read_release" "$release" 2>/dev/null) \
     || die "the installation in $release is incomplete; rerun setup from Windows with --container-setup"
 prefix=${details%%$'\n'*}
@@ -49,8 +50,8 @@ managed_command=${details%%$'\n'*}
 # Saved delegation would apply to every launch without a Windows variable; the
 # shim refuses only the variable. Saved network modes are the launcher's to check.
 [[ "${details#*$'\n'}" == supported ]] \
-    || die "the installation in $release saved Podman delegation, which Podman machine on Windows does not" \
-        "support; rerun setup from Windows with --container-setup"
+    || die "the installation in $release saved host Podman delegation, which was removed; rerun setup from" \
+        "Windows with --container-setup, which removes the setting"
 
 # Only a distribution that Podman started has the user's runtime directory;
 # after a start by wsl.exe alone no podman command works (design D6).

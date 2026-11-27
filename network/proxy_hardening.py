@@ -7,6 +7,10 @@ import sys
 PIDS_LIMIT = 128
 MEMORY_LIMIT = 256 * 1024 * 1024
 PROCESS = ('cgroup', 'rlimit', 'none')
+# On the process rlimit fallback the proxy starts with this step, which sets
+# the limit inside the proxy and executes the proxy program that follows it:
+# the text of agent_budgets.process_step(PIDS_LIMIT), which is not imported here.
+STEP = ['/bin/sh', '-c', f'{{ ulimit -u {PIDS_LIMIT} 2>/dev/null || ulimit -p {PIDS_LIMIT}; }} && exec "$0" "$@"']
 
 
 def process_rlimit(text):
@@ -45,12 +49,14 @@ def probe():
     }
 
 
-def verify(config, effective, enforced=('memory', 'pids'), process=None):
+def verify(config, effective, enforced=('memory', 'pids'), process=None, command=None):
     """Exact enforced budgets; budgets whose controller is not delegated must be absent.
 
-    The process budget uses the pids cgroup, the process rlimit fallback (exactly
-    one RLIMIT_NPROC entry at the budget, measured in the proxy) or nothing; an
-    engine default process rlimit is not a budget and is otherwise accepted.
+    The process budget uses the pids cgroup, the process rlimit fallback or
+    nothing. On the fallback the created command ([.Path, .Args]) starts with
+    STEP, no configured RLIMIT_NPROC is at or below the budget (a higher one is
+    the engine's default from the user's own limits), and the limit is measured
+    in the proxy. An engine default process rlimit is otherwise accepted.
     """
     if process is None:
         process = 'cgroup' if 'pids' in enforced else 'none'
@@ -68,9 +74,16 @@ def verify(config, effective, enforced=('memory', 'pids'), process=None):
     if type(rlimits) is not list or any(type(entry) is not dict for entry in rlimits):
         raise ValueError('proxy configured budgets differ')
     nproc = [entry for entry in rlimits if entry.get('Name') == 'RLIMIT_NPROC']
-    if process == 'rlimit' and (len(nproc) != 1 or any(
-            type(nproc[0].get(key)) is not int or nproc[0][key] != PIDS_LIMIT for key in ('Soft', 'Hard'))):
-        raise ValueError('proxy configured budgets differ')
+    if process == 'rlimit':
+        # A limit the engine applies at creation is shared by every container of the user.
+        if any(type(entry.get(key)) is not int or entry[key] <= PIDS_LIMIT
+               for entry in nproc for key in ('Soft', 'Hard')):
+            raise ValueError('proxy configured budgets differ')
+        # The step, then the proxy program it executes.
+        if type(command) is not list or len(command) != 2 or type(command[1]) is not list or \
+                [command[0], *command[1][:len(STEP) - 1]] != STEP or len(command[1]) < len(STEP) or \
+                any(type(part) is not str for part in command[1]) or not command[1][len(STEP) - 1]:
+            raise ValueError('proxy command does not set the process rlimit')
     measured = effective.get('nproc')
     if type(measured) is not list or len(measured) != 2 or \
             any(value is not None and type(value) is not int for value in measured) or \
@@ -100,9 +113,10 @@ if __name__ == '__main__':
     try:
         if sys.argv[1:] == ['probe']:
             print(json.dumps(probe(), sort_keys=True))
-        elif len(sys.argv) == 6 and sys.argv[1] == 'verify':
+        elif len(sys.argv) in (6, 7) and sys.argv[1] == 'verify':
             enforced = tuple(name for name in sys.argv[4].split(',') if name)
-            verify(read_record(sys.argv[2]), read_record(sys.argv[3]), enforced, sys.argv[5])
+            verify(read_record(sys.argv[2]), read_record(sys.argv[3]), enforced, sys.argv[5],
+                   read_record(sys.argv[6]) if len(sys.argv) == 7 else None)
         else:
             raise ValueError('invalid operation')
     except (OSError, ValueError, KeyError, TypeError, IndexError):
@@ -116,7 +130,8 @@ if __name__ == '__main__':
             except ImportError:
                 pass
         print(prefix + 'proxy hardening unavailable or invalid; require effective '
-              'cgroup v2 pids=128/memory=256MiB where delegated, or a process rlimit of 128 under the '
-              'process rlimit fallback, zero capabilities, no-new-privileges and standard seccomp; '
-              'inspect rootless controller delegation and the proxy image', file=sys.stderr)
+              'cgroup v2 pids=128/memory=256MiB where delegated, or under the process rlimit fallback '
+              'a process rlimit of 128 set by the proxy\'s first process, zero capabilities, '
+              'no-new-privileges and standard seccomp; inspect rootless controller delegation and the '
+              'proxy image', file=sys.stderr)
         sys.exit(1)

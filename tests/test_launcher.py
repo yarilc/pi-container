@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 import time
 import signal
+import re
 import shutil
 import unittest
 
@@ -76,7 +77,7 @@ def synthetic_install(base, root, wrapper_name):
     shutil.copyfile(root / 'network/proxy_hardening.py', install / 'network/proxy_hardening.py')
     shutil.copyfile(root / 'network/platform_check.py', install / 'network/platform_check.py')
     for name in ('network/session.py', 'network/agent_profile.py', 'network/agent_budgets.py', 'network/policy.py',
-                 'network/revisions.py', 'agent/profile.json', 'setup/common.py', 'setup/toolchains.py',
+                 'network/revisions.py', 'agent/profile.json', 'setup/common.py', 'setup/toolchains.py', 'setup/engine.py',
                  'Containerfile', '.containerignore', 'network/relay.py', 'network/mux.py',
                  'launcher/core.sh', 'agent/launcher.sh'):
         (install / name).parent.mkdir(parents=True, exist_ok=True)
@@ -94,6 +95,8 @@ if args[0]=='snapshot':
  s=socket.socket(socket.AF_UNIX); s.bind(str(p/'transport/proxy.sock')); s.close()
  (p/'transport/ready').write_text('fixture-policy guard='+ 'c'*64 +' mux=1 tls=' + TLS_ENFORCEMENT + '\\n')
  print('fixture-policy')
+elif args[0]=='qualification-input':
+ print('e'*32+' 0')
 ''')
     return wrapper
 
@@ -128,7 +131,6 @@ class LauncherTests(unittest.TestCase):
         self.socket_path = self.base / 'podman.sock'
         self.socket.bind(str(self.socket_path))
         self.addCleanup(self.socket.close)
-        self.env['FIXTURE_SHELL_PODMAN_SOCKET'] = str(self.socket_path)
         self.library = self.base / 'host-home/.local/share/sandbox-toolchains'
 
     def run_wrapper(self, *args, cwd=None, caller_umask=-1, **env):
@@ -141,6 +143,18 @@ class LauncherTests(unittest.TestCase):
 
     def create(self):
         return next(c for c in self.calls() if c[0] == 'create')
+
+    def created_command(self, create):
+        # The arguments after the image, which follows --env CONTAINER_NAME=<name>.
+        return create[next(i for i, a in enumerate(create) if a.startswith('CONTAINER_NAME=')) + 2:]
+
+    @staticmethod
+    def step(limit=512):
+        # The process rlimit step: /bin/sh sets the limit, then executes the entry program.
+        return ['-c', f'{{ ulimit -u {limit} 2>/dev/null || ulimit -p {limit}; }} && exec "$0" "$@"']
+
+    def has_step(self, create, limit=512):
+        return self.created_command(create)[:2] == self.step(limit)
 
     def wait_marker(self, proc, suffix):
         marker = Path(str(self.log) + suffix)
@@ -192,7 +206,7 @@ class LauncherTests(unittest.TestCase):
             env=self.env | {'PATH': str(help_bin), 'OTHER_AGENT_YOLO': 'invalid'},
             text=True, capture_output=True)
         self.assertEqual(result.returncode, 0)
-        self.assertIn('beyond the workspace', result.stdout)
+        self.assertIn('Host Podman delegation was removed: FIXTURE_SHELL_PODMAN=1 stops startup.', result.stdout)
         self.assertFalse(self.calls())
         self.assertFalse(self.state.exists())
 
@@ -351,20 +365,36 @@ class LauncherTests(unittest.TestCase):
         self.assertIn('stdin:input payload', result.stdout)
         self.assertEqual(self.state.stat().st_mode & 0o777, 0o700)
 
-    def test_delegation_only_follows_the_exact_opt_in(self):
-        # An agent approval variable has no effect on the shell.
+    def test_leftover_delegation_opt_in_is_refused(self):
+        # An agent approval variable has no effect on the shell. Host Podman
+        # delegation was removed: no value mounts a socket, and the exact old
+        # opt-in stops every launch before any engine query.
         for yolo in ('0', '1'):
-            for service in ('0', '1'):
-                with self.subTest(yolo=yolo, service=service):
-                    self.log.unlink(missing_ok=True)
-                    result = self.run_wrapper('-c', 'test', OTHER_AGENT_YOLO=yolo,
-                                              FIXTURE_SHELL_PODMAN=service)
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertNotIn('--dangerously-skip-permissions', self.create())
-                    self.assertEqual(self.create()[-2:], ['-c', 'test'])
-                    self.assertEqual('CONTAINER_HOST=unix:///run/podman/podman.sock' in self.create(), service == '1')
-                    self.assertNotIn('--privileged', self.create())
-                    self.assertFalse(any('label=disable' in a for a in self.create()))
+            with self.subTest(yolo=yolo):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper('-c', 'test', OTHER_AGENT_YOLO=yolo)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                create = self.create()
+                self.assertNotIn('--dangerously-skip-permissions', create)
+                self.assertEqual(create[-2:], ['-c', 'test'])
+                self.assertNotIn('--privileged', create)
+                self.assertFalse(any('label=disable' in a for a in create))
+        for value in ('', '0', 'true', 'yes', '01', 'maybe'):
+            with self.subTest(value=value):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper('-c', 'test', FIXTURE_SHELL_PODMAN=value)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                create = self.create()
+                self.assertFalse(any('podman.sock' in a for a in create))
+                self.assertIn('CONTAINER_HOST', [a for i, a in enumerate(create[1:]) if create[i] == '--unsetenv'])
+        for options in ((), ('-c', 'true'), ('--container-shell',), ('--container-build',)):
+            with self.subTest(options=options):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(*options, FIXTURE_SHELL_PODMAN='1')
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('FIXTURE_SHELL_PODMAN=1: host Podman delegation was removed', result.stderr)
+                self.assertIn('--container-toolchain add', result.stderr)
+                self.assertEqual(self.calls(), [])
 
     def test_boolean_forms_and_invalid_values(self):
         for value in ('1', 'true', 'TrUe', 'yes', 'YES', '', '0', 'false', 'FALSE', 'no', 'NO'):
@@ -433,14 +463,21 @@ class LauncherTests(unittest.TestCase):
         self.assertIn('Toolchain library: ' + str(self.library), result.stdout)
         self.assertIn('No toolchains are installed.', result.stdout)
         self.assertEqual(self.calls(), [])
+        usage = 'usage: --container-toolchain add <recipe.json|name> | list | remove <name> | verify [<name>]'
         for args, message in ((('--version', '--container-toolchain', 'list'), 'must be the first argument'),
-                              (('--container-toolchain', 'launch-env'), 'usage'),
-                              (('--container-toolchain',), 'usage')):
+                              (('--container-toolchain', 'launch-env'), usage),
+                              (('--container-toolchain',), usage)):
             with self.subTest(args=args):
                 result = self.run_wrapper(*args)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(message, result.stderr)
                 self.assertFalse(any(c[0] in ('create', 'build') for c in self.calls()))
+        # Help names catalog recipes and says that add fetches without maintenance consent.
+        result = self.run_wrapper('--container-help')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('add <recipe.json|name> | list | remove <name> | verify [<name>]', result.stdout)
+        self.assertIn('add pulls pinned images and downloads pinned archives itself', result.stdout)
+        self.assertFalse(any(c[0] in ('create', 'build', 'pull') for c in self.calls()))
 
     def test_toolchain_library_created_private_and_mounted_read_only(self):
         self.assertFalse(self.library.exists())
@@ -464,6 +501,230 @@ class LauncherTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(path, result.stderr)
                 self.assertFalse(any(c[0] in ('create', 'build', 'image', 'pull') for c in self.calls()))
+
+    # Session container engine (session-container-engine)
+
+    ENGINE = 'e' * 64
+
+    def image_library(self):
+        """A library whose index lists an image toolchain, so sessions get a container engine."""
+        self.library.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.library, 0o700)
+        (self.library / 'index.json').write_text(json.dumps({'schema': 1, 'toolchains': [{
+            'name': 'db', 'version': '16', 'default': False, 'commands': [], 'path': [], 'env': {}, 'requires': [],
+            'notes': [], 'check': ['true'], 'source': [], 'verified': {'base': 'x', 'date': '2026-11-24'},
+            'images': [{'reference': 'docker.io/library/db@sha256:' + 'a' * 64, 'image_id': 'd' * 64}]}]}))
+        default = self.base / 'default-seccomp.json'
+        default.write_text(json.dumps({'syscalls': [{'names': ['read'], 'action': 'SCMP_ACT_ALLOW'}]}))
+        return {'FAKE_SECCOMP': str(default)}
+
+    def engine_run(self):
+        return next((c for c in self.calls() if c[:2] == ['run', '--detach']), None)
+
+    def test_session_engine_owns_the_network_and_joins_the_session(self):
+        # session-container-engine: Engine for sessions with library images / Loopback endpoint /
+        # Engine mounts only the workspace and the image store / Engine lifecycle follows the session.
+        engine_env = self.image_library()
+        restricted = self.restricted_fixture()
+        for mode, values in (('unrestricted', {}), ('offline', restricted)):
+            with self.subTest(mode=mode):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper('-c', 'true', **(values | engine_env | {'FIXTURE_SHELL_NETWORK': mode}))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                run, create = self.engine_run(), self.create()
+                self.assertIsNotNone(run)
+                calls = self.calls()
+                self.assertLess(calls.index(run), calls.index(create))
+                # support-nested-systemd-containers: the startup program runs as the user
+                # namespace's root with CHOWN, without --init (design D1).
+                for option in ('--rm', '--userns=keep-id:uid=1000,gid=1000', '--cap-drop=all',
+                               '--cap-add=SETUID,SETGID,SYS_CHROOT,CHOWN', '--security-opt=no-new-privileges',
+                               '--http-proxy=false'):
+                    self.assertIn(option, run)
+                self.assertNotIn('--init', run)
+                self.assertEqual(run[run.index('--user') + 1], '0:0')
+                name = run[run.index('--name') + 1]
+                self.assertTrue(name.startswith('my-project-engine-'), name)
+                self.assertEqual(run[-2:], ['localhost/fixture-shell-engine:latest', '2375'])
+                volumes = [run[i + 1] for i, arg in enumerate(run) if arg == '--volume']
+                workspace = str(self.project.resolve())
+                self.assertEqual(volumes, ['/var/lib/sandbox-engine',
+                                           str(self.library / '.images/storage') + ':/var/lib/shared:ro',
+                                           workspace + ':' + workspace + ':rw'])
+                labels = [run[i + 1] for i, arg in enumerate(run) if arg == '--label']
+                self.assertTrue(any(re.fullmatch(r'sandbox-engine\.owner=[0-9]+-[0-9]+', label) for label in labels))
+                self.assertIn('sandbox-engine.store=' + str(self.library / '.images'), labels)
+                self.assertEqual('--network=none' in run, mode == 'offline')
+                self.assertFalse([arg for arg in create if arg.startswith('--network=')])
+                self.assertEqual(create[create.index('--network') + 1], 'container:' + self.ENGINE)
+                self.assertTrue(any(arg.endswith(':/etc/hosts:ro') for arg in create))
+                for variable in ('CONTAINER_HOST', 'DOCKER_HOST'):
+                    self.assertIn(variable + '=tcp://127.0.0.1:2375', create)
+                    self.assertNotIn(variable, [a for i, a in enumerate(create[1:]) if create[i] == '--unsetenv'])
+                self.assertIn(['exec', '--user', 'podman', self.ENGINE, 'podman', '--remote', '--url',
+                               'tcp://127.0.0.1:2375', 'info', '--format', '{{.Host.Security.Rootless}}'], calls)
+                # Every launcher command in the engine runs as its user (design D4).
+                in_engine = [call for call in calls if call[0] == 'exec' and self.ENGINE in call]
+                self.assertTrue(in_engine)
+                self.assertEqual([call[:4] for call in in_engine],
+                                 [['exec', '--user', 'podman', self.ENGINE]] * len(in_engine))
+                self.assertIn(['rm', '--force', '--volumes', '--time', '0', '--ignore', self.ENGINE], calls)
+                hosts = Path(str(self.log) + '.hosts').read_text()
+                self.assertIn('127.0.0.1\tlocalhost\n', hosts)
+                self.assertIn('127.0.0.1\t' + 'a' * 12 + ' my-project-', hosts)
+                self.assertIn('the session budgets apply to it as well', result.stderr)
+                # The engine gets the session budgets, verified like the agent's (design D7).
+                budgets = [arg for arg in create if arg.startswith(('--memory=', '--cpus=', '--pids-limit='))]
+                self.assertTrue(budgets)
+                self.assertEqual(budgets, [arg for arg in run if arg.startswith(('--memory=', '--cpus=', '--pids-limit='))])
+
+    def test_no_engine_without_images_or_without_the_library(self):
+        # session-container-engine: Library without images / Library mount disabled.
+        result = self.run_wrapper('-c', 'true')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(self.engine_run())
+        unsets = [a for i, a in enumerate(self.create()[1:]) if self.create()[i] == '--unsetenv']
+        self.assertIn('CONTAINER_HOST', unsets)
+        self.assertIn('DOCKER_HOST', unsets)
+        engine_env = self.image_library()
+        self.log.unlink()
+        result = self.run_wrapper('-c', 'true', FIXTURE_SHELL_TOOLCHAINS='0', **engine_env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(self.engine_run())
+        self.assertFalse([arg for arg in self.create() if arg.startswith('CONTAINER_HOST=')])
+
+    def test_engine_failures_stop_the_launch_before_the_session(self):
+        # session-container-engine: Engine fails to start.
+        engine_env = self.image_library()
+        sleep = self.bin / 'sleep'
+        sleep.write_text('#!/bin/sh\nexit 0\n')
+        sleep.chmod(0o755)
+        cases = ({'FAKE_ENGINE_IMAGE_STATUS': '1'}, 'container engine image', False),
+        cases += (({'FAKE_ENGINE_STATUS': '125'}, 'cannot start the container engine', False),
+                  ({'FAKE_ENGINE_READY': 'false'}, 'did not answer as a rootless engine', True),
+                  ({'FAKE_ENGINE_BUDGETS': '1 1 1 []'}, 'container engine resource budgets were not applied', True))
+        for extra, message, started in cases:
+            with self.subTest(message=message):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper('-c', 'true', **(engine_env | extra))
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(message, result.stderr)
+                self.assertFalse([c for c in self.calls() if c[0] == 'create'])
+                removed = ['rm', '--force', '--volumes', '--time', '0', '--ignore', self.ENGINE] in self.calls()
+                self.assertEqual(removed, started)
+
+    def test_signal_removes_the_engine_with_the_session(self):
+        # session-container-engine: Engine lifecycle follows the session / Session ends.
+        engine_env = self.image_library()
+        proc = subprocess.Popen([str(WRAPPER)], cwd=self.project, env=self.env | engine_env | {'FAKE_WAIT': '1'},
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        deadline = time.monotonic() + 15
+        while not Path(str(self.log) + '.started').exists():
+            self.assertLess(time.monotonic(), deadline, 'the fake engine never started the session container')
+            time.sleep(0.02)
+        proc.terminate()
+        proc.communicate(timeout=25)
+        self.assertEqual(proc.returncode, 143)
+        self.assertIn(['rm', '--force', '--volumes', '--time', '0', '--ignore', self.ENGINE], self.calls())
+
+    def test_engine_budgets_follow_the_agent_rules(self):
+        # session-container-engine: Engine budgets / Delegated controllers / Cgroupfs engine.
+        engine_env = self.image_library()
+        for manager, kernel in (('systemd', '6.6.87.2-microsoft-standard-WSL2'), ('cgroupfs', '6.6.87.2'),
+                                ('cgroupfs', '5.4.0')):
+            with self.subTest(manager=manager, kernel=kernel):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper('-c', 'true', FAKE_CGROUP_MANAGER=manager, FAKE_KERNEL=kernel, **engine_env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                run, create = self.engine_run(), self.create()
+                budget = ('--memory=', '--cpus=', '--pids-limit=')
+                self.assertEqual([a for a in run if a.startswith(budget)], [a for a in create if a.startswith(budget)])
+                self.assertEqual('--memory=4294967296' in run, manager == 'systemd')
+                # On the process rlimit fallback the engine's entrypoint sets the limit
+                # given after the port; the engine applies no process rlimit.
+                fallback = manager == 'cgroupfs' and kernel != '5.4.0'
+                self.assertNotIn('--ulimit', run)
+                self.assertEqual(run[run.index('localhost/fixture-shell-engine:latest') + 1:],
+                                 ['2375', '512'] if fallback else ['2375'])
+                self.assertEqual(self.has_step(create), fallback)
+                self.assertEqual(['exec', '--user', 'podman', self.ENGINE, 'grep', '^Max processes ', '/proc/1/limits']
+                                 in self.calls(), fallback)
+
+    def test_engine_process_rlimit_is_verified_before_the_session(self):
+        # set-process-limits-inside-containers: the engine's first process, its startup
+        # program (support-nested-systemd-containers), must run with the budget; an exec
+        # process would show the engine's default.
+        engine_env = self.image_library() | {'FAKE_CGROUP_MANAGER': 'cgroupfs'}
+        result = self.run_wrapper('-c', 'true', **engine_env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for env, message in (
+                ({'FAKE_ENGINE_LIMIT': '63948 63948'}, 'does not run with the process rlimit fallback'),
+                ({'FAKE_ENGINE_LIMIT': '512 1024'}, 'does not run with the process rlimit fallback'),
+                ({'FAKE_ENGINE_LIMIT': '256 256'}, 'does not run with the process rlimit fallback'),
+                ({'FAKE_ENGINE_LIMIT': 'missing'}, 'cannot read the process rlimit of the container engine'),
+                ({'FAKE_ENGINE_COMMAND': json.dumps(['/usr/local/bin/sandbox-engine-start', '2375'])},
+                 'container engine resource budgets were not applied'),
+                ({'FAKE_ENGINE_COMMAND': json.dumps(['/usr/local/bin/sandbox-engine-start', '2375', '256'])},
+                 'container engine resource budgets were not applied'),
+                # An engine still started under --init, or by its services directly.
+                ({'FAKE_ENGINE_COMMAND': json.dumps(['/run/podman-init', '--', '/usr/local/bin/sandbox-engine-start',
+                                                      '2375', '512'])}, 'container engine resource budgets were not applied'),
+                ({'FAKE_ENGINE_COMMAND': json.dumps(['/usr/local/bin/sandbox-engine', '2375', '512'])},
+                 'container engine resource budgets were not applied'),
+                ({'FAKE_ENGINE_BUDGETS': '0 0 -1 [RLIMIT_NPROC=512:512,]'},
+                 'container engine resource budgets were not applied')):
+            with self.subTest(env=env):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper('-c', 'true', **engine_env, **env)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(message, result.stderr)
+                self.assertFalse(any(c[0] == 'create' for c in self.calls()))
+                self.assertIn(['rm', '--force', '--volumes', '--time', '0', '--ignore', self.ENGINE], self.calls())
+
+    def test_engine_cgroup_delegation_state_is_reported(self):
+        # support-nested-systemd-containers: Ineligible engines are announced; a
+        # delegated engine is silent, and any other state stops the launch.
+        engine_env = self.image_library()
+        notice = 'systemd containers and explicit limits for nested containers are unavailable'
+        for state, status, message in (
+                (None, 0, None),
+                ('ineligible: /sys/fs/cgroup is mounted without nsdelegate', 0,
+                 notice + ': /sys/fs/cgroup is mounted without nsdelegate'),
+                ('eligible', 1, 'reports an unexpected cgroup delegation state'),
+                ('delegated extra', 1, 'reports an unexpected cgroup delegation state'),
+                ('fail', 1, 'cannot read the cgroup delegation state'),
+                ('ineligible: \x1b[2Jcleared', 1, 'invalid cgroup delegation state'),
+                ('ineligible: ', 1, 'invalid cgroup delegation state'),
+                ('delegated\r', 1, 'invalid cgroup delegation state')):
+            with self.subTest(state=state):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper('-c', 'true', **engine_env,
+                                          **({} if state is None else {'FAKE_ENGINE_CGROUP': state}))
+                self.assertEqual(result.returncode, status, result.stderr)
+                calls = self.calls()
+                self.assertIn(['exec', '--user', 'podman', self.ENGINE, '/usr/local/bin/sandbox-engine-cgroup'], calls)
+                if status == 0:
+                    self.assertTrue(any(call[0] == 'create' for call in calls))
+                    if message:
+                        self.assertIn(message, result.stderr)
+                    else:
+                        self.assertNotIn(notice, result.stderr)
+                    continue
+                self.assertIn(message, result.stderr)
+                self.assertFalse(any(call[0] == 'create' for call in calls))
+                self.assertIn(['rm', '--force', '--volumes', '--time', '0', '--ignore', self.ENGINE], calls)
+
+    def test_engines_of_launchers_that_no_longer_run_are_removed(self):
+        # session-container-engine: Session-owned engine storage / Interrupted session.
+        engine_env = self.image_library()
+        fields = Path('/proc/self/stat').read_text().rsplit(') ', 1)[1].split()
+        alive = f'{os.getpid()}-{fields[19]}'
+        listing = 'f' * 64 + ' 1-1\\n' + 'c' * 64 + ' ' + alive + '\\n'
+        result = self.run_wrapper('-c', 'true', FAKE_ENGINES=listing, **engine_env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        removed = [c[-1] for c in self.calls() if c[:2] == ['rm', '--force']]
+        self.assertIn('f' * 64, removed)
+        self.assertNotIn('c' * 64, removed)
 
     def test_toolchain_mount_can_be_disabled(self):
         for value in ('0', 'false', 'no'):
@@ -566,8 +827,6 @@ class LauncherTests(unittest.TestCase):
         values = self.restricted_fixture()
         cases = [(mode, state, flags, {}) for mode in ('offline', 'unrestricted')
                  for state in ('', str(self.state)) for flags in ((), ('--container-shell',))]
-        cases += [('unrestricted', str(self.state), flags, {'FIXTURE_SHELL_PODMAN': '1'})
-                  for flags in ((), ('--container-shell',))]
         for mode, state, flags, extra in cases:
             with self.subTest(mode=mode, state=state, flags=flags, extra=extra):
                 self.log.unlink(missing_ok=True)
@@ -592,6 +851,48 @@ class LauncherTests(unittest.TestCase):
                 self.assertEqual(agent_inspect[0][-1], OWNED_ID)
                 if '--container-shell' not in flags:
                     self.assertNotIn('lifetime limit', result.stderr)
+
+    def test_process_rlimit_step_wraps_the_entry_program(self):
+        # set-process-limits-inside-containers, design D1 and D2: on the fallback the
+        # session's first process sets the limit, then executes the entry program.
+        restricted = self.restricted_fixture()
+        guard = '/opt/sandbox-egress/guard'
+        rlimit, cgroup, none = {'FAKE_CONTROLLERS': '[cpu memory]'}, {}, {'FAKE_CONTROLLERS': '[cpu memory]',
+                                                                            'FAKE_KERNEL': '5.10.0'}
+        for mode, values, init, entry in (('unrestricted', {}, True, '/bin/bash'), ('offline', restricted, False, guard)):
+            for mechanism, env in (('rlimit', rlimit), ('cgroup', cgroup), ('none', none)):
+                with self.subTest(mode=mode, mechanism=mechanism):
+                    self.log.unlink(missing_ok=True)
+                    result = self.run_wrapper('-c', 'true', **(values | env | {'FIXTURE_SHELL_NETWORK': mode}))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    create = self.create()
+                    self.assertNotIn('--ulimit', create)
+                    self.assertEqual(create.count('--entrypoint'), 1)
+                    self.assertEqual('--init' in create, init)
+                    application = (['/bin/bash', '-c', 'true'] if mode == 'unrestricted'
+                                   else ['--offline', '--', '/bin/bash', '-c', 'true'])
+                    inspected = [c[-2] for c in self.calls() if c[0] == 'inspect' and c[-1] == OWNED_ID]
+                    if mechanism == 'rlimit':
+                        self.assertEqual(create[create.index('--entrypoint') + 1], '/bin/sh')
+                        self.assertEqual(self.created_command(create),
+                                         [*self.step(), entry, *application[mode == 'unrestricted':]])
+                        self.assertEqual(inspected[1:], ['{{.Path}}', *(f'{{{{index .Args {i}}}}}'
+                                                                        for i in range(3 + 2 * init))])
+                    else:
+                        self.assertEqual(create[create.index('--entrypoint') + 1], entry)
+                        self.assertEqual(self.created_command(create), application[mode == 'unrestricted':])
+                        self.assertEqual(len(inspected), 1)
+        # The qualification probe goes through the same launch and gets the same step.
+        input_file = self.base / 'qualification/input.json'
+        input_file.parent.mkdir()
+        input_file.write_text('{}')
+        self.log.unlink(missing_ok=True)
+        result = self.run_wrapper('--container-qualify-probe', **restricted, **rlimit,
+                                  FIXTURE_SHELL_QUALIFICATION_INPUT=str(input_file))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.created_command(self.create()),
+                         [*self.step(), guard, '--offline', '--', '/usr/bin/python3', '-I',
+                          '/opt/sandbox-egress/qualification_probe.py', 'probe'])
 
     def test_budget_overrides_and_rejections_precede_engine(self):
         result = self.run_wrapper(FIXTURE_SHELL_MEMORY_LIMIT='8G', FIXTURE_SHELL_CPU_LIMIT='1.5',
@@ -655,7 +956,8 @@ class LauncherTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     create = self.create()
                     self.assertEqual('--pids-limit=512' in create, mechanism == 'cgroup')
-                    self.assertEqual('nproc=512:512' in create, mechanism == 'rlimit')
+                    self.assertEqual(self.has_step(create), mechanism == 'rlimit')
+                    self.assertNotIn('--ulimit', create)
                     if mechanism == 'none':
                         self.assertIn(agent_budgets.fallback_reason(kernel), result.stderr)
         # Delegation: the same cgroup manager rule in Bash and Python.
@@ -670,7 +972,7 @@ class LauncherTests(unittest.TestCase):
                     self.assertEqual(any(a.startswith('--memory=') for a in create), 'memory' in delegated)
                     self.assertEqual(any(a.startswith('--cpus=') for a in create), 'cpu' in delegated)
                     self.assertEqual('--pids-limit=512' in create, 'pids' in delegated)
-                    self.assertEqual('nproc=512:512' in create,
+                    self.assertEqual(self.has_step(create),
                                      agent_budgets.process_mechanism(delegated, '6.6.87.2') == 'rlimit')
                     for controller in {'memory', 'cpu', 'pids'} - set(delegated):
                         self.assertIn(agent_budgets.cgroup_reason(controller, manager), result.stderr)
@@ -707,9 +1009,8 @@ class LauncherTests(unittest.TestCase):
                         self.assertEqual(notices[name] in result.stderr, name not in present)
                     self.assertEqual(flags['pids'] in create, not missing_pids)
                     self.assertEqual('--pids-limit=-1' in create, missing_pids)
-                    self.assertEqual('--ulimit' in create, missing_pids and fallback)
-                    if missing_pids and fallback:
-                        self.assertEqual(create[create.index('--ulimit') + 1], 'nproc=512:512')
+                    self.assertNotIn('--ulimit', create)
+                    self.assertEqual(self.has_step(create), missing_pids and fallback)
                     self.assertEqual(rlimit_notice in result.stderr, missing_pids and fallback)
                     self.assertEqual(notices['pids'] in result.stderr, missing_pids and not fallback)
                     self.assertEqual(reason != '' and reason in result.stderr, missing_pids and not fallback)
@@ -725,7 +1026,8 @@ class LauncherTests(unittest.TestCase):
         self.assertFalse(any(a.startswith(('--memory=', '--cpus=')) for a in create))
         self.assertNotIn('--pids-limit=512', create)
         self.assertIn('--pids-limit=-1', create)
-        self.assertEqual(create[create.index('--ulimit') + 1], 'nproc=512:512')
+        self.assertNotIn('--ulimit', create)
+        self.assertTrue(self.has_step(create))
         manager = 'the rootless engine uses the cgroupfs cgroup manager, which applies no cgroup limits'
         for budget in ('memory', 'CPU'):
             self.assertIn(f'agent {budget} budget not enforced: {manager}', result.stderr)
@@ -735,7 +1037,7 @@ class LauncherTests(unittest.TestCase):
         result = self.run_wrapper(FAKE_CONTROLLERS='[cpu memory pids]', FAKE_CGROUP_MANAGER='cgroupfs',
                                   FAKE_KERNEL='5.10.0')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNotIn('--ulimit', self.create())
+        self.assertFalse(self.has_step(self.create()))
         self.assertIn(f'agent process budget not enforced: {manager}; kernel 5.10.0 counts', result.stderr)
         for env in (dict(FAKE_CGROUP_MANAGER=''), dict(FAKE_CGROUP_MANAGER='Systemd'),
                     dict(FAKE_CGROUP_MANAGER='system d'), dict(FAKE_CGROUP_MANAGER_RAW='systemd\\nsystemd\\n'),
@@ -751,7 +1053,7 @@ class LauncherTests(unittest.TestCase):
         result = self.run_wrapper(FAKE_CONTROLLERS='[cpu memory]', FIXTURE_SHELL_PIDS_LIMIT='1024')
         self.assertEqual(result.returncode, 0, result.stderr)
         create = self.create()
-        self.assertEqual(create[create.index('--ulimit') + 1], 'nproc=1024:1024')
+        self.assertTrue(self.has_step(create, 1024))
         self.assertIn('(1024 tasks of the session user', result.stderr)
         # The kernel is an engine query with the same record and failure rules as the others.
         for env in (dict(FAKE_KERNEL_RAW='6.6.87.2\\n5.10\\n'), dict(FAKE_KERNEL_RAW='6.6.87.2\\r\\n'),
@@ -787,8 +1089,7 @@ class LauncherTests(unittest.TestCase):
 
     def test_engine_default_secrets_are_masked_in_every_mode(self):
         mask = 'type=tmpfs,destination=/run/secrets,ro=true'
-        for args, env in (((), {}), (('--container-shell',), {}), (('--container-git-worktree',), {}),
-                          ((), {'FIXTURE_SHELL_PODMAN': '1'})):
+        for args, env in (((), {}), (('--container-shell',), {}), (('--container-git-worktree',), {})):
             with self.subTest(args=args, env=env):
                 self.log.unlink(missing_ok=True)
                 result = self.run_wrapper(*args, **env)
@@ -816,7 +1117,6 @@ class LauncherTests(unittest.TestCase):
         values = self.restricted_fixture()
         cases = [(mode, flags, {}) for mode in ('offline', 'unrestricted')
                  for flags in ((), ('--container-shell',), ('--container-git-worktree',))]
-        cases.append(('unrestricted', (), {'FIXTURE_SHELL_PODMAN': '1'}))
         for mode, flags, extra in cases:
             with self.subTest(mode=mode, flags=flags, extra=extra):
                 self.log.unlink(missing_ok=True)
@@ -841,27 +1141,42 @@ class LauncherTests(unittest.TestCase):
                 self.assertIn('controller delegation', result.stderr)
                 self.assertFalse(any(c[0] == 'start' for c in self.calls()))
                 self.assertTrue(any(c[0] == 'rm' and c[-1] == OWNED_ID for c in self.calls()))
-        # The process rlimit fallback: exactly one RLIMIT_NPROC entry at the budget and no cgroup limit.
+        # The process rlimit fallback (set-process-limits-inside-containers): no cgroup limit,
+        # no engine process rlimit at or below the budget, and the created command starts
+        # with the step that sets the budget. Each failure removes only the owned container.
         configured = '4294967296 2000000000 '
-        for reported in (configured + '-1 []', configured + '-1 [RLIMIT_NPROC=512:1024,]',
-                         configured + '-1 [RLIMIT_NPROC=256:256,]', configured + '-1 [RLIMIT_NPROC=1024:512,]',
-                         configured + '-1 [RLIMIT_NPROC=512:512,RLIMIT_NPROC=512:512,]',
-                         configured + '-1 [RLIMIT_NPROC=512:512,RLIMIT_NPROC=4096:4096,]',
-                         configured + '512 [RLIMIT_NPROC=512:512,]', configured + '-1 RLIMIT_NPROC=512:512',
-                         configured + '-1 [RLIMIT_NPROC=512:512]', configured + '-1', configured + '-1 [] extra'):
-            with self.subTest(fallback=reported):
+        shell = ['/run/podman-init', '--', '/bin/sh', *self.step(), '/bin/bash']
+        for reported, command in (
+                (configured + '-1 [RLIMIT_NPROC=512:512,]', None),
+                (configured + '-1 [RLIMIT_NPROC=256:63948,]', None),
+                (configured + '-1 [RLIMIT_NPROC=63948:512,]', None),
+                (configured + '-1 [RLIMIT_NPROC=63948:63948,RLIMIT_NPROC=100:100,]', None),
+                (configured + '512 []', None), (configured + '-1 RLIMIT_NPROC=63948:63948', None),
+                (configured + '-1 [RLIMIT_NPROC=63948:63948]', None), (configured + '-1', None),
+                (configured + '-1 [] extra', None),
+                (configured + '-1 []', ['/run/podman-init', '--', '/bin/bash']),
+                (configured + '-1 []', ['/bin/sh', *self.step(), '/bin/bash']),
+                (configured + '-1 []', [*shell[:3], *self.step(256), '/bin/bash']),
+                (configured + '-1 []', [*shell[:4], 'ulimit -u 512 && exec "$0" "$@"', '/bin/bash']),
+                (configured + '-1 []', [*shell[:5], '/usr/local/bin/other']),
+                (configured + '-1 []', shell[:4]), (configured + '-1 []', [])):
+            with self.subTest(fallback=reported, command=command):
                 self.log.unlink(missing_ok=True)
-                result = self.run_wrapper(FAKE_CONTROLLERS='[cpu memory]', FAKE_AGENT_BUDGETS=reported)
+                env = {} if command is None else {'FAKE_AGENT_COMMAND': json.dumps(command)}
+                result = self.run_wrapper('--container-shell', FAKE_CONTROLLERS='[cpu memory]',
+                                          FAKE_AGENT_BUDGETS=reported, **env)
                 self.assertEqual(result.returncode, 1)
                 self.assertIn('agent resource budgets were not applied', result.stderr)
                 self.assertIn('process rlimit fallback', result.stderr)
                 self.assertFalse(any(c[0] == 'start' for c in self.calls()))
                 self.assertTrue(any(c[0] == 'rm' and c[-1] == OWNED_ID for c in self.calls()))
-        # Accepted: the exact fallback beside other rlimits, and an engine-default process
-        # rlimit when the budget uses the cgroup controller or has no enforcement.
+        # Accepted: the step beside other rlimits, an engine default above the budget, and an
+        # engine-default process rlimit when the budget uses the cgroup controller or has no enforcement.
         for controllers, kernel, reported in (
-                ('[cpu memory]', '6.6.87.2', configured + '-1 [RLIMIT_NOFILE=1024:1024,RLIMIT_NPROC=512:512,]'),
-                ('[cpu memory]', '6.6.87.2', configured + '0 [RLIMIT_NPROC=512:512,]'),
+                ('[cpu memory]', '6.6.87.2', configured + '-1 [RLIMIT_NOFILE=1024:1024,]'),
+                ('[cpu memory]', '6.6.87.2', configured + '0 []'),
+                ('[cpu memory]', '6.6.87.2', configured + '-1 [RLIMIT_NPROC=63948:63948,]'),
+                ('[cpu memory]', '6.6.87.2', configured + '-1 [RLIMIT_NPROC=513:18446744073709551615,]'),
                 ('[cpu memory pids]', '6.6.87.2', configured + '512 [RLIMIT_NPROC=63948:63948,]'),
                 ('[cpu memory]', '5.10.0', configured + '-1 [RLIMIT_NPROC=63948:63948,]')):
             with self.subTest(accepted=reported, controllers=controllers):
@@ -1012,19 +1327,14 @@ class LauncherTests(unittest.TestCase):
                 proc.terminate()
                 proc.wait(timeout=5)
 
-    def test_socket_only_required_when_enabled(self):
-        missing = str(self.base / 'missing.sock')
-        self.assertEqual(self.run_wrapper(FIXTURE_SHELL_PODMAN_SOCKET=missing).returncode, 0)
-        self.log.unlink()
-        result = self.run_wrapper(FIXTURE_SHELL_PODMAN='1', FIXTURE_SHELL_PODMAN_SOCKET=missing)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('socket', result.stderr)
-        self.assertFalse(any(c[0] in ('build', 'create') for c in self.calls()))
-
-    def test_socket_engine_must_be_rootless(self):
-        result = self.run_wrapper(FIXTURE_SHELL_PODMAN='1', FAKE_SOCKET_ROOTLESS='false')
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('rootless', result.stderr)
+    def test_former_socket_override_is_ignored(self):
+        for value in ('relative', str(self.base / 'missing.sock'), str(self.socket_path)):
+            with self.subTest(value=value):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(FIXTURE_SHELL_PODMAN_SOCKET=value)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(any(c[0] == '--remote' for c in self.calls()))
+                self.assertFalse(any('podman.sock' in a for a in self.create()))
 
     def test_rootful_and_remote_rejected_local_unix_accepted(self):
         cases = ({'FAKE_INFO': 'false linux false'},
@@ -1417,9 +1727,11 @@ class LauncherTests(unittest.TestCase):
         proc = subprocess.Popen([str(WRAPPER)], cwd=self.project, env=self.env | {'FAKE_WAIT': '1'},
                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         import time
-        for _ in range(100):
-            if Path(str(self.log) + '.started').exists():
-                break
+        # The launcher installs its traps before it starts the container, so TERM
+        # must wait for the fake start; a slow engine host can take seconds.
+        deadline = time.monotonic() + 15
+        while not Path(str(self.log) + '.started').exists():
+            self.assertLess(time.monotonic(), deadline, 'the fake engine never started the session container')
             time.sleep(0.02)
         proc.terminate()
         proc.communicate(timeout=5)
@@ -1437,97 +1749,50 @@ class LauncherTests(unittest.TestCase):
         self.assertNotEqual(self.run_wrapper(FAKE_INFO_STATUS='125').returncode, 0)
 
     def test_verification_preserves_exact_record_boundaries_and_status(self):
-        for query, valid in (('INFO', 'true linux false'), ('SOCKET', 'true /host/socket with spaces')):
+        for query, valid in (('INFO', 'true linux false'),):
             for raw, accepted in ((valid, True), (valid + '\n', True), ('', False),
                                   (valid + '\n\n', False), (valid + '\n\n\n', False),
                                   ('\n' + valid, False), (valid + '\n\nextra\n', False),
                                   (valid + '\nextra\n', False)):
                 with self.subTest(query=query, raw=repr(raw)):
                     self.log.unlink(missing_ok=True)
-                    result = self.run_wrapper('--container-build', '-c', 'true', FIXTURE_SHELL_PODMAN='1',
+                    result = self.run_wrapper('--container-build', '-c', 'true',
                                               **{f'FAKE_{query}_RAW': raw})
                     self.assertEqual(result.returncode == 0, accepted, result.stderr)
                     operations = [c for c in self.calls() if c[0] in ('image', 'build', 'create')]
                     self.assertEqual(bool(operations), accepted)
-                    if query == 'SOCKET' and not accepted:
-                        self.assertIn(str(self.socket_path), result.stderr)
-                    if query == 'SOCKET' and accepted:
-                        self.assertIn('/host/socket with spaces:/run/podman/podman.sock:rw', self.create())
             for raw in (valid, valid + '\n', valid + '\n\n'):
                 with self.subTest(query=query, failed_after_output=repr(raw)):
                     self.log.unlink(missing_ok=True)
-                    result = self.run_wrapper('--container-build', '-c', 'true', FIXTURE_SHELL_PODMAN='1',
+                    result = self.run_wrapper('--container-build', '-c', 'true',
                                               **{f'FAKE_{query}_RAW': raw, f'FAKE_{query}_STATUS': '19'})
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn('cannot query Podman', result.stderr)
                     self.assertFalse(any(c[0] in ('image', 'build', 'create') for c in self.calls()))
 
-    def test_delegated_response_rejects_carriage_returns_before_image_operations(self):
-        responses = ('true /host/socket with spaces\r\n',
-                     'true /host/podman.sock\r', '\rtrue /host/podman.sock\n',
-                     'tr\rue /host/podman.sock\n', 'true\r /host/podman.sock\n',
-                     'true \r/host/podman.sock\n', 'true /host/pod\rman.sock\n')
-        for options in ((), ('--container-build',)):
-            for raw in responses:
-                with self.subTest(options=options, raw=repr(raw)):
-                    self.log.unlink(missing_ok=True)
-                    result = self.run_wrapper(*options, FIXTURE_SHELL_PODMAN='1',
-                                              FAKE_SOCKET_RAW=raw)
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertIn(f'invalid Podman socket response: {self.socket_path}', result.stderr)
-                    self.assertFalse(any(c[0] in ('image', 'build', 'create') for c in self.calls()))
-
     def test_response_validation_composes_with_launch_modes(self):
         for isolated in ('', str(self.state)):
             for shell in (False, True):
-                for service in ('0', '1'):
-                    for bad_query in ('', 'INFO', 'SOCKET'):
-                        with self.subTest(isolated=isolated, shell=shell, service=service, query=bad_query):
-                            self.log.unlink(missing_ok=True)
-                            options = ['--container-build', '--container-git-worktree']
-                            if shell:
-                                options.append('--container-shell')
-                            values = {'FAKE_INFO_RAW': 'true linux false\n',
-                                      'FAKE_SOCKET_RAW': 'true /host/socket with spaces\n'}
-                            if bad_query:
-                                values[f'FAKE_{bad_query}_RAW'] += '\n'
-                            accepted = not bad_query or (bad_query == 'SOCKET' and service == '0')
-                            result = self.run_wrapper(*options, FIXTURE_SHELL_STATE_DIR=isolated,
-                                                      FIXTURE_SHELL_PODMAN=service, **values)
-                            self.assertEqual(result.returncode == 0, accepted, result.stderr)
-                            self.assertEqual(any(c[0] in ('build', 'image', 'create') for c in self.calls()), accepted)
-                            if service == '0':
-                                self.assertFalse(any(c[0] == '--remote' for c in self.calls()))
-
-    def test_delegated_cr_response_preserves_query_failure_and_disabled_access(self):
-        for raw in ('true /host/podman.sock\r\n', 'true /host/pod\rman.sock'):
-            with self.subTest(raw=repr(raw), query_failure=True):
-                self.log.unlink(missing_ok=True)
-                result = self.run_wrapper('--container-build', FIXTURE_SHELL_PODMAN='1',
-                                          FAKE_SOCKET_RAW=raw, FAKE_SOCKET_STATUS='19')
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn(f'cannot query Podman socket: {self.socket_path}', result.stderr)
-                self.assertNotIn('invalid Podman socket response', result.stderr)
-                self.assertFalse(any(c[0] in ('image', 'build', 'create') for c in self.calls()))
-            with self.subTest(raw=repr(raw), delegation_disabled=True):
-                self.log.unlink(missing_ok=True)
-                result = self.run_wrapper(FIXTURE_SHELL_PODMAN='0', FAKE_SOCKET_RAW=raw)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertFalse(any(c[0] == '--remote' for c in self.calls()))
-                self.assertNotIn('CONTAINER_HOST=unix:///run/podman/podman.sock', self.create())
+                for bad in (False, True):
+                    with self.subTest(isolated=isolated, shell=shell, bad=bad):
+                        self.log.unlink(missing_ok=True)
+                        options = ['--container-build', '--container-git-worktree']
+                        if shell:
+                            options.append('--container-shell')
+                        raw = 'true linux false\n' + ('\n' if bad else '')
+                        result = self.run_wrapper(*options, FIXTURE_SHELL_STATE_DIR=isolated, FAKE_INFO_RAW=raw)
+                        self.assertEqual(result.returncode == 0, not bad, result.stderr)
+                        self.assertEqual(any(c[0] in ('build', 'image', 'create') for c in self.calls()), not bad)
+                        self.assertFalse(any(c[0] == '--remote' for c in self.calls()))
 
     def test_pathless_or_relative_unix_launch_endpoint_rejected_before_query(self):
         for endpoint in ('unix://', 'unix:///', 'unix://////', 'unix://relative/socket'):
-            for delegation in ('0', '1'):
-                for override in ('', str(self.socket_path)):
-                    with self.subTest(endpoint=endpoint, delegation=delegation, override=override):
-                        self.log.unlink(missing_ok=True)
-                        result = self.run_wrapper('--container-build', CONTAINER_HOST=endpoint,
-                                                  FIXTURE_SHELL_PODMAN=delegation,
-                                                  FIXTURE_SHELL_PODMAN_SOCKET=override)
-                        self.assertNotEqual(result.returncode, 0)
-                        self.assertIn('absolute Unix socket path', result.stderr)
-                        self.assertEqual(self.calls(), [])
+            with self.subTest(endpoint=endpoint):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper('--container-build', CONTAINER_HOST=endpoint)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('absolute Unix socket path', result.stderr)
+                self.assertEqual(self.calls(), [])
 
     def test_help_with_pathless_launch_endpoint(self):
         result = self.run_wrapper('--container-help', CONTAINER_HOST='unix:///')
@@ -1691,152 +1956,36 @@ class LauncherTests(unittest.TestCase):
         stat.chmod(0o755)
         self.assertIn('native Linux storage', self.run_wrapper().stderr)
 
-    def test_socket_disabled_values_skip_delegation_checks(self):
-        for value in ('', '0', 'true', 'yes', '01', 'maybe'):
-            with self.subTest(value=value):
-                self.log.unlink(missing_ok=True)
-                result = self.run_wrapper(FIXTURE_SHELL_PODMAN=value,
-                                          FIXTURE_SHELL_PODMAN_SOCKET='relative-missing')
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertFalse(any(c[0] == '--remote' for c in self.calls()))
-                self.assertNotIn('CONTAINER_HOST=unix:///run/podman/podman.sock', self.create())
-                create = self.create()
-                self.assertIn('CONTAINER_HOST', [a for i, a in enumerate(create[1:]) if create[i] == '--unsetenv'])
-
-    def test_socket_precedence_and_remapping(self):
-        alias = self.base / 'socket-alias'
-        alias.symlink_to(self.socket_path)
-        cases = (
-            {'FIXTURE_SHELL_PODMAN_SOCKET': str(alias), 'CONTAINER_HOST': 'unix:///other/engine'},
-            {'FIXTURE_SHELL_PODMAN_SOCKET': '', 'CONTAINER_HOST': f'unix://{self.socket_path}'},
-        )
-        for env in cases:
-            with self.subTest(env=env):
-                self.log.unlink(missing_ok=True)
-                result = self.run_wrapper(FIXTURE_SHELL_PODMAN='1', **env)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                query = next(c for c in self.calls() if c[0] == '--remote')
-                self.assertEqual(query[2], f'unix://{self.socket_path}')
-                self.assertIn('/host/podman.sock:/run/podman/podman.sock:rw', self.create())
-        runtime = self.base / 'runtime'
-        (runtime / 'podman').mkdir(parents=True)
-        (runtime / 'podman/podman.sock').symlink_to(self.socket_path)
-        self.log.unlink()
-        result = self.run_wrapper(FIXTURE_SHELL_PODMAN='1', FIXTURE_SHELL_PODMAN_SOCKET='',
-                                  XDG_RUNTIME_DIR=str(runtime))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(next(c for c in self.calls() if c[0] == '--remote')[2], f'unix://{self.socket_path}')
-
-    def test_podman5_unix_url_host_socket_is_bound_as_path(self):
-        # Podman 5 reports Host.RemoteSocket.Path as a unix:// URL.
-        for reported, accepted in (('unix:///host/podman.sock', True), ('unix://relative.sock', False)):
-            with self.subTest(reported=reported):
-                self.log.unlink(missing_ok=True)
-                result = self.run_wrapper(FIXTURE_SHELL_PODMAN='1', FAKE_HOST_SOCKET=reported)
-                self.assertEqual(result.returncode == 0, accepted, result.stderr)
-                if accepted:
-                    self.assertIn('/host/podman.sock:/run/podman/podman.sock:rw', self.create())
-                    self.assertNotIn('unix:///host/podman.sock:', self.create())
-                else:
-                    self.assertIn('absolute host socket path', result.stderr)
-
-    def test_reported_host_socket_must_be_a_socket_when_visible(self):
-        # The reported host path becomes a bind source: never the root, and never
-        # a visible non-socket. An invisible path is the remapped-caller case.
-        directory = self.base / 'reported-directory'
-        directory.mkdir()
-        regular = self.base / 'reported-file'
-        regular.write_text('not a socket')
-        dangling = self.base / 'reported-dangling'
-        dangling.symlink_to(self.base / 'missing-target')
-        alias = self.base / 'reported-alias'
-        alias.symlink_to(self.socket_path)
-        refused = ('/', '//', 'unix:///', str(directory), str(regular), str(dangling))
-        for options, reported in [(o, r) for o in ((), ('--container-build',)) for r in refused]:
-            with self.subTest(options=options, reported=reported):
-                self.log.unlink(missing_ok=True)
-                result = self.run_wrapper(*options, FIXTURE_SHELL_PODMAN='1', FAKE_HOST_SOCKET=reported)
-                self.assertEqual(result.returncode, 1, result.stderr)
-                self.assertIn(str(self.socket_path), result.stderr)
-                self.assertFalse(any(c[0] in ('image', 'build', 'create') for c in self.calls()))
-        for reported in (str(self.socket_path), str(alias), '/host/podman.sock'):
-            with self.subTest(reported=reported):
-                self.log.unlink(missing_ok=True)
-                result = self.run_wrapper(FIXTURE_SHELL_PODMAN='1', FAKE_HOST_SOCKET=reported)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn(f'{reported}:/run/podman/podman.sock:rw', self.create())
-
-    def test_socket_fallback_and_invalid_sources(self):
-        default = f'/run/user/{os.getuid()}/podman/podman.sock'
-        result = self.run_wrapper(FIXTURE_SHELL_PODMAN='1', FIXTURE_SHELL_PODMAN_SOCKET='')
-        if Path(default).exists():
-            # A real user service exists on this host; the fake engine answers for it,
-            # so verify the selected fallback endpoint instead of a missing-socket error.
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(next(c for c in self.calls() if c[0] == '--remote')[2], 'unix://' + default)
-        else:
-            self.assertIn(default, result.stderr)
-        for source in ('relative', str(self.base / 'missing'), str(WRAPPER)):
-            with self.subTest(source=source):
-                self.log.unlink(missing_ok=True)
-                result = self.run_wrapper('--container-build', FIXTURE_SHELL_PODMAN='1',
-                                          FIXTURE_SHELL_PODMAN_SOCKET=source)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn(source, result.stderr)
-                self.assertFalse(any(c[0] in ('build', 'image', 'create') for c in self.calls()))
-        self.socket_path.chmod(0o000)
-        try:
-            self.assertIn('not accessible', self.run_wrapper(FIXTURE_SHELL_PODMAN='1').stderr)
-        finally:
-            self.socket_path.chmod(0o700)
-
-    def test_invalid_delegation_results_gate_explicit_build(self):
-        for env in ({'FAKE_SOCKET_STATUS': '125'}, {'FAKE_SOCKET_ROOTLESS': ''},
-                    {'FAKE_SOCKET_ROOTLESS': 'unexpected'}, {'FAKE_SOCKET_ROOTLESS': 'false'},
-                    {'FAKE_HOST_SOCKET': ''}, {'FAKE_HOST_SOCKET': 'relative'},
-                    {'FAKE_HOST_SOCKET': '/path\nextra'}):
-            with self.subTest(env=env):
-                self.log.unlink(missing_ok=True)
-                result = self.run_wrapper('--container-build', FIXTURE_SHELL_PODMAN='1', **env)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn(str(self.socket_path), result.stderr)
-                self.assertFalse(any(c[0] in ('image', 'build', 'create') for c in self.calls()))
-
     def test_composition_and_independence_in_both_state_modes(self):
         for isolated in ('', str(self.state)):
             for shell in (False, True):
                 for yolo in ('0', '1'):
-                    for service in ('0', '1'):
-                        with self.subTest(isolated=isolated, shell=shell, yolo=yolo, service=service):
-                            self.log.unlink(missing_ok=True)
-                            options = ['--container-build', '--container-git-worktree', '-c', 'true']
-                            if shell:
-                                options.append('--container-shell')
-                            result = self.run_wrapper(*options, FIXTURE_SHELL_STATE_DIR=isolated,
-                                                      OTHER_AGENT_YOLO=yolo, FIXTURE_SHELL_PODMAN=service)
-                            self.assertEqual(result.returncode, 0, result.stderr)
-                            create = self.create()
-                            self.assertNotIn('--dangerously-skip-permissions', create)
-                            self.assertEqual('CONTAINER_HOST=unix:///run/podman/podman.sock' in create, service == '1')
-                            unsets = [a for i, a in enumerate(create[1:]) if create[i] == '--unsetenv']
-                            self.assertEqual('CONTAINER_HOST' in unsets, service != '1')
-                            self.assertIn('CONTAINER_CONNECTION', unsets)
-                            self.assertNotIn('--read-only-tmpfs=false', create)
-                            mounts = [create[i+1] for i, arg in enumerate(create) if arg == '--tmpfs']
-                            # U7: one layout; the shared-state home is an ephemeral tmpfs;
-                            # delegation adds the nested Podman storage (U12).
-                            expected = ['/tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777',
-                                        '/run:rw,nosuid,nodev,noexec,size=32m',
-                                        '/var/tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777']
-                            if not isolated:
-                                expected.append('/fixture-shell-home:rw,nosuid,nodev,noexec,size=512m,mode=1777')
-                            if service == '1':
-                                expected += ['/var/lib/containers:rw,noexec,nosuid,nodev,mode=0700,U,size=256m',
-                                             '/run/containers:rw,noexec,nosuid,nodev,mode=0700,U,size=64m']
-                            self.assertEqual(mounts, expected)
-                            self.assertIn(f'{self.project.parent}:{self.project.parent}:rw', create)
+                    with self.subTest(isolated=isolated, shell=shell, yolo=yolo):
+                        self.log.unlink(missing_ok=True)
+                        options = ['--container-build', '--container-git-worktree', '-c', 'true']
+                        if shell:
+                            options.append('--container-shell')
+                        result = self.run_wrapper(*options, FIXTURE_SHELL_STATE_DIR=isolated,
+                                                  OTHER_AGENT_YOLO=yolo)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        create = self.create()
+                        self.assertNotIn('--dangerously-skip-permissions', create)
+                        self.assertFalse(any('podman.sock' in a for a in create))
+                        unsets = [a for i, a in enumerate(create[1:]) if create[i] == '--unsetenv']
+                        self.assertIn('CONTAINER_HOST', unsets)
+                        self.assertIn('CONTAINER_CONNECTION', unsets)
+                        self.assertNotIn('--read-only-tmpfs=false', create)
+                        mounts = [create[i+1] for i, arg in enumerate(create) if arg == '--tmpfs']
+                        # U7: one layout; the shared-state home is an ephemeral tmpfs.
+                        expected = ['/tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777',
+                                    '/run:rw,nosuid,nodev,noexec,size=32m',
+                                    '/var/tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777']
+                        if not isolated:
+                            expected.append('/fixture-shell-home:rw,nosuid,nodev,noexec,size=512m,mode=1777')
+                        self.assertEqual(mounts, expected)
+                        self.assertIn(f'{self.project.parent}:{self.project.parent}:rw', create)
 
-    def test_disabled_delegation_preserves_host_launch_endpoint(self):
+    def test_host_launch_endpoint_is_not_forwarded(self):
         probe = self.bin / 'podman'
         probe.write_text(FAKE.replace("args = sys.argv[1:]",
                          "assert os.environ['CONTAINER_HOST'] == 'unix:///launch/socket'\nargs = sys.argv[1:]"))
@@ -2130,7 +2279,7 @@ class AgentProfileSettingsTests(unittest.TestCase):
         self.assertNotIn('FIXTURE_TELEMETRY=0', env)
         self.assertNotIn('FIXTURE_PROVIDER_ONLY=1', env)
         unsets = [create[i + 1] for i, arg in enumerate(create) if arg == '--unsetenv']
-        self.assertEqual(unsets, ['DBUS_SESSION_BUS_ADDRESS', 'CONTAINER_CONNECTION', 'CONTAINER_HOST'])
+        self.assertEqual(unsets, ['DBUS_SESSION_BUS_ADDRESS', 'CONTAINER_CONNECTION', 'CONTAINER_HOST', 'DOCKER_HOST'])
         self.assertIn('--init', create)
         self.assertNotIn('--entrypoint', create)
         self.assertEqual(create[-4:], ['--fixture-mode', 'unrestricted', '--fixture-bypass', '--first'])
@@ -2144,6 +2293,44 @@ class AgentProfileSettingsTests(unittest.TestCase):
         calls = [call[0] for call in self.hook_calls()]
         self.assertNotIn('agent_approval_bypass', calls)
         self.assertNotIn('agent_command_args', calls)
+
+    def test_process_rlimit_step_wraps_the_agent_program_and_the_proxy(self):
+        # set-process-limits-inside-containers, design D2: in unrestricted agent mode the
+        # profile's agent program replaces the image entrypoint behind the step.
+        step = ['-c', '{ ulimit -u 512 2>/dev/null || ulimit -p 512; } && exec "$0" "$@"']
+        result = self.run_agent('--first', FIXTURE_AGENT_NETWORK='unrestricted', FAKE_CONTROLLERS='[cpu memory]')
+        create = self.session_create(result)
+        self.assertEqual(create[create.index('--entrypoint') + 1], '/bin/sh')
+        image = next(i for i, a in enumerate(create) if a.startswith('CONTAINER_NAME=')) + 1
+        self.assertEqual(create[image + 1:], [*step, '/usr/local/bin/fixture', '--fixture-mode', 'unrestricted',
+                                              '--first'])
+        # Provider mode: the agent's guard and the proxy program both run behind the step.
+        wrapper = synthetic_install(self.base, AGENT_ROOT, AGENT_PROFILE.wrapper)
+        policy = wrapper.parent / 'agent/policies/default.json'
+        policy.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(AGENT_ROOT / 'agent/policies/default.json', policy)
+        runtime = self.base / 'runtime'
+        runtime.mkdir(mode=0o700)
+        self.log.unlink(missing_ok=True)
+        result = self.run_agent('--first', wrapper=wrapper, FIXTURE_AGENT_NETWORK='provider',
+                                FIXTURE_AGENT_NETWORK_PROFILE='fixture-api', FIXTURE_AGENT_NETWORK_POLICY=str(policy),
+                                FIXTURE_AGENT_NETWORK_RUNTIME_DIR=str(runtime), FIXTURE_AGENT_EGRESS_IMAGE='sha256:' + 'e' * 64,
+                                FIXTURE_API_KEY='key', FAKE_NETWORK='1', FAKE_INFO='true linux true',
+                                CONTAINER_HOST='unix:///run/service.sock', FAKE_CONTROLLERS='[cpu memory]',
+                                FAKE_PROXY_CONFIG='{"PidsLimit":-1,"Memory":268435456}',
+                                FAKE_PROXY_EFFECTIVE='{"pids":null,"memory":268435456,"capabilities":[0,0,0,0,0],'
+                                                     '"no_new_privs":1,"seccomp":2,"nproc":[128,128]}')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [json.loads(line) for line in self.engine_calls()]
+        proxy = next(c for c in calls if c[0] == 'create' and any('.egress=' in a for a in c))
+        agent = next(c for c in calls if c[0] == 'create' and not any('.egress=' in a for a in c))
+        self.assertNotIn('--ulimit', proxy + agent)
+        self.assertEqual(proxy[proxy.index('--entrypoint') + 1], '/bin/sh')
+        self.assertEqual(proxy[proxy.index('sha256:' + 'e' * 64) + 1:],
+                         ['-c', '{ ulimit -u 128 2>/dev/null || ulimit -p 128; } && exec "$0" "$@"', 'python3',
+                          '/opt/sandbox-egress/proxy.py'])
+        image = next(i for i, a in enumerate(agent) if a.startswith('CONTAINER_NAME=')) + 1
+        self.assertEqual(agent[image + 1:image + 5], [*step, '/opt/sandbox-egress/guard', '--provider'])
 
     def test_agent_environment_cannot_set_core_names(self):
         for entries in ('HOME=/elsewhere', 'CONTAINER_NAME=x', 'bad-name=1'):

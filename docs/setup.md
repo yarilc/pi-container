@@ -1,7 +1,7 @@
 # Interactive sandbox setup
 
 The durable contract is [container-setup](../openspec/specs/container-setup/spec.md).
-It is copied unchanged from `sandbox-container` at tag `sandbox-ref-28`
+It is copied unchanged from `sandbox-container` at tag `sandbox-ref-36`
 (`setup/`); Pi values come from `agent/profile.json`. The archived change
 `openspec/changes/archive/<date>-add-container-setup/` retains the design, tasks
 and delta specifications.
@@ -17,13 +17,13 @@ available through `--container-help` without loading preferences or using Podman
 ## Choices and preparation
 
 The prompts cover network access, the API-key authentication method for online
-use, shared/fresh isolated state, delegation, permission bypass, worktree scope,
+use, shared/fresh isolated state, permission bypass, worktree scope,
 host CA trust, installation/command paths and the Podman endpoint. The methods
 `anthropic`, `openai`, `gemini` and `openrouter` select the protected profiles
 `anthropic-api`, `openai-api`, `gemini-api` and `openrouter-api` from the
 packaged policy. Setup never asks for the key itself. First-run setup defaults
 to provider mode with the `anthropic` method, shared state, permission bypass
-off, current workspace only, delegation off and CA trust off.
+off, current workspace only and CA trust off.
 
 Pi 1.5.2 has no tool-approval layer: its tools run without prompts and the
 container is the only boundary. The permission-bypass question is kept so the
@@ -45,7 +45,7 @@ automatically. An explicit empty network override on a managed invocation also
 selects `provider`, never the saved mode; remove the override to use the saved
 choice. Offline mode cannot reach any model provider.
 
-Offline networking, provider networking and delegation need a same-host Unix
+Offline and provider networking need a same-host Unix
 Podman service. Before the network question, setup checks, without changing
 anything, whether a service answers at `CONTAINER_HOST`, at the saved endpoint
 or at the default endpoint. It also checks whether a usable systemd user manager
@@ -60,7 +60,7 @@ succeeds, setup offers only unrestricted networking:
 - it explains why, and asks `Continue with unrestricted networking?`, which
   defaults to no;
 - it saves the local engine as the launch endpoint;
-- it skips the delegation and endpoint questions.
+- it skips the endpoint question.
 
 A saved offline or provider mode is never changed silently: setup states that
 it cannot be kept and asks for the same confirmation. Declining ends setup
@@ -76,14 +76,18 @@ After the worktree question, setup asks for the agent budgets and lifetime:
 `Agent process limit` (default `512`) and `Session lifetime in seconds, 0
 disables` (default `0`). Invalid answers are explained and asked again; `0`,
 `-1`, `max` and unitless memory are rejected, so a budget cannot be disabled.
-The setup plan lists the values. They are saved in schema 2 preferences and
+The setup plan lists the values. They are saved in schema 3 preferences and
 supplied by the managed launcher as `PI_CONTAINER_MEMORY_LIMIT`,
 `PI_CONTAINER_CPU_LIMIT`, `PI_CONTAINER_PIDS_LIMIT` and
 `PI_CONTAINER_RUN_TIMEOUT` unless those are exported. Smoke and
 qualification use the saved values. To change a budget, rerun setup; an
 exported different value makes restricted launches stop until
 `--container-qualify` is run with the same environment. Preferences saved by an
-earlier release (schema 1) are read with the default budgets proposed.
+earlier release are upgraded: schema 1 gets the default budgets proposed, and
+schema 1 and 2 lose the removed host Podman delegation settings. Saved
+preferences that still enable delegation stop every managed launch with
+guidance to rerun setup, which states that delegation was removed and that
+image toolchains replace it, and saves the preferences without it.
 
 Setup smoke, qualification and optional login run in a private temporary
 workspace, never in the directory from which setup was started. Ordinary
@@ -125,9 +129,8 @@ receive data sent with foreign credentials? (yes/no)`. Destination binding canno
 tell your credentials from attacker-supplied ones, so a prompt-injected agent can
 send workspace data to an allowed host with a foreign API key or account. Answering
 `no` returns to the network-mode question; no other mode is chosen for you. The
-acknowledgement is required on every setup run that selects provider mode,
-including the delegation-conflict network change, and is not saved. Only offline
-mode removes this channel; see
+acknowledgement is required on every setup run that selects provider mode and
+is not saved. Only offline mode removes this channel; see
 [Residual exfiltration](network-contract.md#residual-exfiltration-to-allowed-services).
 
 The candidate image and protected release must both implement
@@ -162,9 +165,10 @@ machine on WSL, reports every controller and applies none, so the plan prints
 `enforced agent budgets: none` and names the `cgroupfs` manager. A budget whose
 controller is not delegated is not enforced: the setup plan, the smoke and every
 launch name it, and setup continues without asking. Without `pids`, the process
-budget falls back to a per-session process rlimit at the saved value when the
-engine kernel (`podman info --format '{{.Host.Kernel}}'`) is Linux 5.14 or
-later. The plan then prints
+budget falls back to a per-session process rlimit at the saved value, set by
+the session's first process, when the engine kernel
+(`podman info --format '{{.Host.Kernel}}'`) is Linux 5.14 or later. The plan
+then prints
 `agent process budget enforced through the process rlimit (512 tasks of the session user, threads included)`,
 and the smoke compares the effective `Max processes` with the saved budget. On
 older or unrecognized kernels the plan line names the reason the fallback was
@@ -189,11 +193,21 @@ can invoke `--container-qualify` alone with their existing explicit environment
 configuration; this command never starts an ordinary Pi session or grants
 maintenance. Help and unrestricted launches do not require a report.
 
-The toolchain library (`adopt-sandbox-ref-16`) changes the wrapper and adds
-`setup/toolchains.py` to the installed and qualified code, so rerun
+The toolchain library (`adopt-sandbox-ref-16`, updated in `adopt-sandbox-ref-36`)
+changes the wrapper and adds `setup/toolchains.py`, `setup/engine.py` and
+`setup/toolchain-catalog/` to the installed and qualified code, so rerun
 `--container-setup` after upgrading. Setup does not manage toolchains: the
-operator adds them with `--container-toolchain`, and every session mounts the
-library read-only at `/toolchains` (see the README "Toolchains" section).
+operator adds them with `--container-toolchain` (by catalog name or operator
+recipe path), and every session mounts the library read-only at `/toolchains`
+(see the README "Toolchains" section). `--container-toolchain add` pulls
+digest-pinned images and downloads SHA-256-pinned HTTPS archives without
+maintenance consent, because it runs no code while fetching; it never builds an
+image, and image builds keep requiring `PI_CONTAINER_MAINTENANCE=1`. After it
+selects a new release, setup reruns the check of each installed toolchain
+verified on another base image, with the new runtime image, and prints
+`Re-verifying toolchains checked on another base image`; a failed check is
+reported without failing setup, and that toolchain keeps its previous verified
+base until `verify` succeeds.
 
 For the provider idle-channel fix, rerun setup from the updated reviewed checkout
 and explicitly approve maintenance and image refresh so both the runtime and
@@ -215,19 +229,19 @@ unavailable required controls block launch; permissions are not repaired.
 Setup distinguishes `locally-qualified` from an exact `release-measured` record.
 Local success is not a claim about every native distribution, LSM or auth flow.
 
-For restricted launch or optional delegation, setup verifies the selected
+For restricted launch, setup verifies the selected
 same-host rootless Unix service. `default` derives the socket from the current
 `XDG_RUNTIME_DIR` (or `/run/user/<uid>`) on every invocation; an explicit
 `unix:///absolute/socket` is retained literally. `local` is available for
-unrestricted launch without delegation. When a restricted mode is chosen and
+unrestricted launch. When a restricted mode is chosen and
 the saved endpoint is `local`, setup proposes `default` instead. TCP/SSH, named
 contexts and implicitly
 remote engines remain unsupported. Bind/build paths must exist at their real
 absolute paths on that same Linux host, including when running from a container.
 
 When available, setup can run `systemctl --user enable --now podman.socket`
-after separate confirmation. This persistent user-service change does not
-delegate the socket to the application. Without a working user manager, setup
+after separate confirmation. This persistent user-service change gives no
+session access to the socket. Without a working user manager, setup
 prints foreground `podman system service --time=0` instructions and stays
 incomplete until an endpoint is verified. It does not leave a background daemon
 or repair an administrator-owned `/run` directory. A service enabled before
@@ -261,6 +275,22 @@ uses that immutable image without networking. Failed recipe/package acquisition
 does not change pins automatically; resolve the reported maintenance stage and
 rerun. Unrestricted mode skips the guard/toolchain/proxy, and offline skips the
 provider proxy/authentication.
+
+Every mode also gets the session container engine image
+(`localhost/pi-container-engine:latest`), which sessions run when the toolchain
+library holds image toolchains. Setup builds it from
+`launcher/engine/Containerfile` on a digest-pinned `quay.io/podman/stable`
+`-immutable` tag, with no network access in the build, and tags it
+`localhost/pi-container-engine:setup-<release>`. It reuses the previous engine
+image when the engine inputs (the Containerfile, its configuration and
+entrypoint) are unchanged and no refresh was requested. On every run, setup
+also derives the engine's seccomp profile from the engine host's default
+profile (`podman info --format '{{.Host.Security.SECCOMPProfilePath}}'`): the
+only change is that `sethostname` and `setdomainname` are always allowed, so
+nested containers get their own host name. The profile is written to
+`launcher/engine/seccomp.json` in the release, and its SHA-256 is saved with
+the engine image ID in schema 3 preferences; a changed host default therefore
+gives a new profile and a new qualification identity.
 
 ## Managed installation and launch
 
@@ -361,8 +391,8 @@ atomically replace `current` with a symlink to that release. Alternatively run
 the prior manual wrapper with its explicit environment. Never delete state to
 roll back. Automatic pruning is not provided. A setup that does not activate
 its candidate, because it failed, was cancelled or was interrupted, removes the
-`setup-<release>` tags it created for that candidate (runtime, toolchain,
-proxy). It keeps every other name of those images, and reports an image left
+`setup-<release>` tags it created for that candidate (runtime, engine,
+toolchain, proxy). It keeps every other name of those images, and reports an image left
 without a name with `podman image rm <id>`. Enabled user sockets and other
 persistent effects remain and are reported; setup does not remove shared
 engine resources or undo service enablement automatically.
@@ -540,7 +570,9 @@ The `container-setup` requirement coverage is:
 | Dedicated interactive setup invocation | PTY early-dispatch, mixed-argument/pipeline rejection and help precedence tests |
 | Workflow questionnaire with explicit defaults | Default/retry/conflict PTY checks; saved-choice rerun; real provider/offline/unrestricted paths |
 | Setup without a launch service offers only unrestricted networking | Probe order and user-manager unit tests; confirmed, declined and saved-offline questionnaires; real-wrapper PTY run with a failing `systemctl` |
-| Optional authority requires deliberate selection | Delegation conflict questionnaire; separate service confirmation; saved worktree/TTY checks |
+| Optional authority requires deliberate selection | Questionnaire without delegation; separate service confirmation; saved worktree/TTY checks |
+| Saved delegation preferences are migrated | Schema 2 preferences with delegation migrated by setup with a notice; managed launches refused until then |
+| Setup re-verifies the toolchain library | Setup reruns checks for toolchains verified on a different base and reports failures without blocking setup |
 | Installed host prerequisites only | Missing command, unsupported context/platform and strict failed/malformed engine-response tests |
 | User-scoped Podman service preparation | Synthetic accepted/declined/unavailable systemd and exact-endpoint tests; real existing-service reuse |
 | Reviewed setup mutations and maintenance | Declined plan has no filesystem/image mutation; scoped maintenance/environment tests |

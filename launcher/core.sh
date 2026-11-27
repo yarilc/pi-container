@@ -13,9 +13,9 @@ P=$AGENT_ENV_PREFIX
 # Settings are read once from <P>_* into cfg_<SUFFIX>; an unset variable stays
 # unset, so ${cfg_X-default} keeps the "only unset selects the default" rule.
 for core_suffix in NETWORK NETWORK_PROFILE NETWORK_POLICY NETWORK_RUNTIME_DIR EGRESS_IMAGE IMAGE \
-    STATE_DIR PODMAN PODMAN_SOCKET TRUST_HOST_CA CA_BUNDLE MAINTENANCE QUALIFICATION_INPUT \
+    STATE_DIR PODMAN TRUST_HOST_CA CA_BUNDLE MAINTENANCE QUALIFICATION_INPUT \
     MEMORY_LIMIT CPU_LIMIT PIDS_LIMIT RUN_TIMEOUT TOOLCHAINS TOOLCHAINS_DIR ENV_VARS READONLY_STATE \
-    ALLOW_UNSAFE_WORKSPACE; do
+    ALLOW_UNSAFE_WORKSPACE ENGINE_IMAGE; do
     core_name=${P}_$core_suffix
     if [[ -v $core_name ]]; then
         printf -v "cfg_$core_suffix" '%s' "${!core_name}"
@@ -76,7 +76,8 @@ Container options:
   --container-git-worktree mount the parent of the current directory read/write
                          for Git worktrees; the container starts in the current directory
   --container-toolchain  manage the shared read-only toolchain library; must be first:
-                         add <recipe.json> | list | remove <name> | verify [<name>]
+                         add <recipe.json|name> | list | remove <name> | verify [<name>];
+                         add pulls pinned images and downloads pinned archives itself
   --container-help       show this wrapper help
 
 All other arguments are passed to @COMMAND@ (or to Bash in shell mode) unchanged.
@@ -87,12 +88,6 @@ Environment:
   @CONFIG_ENV@ configuration directory (default: ~/@CONFIG_HOME@)
   @P@_STATE_DIR optional isolated home; unset keeps shared configuration
                            (must not be, contain or lie inside the workspace)
-  @P@_PODMAN_SOCKET optional absolute delegation socket override
-  @P@_PODMAN enable host Podman API access only with exact value 1
-                           and explicit unrestricted mode (default: disabled; all
-                           other values disable access); requires a reachable
-                           rootless service; failed verification stops startup
-                           before image operations
   @P@_TRUST_HOST_CA  trust a host CA bundle: 1, true, or yes (default: disabled)
   @P@_CA_BUNDLE      CA bundle file to trust (default: first of
                                    /etc/ssl/certs/ca-certificates.crt and
@@ -131,10 +126,8 @@ unrestricted.
 Configured launch requires a verified Linux rootless engine, locally or via an explicit
 same-host Unix CONTAINER_HOST with an absolute socket pathname beyond /.
 Named connections and TCP/SSH are unsupported.
-Delegation endpoint: explicit socket override, Unix CONTAINER_HOST, then
-${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock.
-The socket permits host mounts beyond the workspace. Worktree mode exposes the
-entire parent read/write.
+Host Podman delegation was removed: @P@_PODMAN=1 stops startup. Worktree mode
+exposes the entire parent read/write.
 State directories must belong to the caller and deny group/other access.
 Unset @CONFIG_ENV@ when selecting an isolated home; no state is imported.
 Temporary /tmp, /run and /var/tmp mounts, and the ephemeral home of sessions
@@ -145,8 +138,7 @@ Host GNU timeout is required. Shutdown is bounded to 20 seconds, with at most
 failures are reported without changing the session or first signal status.
 Engine verification replies must contain one record, with no terminator or a
 single final LF; extra blank or nonblank records stop startup before builds.
-Delegated socket verification also rejects any CR character, including CRLF.
-Offline mode rejects Podman delegation. Network restriction requires a protected
+Network restriction requires a protected
 installation outside writable workspace/state trees and host Python 3. Eligible
 Linux/WSL2 x86_64 installations require a same-host Unix rootless Netavark
 service, Podman >= 4.9, standard OCI seccomp and usable Landlock ABI >= 3.
@@ -161,13 +153,13 @@ The guard adds
 unprivileged Landlock and restrictive seccomp, preserving the OCI profile.
 New Unix services are unavailable; fixed-peer pairs may have private inert names.
 See network/README.md for packaging and docs/validation.md for measured evidence.
-Every session container, in all modes including delegation, drops all
+Every session container, in all network modes, drops all
 capabilities, enables no-new-privileges and receives the memory, CPU and process
 budgets whose cgroup v2 controller the rootless engine delegates (only with the
 systemd cgroup manager; cgroupfs delegates none); a budget whose controller is
 not delegated is not enforced and a notice names why. Without pids, the
-process budget falls back to a per-session process rlimit when the engine kernel
-is Linux 5.14 or later; container startup uses a few of those tasks. Memory and
+process budget falls back to a per-session process rlimit, set by the session's
+first process, when the engine kernel is Linux 5.14 or later. Memory and
 CPU have no fallback. The created configuration is checked before the session
 starts; a delegated limit or fallback that is ignored stops startup. Without
 memory or process budgets a session can exhaust host memory or processes for
@@ -247,7 +239,7 @@ core_arguments() {
     done
     # Toolchain management runs on the host and never starts a session.
     if [[ "${1:-}" == --container-toolchain ]]; then
-        [[ "${2:-}" != launch-env ]] || die 'usage: --container-toolchain add <recipe.json> | list | remove <name> | verify [<name>]'
+        [[ "${2:-}" != launch-env ]] || die 'usage: --container-toolchain add <recipe.json|name> | list | remove <name> | verify [<name>]'
         command -v python3 >/dev/null || die 'host Python 3 is required for the toolchain library'
         # shellcheck disable=SC2154 # wrapper_dir is set by the entry script.
         exec python3 -I "$wrapper_dir/setup/toolchains.py" "${@:2}"
@@ -354,12 +346,11 @@ core_settings() {
         esac
     }
     toolchains_enabled=$(boolean "${P}_TOOLCHAINS" "${cfg_TOOLCHAINS:-1}")
-    podman_access=0
-    [[ "${cfg_PODMAN:-}" != 1 ]] || podman_access=1
+    # Host Podman delegation was removed (session-container-engine): a leftover
+    # exact opt-in stops every launch instead of silently starting without it.
+    [[ "${cfg_PODMAN:-}" != 1 ]] \
+        || die "${P}_PODMAN=1: host Podman delegation was removed; add the images your tests need with --container-toolchain add, so that sessions get their own container engine (README: Container tests), then unset ${P}_PODMAN"
     trust_host_ca=$(boolean "${P}_TRUST_HOST_CA" "${cfg_TRUST_HOST_CA:-}")
-    if [[ "$network_mode" != unrestricted ]] && ((podman_access)); then
-        die "restricted networking rejects ${P}_PODMAN=1: the host API bypasses egress enforcement; select explicit unrestricted mode for delegation"
-    fi
     [[ -z "${cfg_STATE_DIR:-}" || -z "${cfg_CONFIG_DIR:-}" ]] \
         || die "${P}_STATE_DIR conflicts with $AGENT_CONFIG_DIR_ENV; unset $AGENT_CONFIG_DIR_ENV to isolate state"
     if [[ -n "${cfg_STATE_DIR:-}" ]]; then
@@ -471,7 +462,7 @@ core_workspace_refusal() {
     fi
 }
 
-# Phase 4: launch engine, cgroup controllers, restricted queries, delegation socket.
+# Phase 4: launch engine, cgroup controllers, restricted queries.
 core_engine() {
     # Unix service access also supports running this wrapper inside another container
     # on the same host. TCP/SSH transports and the Podman machine's remote connection
@@ -503,13 +494,19 @@ core_engine() {
     fi
 
     ((build_only)) || core_engine_session
-    core_engine_delegation
+    caller_uid=$(id -u)
+    caller_gid=$(id -g)
 }
 
 # Mechanism enforcing a process budget: the pids cgroup controller, the process
-# rlimit (Linux 5.14 and later count it per user namespace, and keep-id gives each
-# container its own), or none. Sets process_budget and, for none, process_reason.
-# network/agent_budgets.py (process_mechanism, fallback_reason) is the same rule.
+# rlimit (Linux 5.14 and later count it per user namespace), or none. Sets
+# process_budget and, for none, process_reason. network/agent_budgets.py
+# (process_mechanism, fallback_reason) is the same rule.
+#
+# The rlimit is set inside each container by its first process
+# (core_process_step), never with --ulimit: a new user namespace records its
+# creator's limit, and every container of the user counts against it one level
+# up, so a limit that the engine applies at creation is shared by all of them.
 process_budget_rule() {
     local controllers=$1 kernel=$2
     local pattern='^([0-9]{1,4})\.([0-9]{1,4})([-.+_~][0-9A-Za-z._+~-]*)?$'
@@ -527,6 +524,45 @@ process_budget_rule() {
         process_budget=none
         process_reason='unrecognized kernel version'
     fi
+}
+
+# The process rlimit step: the container's first process sets its soft and hard
+# process rlimit to the budget, then executes the entry program in its place,
+# or stops the container before the program runs. The script is fixed apart
+# from the validated budget, and calls nothing else. Bash and BusyBox name the
+# limit -u; dash, the /bin/sh of the agent and proxy images, names it -p (in
+# Bash, -p is the read-only pipe size, so it never sets anything there).
+process_step_script() {
+    # shellcheck disable=SC2016 # expanded by the container's shell
+    printf '{ ulimit -u %s 2>/dev/null || ulimit -p %s; } && exec "$0" "$@"' "$1" "$1"
+}
+
+# Podman runs a container created with --init through this program.
+init_program=/run/podman-init
+
+# On the process rlimit fallback, the session's entry program runs through the
+# step: the guard in restricted modes, /bin/bash in an unrestricted shell, and
+# the profile's agent program in place of the image entrypoint otherwise. Sets
+# process_command to the created command that budgets_applied requires.
+core_process_step() {
+    local index entry='' found=0
+    process_command=()
+    [[ "$process_budget" == rlimit ]] || return 0
+    for index in "${!container_args[@]}"; do
+        [[ "${container_args[$index]}" == --entrypoint ]] || continue
+        ((found == 0)) || die 'more than one entrypoint in the session options'
+        found=1
+        entry=${container_args[index + 1]:-}
+        container_args[index + 1]=/bin/sh
+    done
+    if ((found == 0)); then
+        entry=$AGENT_EXEC
+        container_args+=(--entrypoint /bin/sh)
+    fi
+    [[ "$entry" == /* ]] || die "invalid entry program for the process rlimit step: $entry"
+    process_command=(/bin/sh -c "$(process_step_script "$pids_limit")" "$entry")
+    args=("${process_command[@]:1}" "${args[@]}")
+    [[ "$network_mode" != unrestricted ]] || process_command=("$init_program" -- "${process_command[@]}")
 }
 
 core_engine_session() {
@@ -587,8 +623,10 @@ core_engine_session() {
             pids_enforced=1
             ;;
         rlimit)
-            # Override any containers.conf default that would request the missing controller.
-            budget_args+=(--pids-limit=-1 --ulimit "nproc=$pids_limit:$pids_limit")
+            # Override any containers.conf default that would request the missing
+            # controller. The limit itself is set inside the container
+            # (core_process_step), never with --ulimit.
+            budget_args+=(--pids-limit=-1)
             printf '%s: agent process budget enforced through the process rlimit (%s tasks of the session user, threads included): %s\n' "$AGENT_NAME" "$pids_limit" "$(cgroup_reason pids)" >&2
             ;;
         *)
@@ -610,39 +648,6 @@ core_engine_session() {
         single_record network_platform 'invalid restricted platform security policy response'
     elif ((qualification_probe)); then
         die 'qualification probes require restricted networking'
-    fi
-}
-
-core_engine_delegation() {
-    caller_uid=$(id -u)
-    caller_gid=$(id -g)
-    socket="${cfg_PODMAN_SOCKET:-${XDG_RUNTIME_DIR:-/run/user/$caller_uid}/podman/podman.sock}"
-    if [[ -z "${cfg_PODMAN_SOCKET:-}" && "${CONTAINER_HOST:-}" == unix:///* ]]; then
-        socket=${CONTAINER_HOST#unix://}
-    fi
-    if ((podman_access)); then
-        [[ "$socket" == /* ]] || die "Podman socket must be an absolute path: $socket"
-        [[ -S "$socket" && -r "$socket" && -w "$socket" ]] || die "Podman socket not accessible: $socket; enable 'systemctl --user start podman.socket' or start 'podman system service --time=0'"
-        socket=$(readlink -f -- "$socket")
-        capture_response socket_info engine --remote --url "unix://$socket" info --format '{{.Host.Security.Rootless}} {{.Host.RemoteSocket.Path}}' \
-            || die "cannot query Podman socket: $socket; check the rootless service, permissions and SELinux policy"
-        [[ "$socket_info" != *$'\r'* ]] || die "invalid Podman socket response: $socket"
-        socket_info=${socket_info%$'\n'}
-        [[ "$socket_info" != *$'\n'* ]] || die "invalid Podman socket response: $socket"
-        read -r socket_rootless host_socket <<< "$socket_info"
-        # Podman 5 reports the service socket as a unix:// URL; earlier releases report the bare path.
-        host_socket=${host_socket#unix://}
-        [[ "$socket_rootless" == true ]] || die "Podman socket must serve a rootless engine: $socket"
-        # A wrapper already inside a container sees a remapped Unix socket. Bind
-        # sources are resolved by the service, so use its host-side socket path.
-        [[ "$host_socket" == /* && "$host_socket" != *$'\n'* ]] || die "Podman socket $socket did not report an absolute host socket path"
-        # The reported path is a bind source: never the host root, and never a
-        # path this wrapper sees as something other than a socket. A path that is
-        # not visible here is the remapped case of a containerized wrapper.
-        [[ ! "$host_socket" =~ ^/+$ ]] || die "Podman socket $socket reported the root directory as its host socket path"
-        if [[ -e "$host_socket" || -L "$host_socket" ]]; then
-            [[ -S "$host_socket" ]] || die "Podman socket $socket reported a host socket path that is not a socket here: $host_socket"
-        fi
     fi
 }
 
@@ -873,7 +878,7 @@ core_agent_mounts() {
 
 # Names the core sets itself; neither agent_environment nor <P>_ENV_VARS may.
 core_set_names() {
-    printf '%s\n' HOME USER TERM COLORTERM LANG LC_ALL EDITOR VISUAL PATH CONTAINER_HOST CONTAINER_NAME \
+    printf '%s\n' HOME USER TERM COLORTERM LANG LC_ALL EDITOR VISUAL PATH CONTAINER_HOST DOCKER_HOST CONTAINER_NAME \
         CONTAINER_CONNECTION SSL_CERT_FILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE NODE_EXTRA_CA_CERTS "$AGENT_CONFIG_DIR_ENV"
 }
 proxy_names=(HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy)
@@ -968,7 +973,6 @@ core_session_environment() {
             container_args+=(--env "$name=$AGENT_HOME/ca/bundle.pem")
         done
     fi
-    ((podman_access == 0)) || container_args+=(--env CONTAINER_HOST=unix:///run/podman/podman.sock)
     for entry in "${AGENT_SESSION_ENV[@]}"; do
         container_args+=(--env "$entry")
     done
@@ -985,7 +989,11 @@ core_session_environment() {
     for name in "${AGENT_UNSET_ENV[@]}" CONTAINER_CONNECTION; do
         container_args+=(--unsetenv "$name")
     done
-    ((podman_access)) || container_args+=(--unsetenv CONTAINER_HOST)
+    if [[ -n "$engine_store" ]]; then
+        container_args+=(--env "CONTAINER_HOST=tcp://127.0.0.1:2375" --env "DOCKER_HOST=tcp://127.0.0.1:2375")
+    else
+        container_args+=(--unsetenv CONTAINER_HOST --unsetenv DOCKER_HOST)
+    fi
 }
 
 # The application: Bash in shell mode, otherwise the agent with its mode and
@@ -1021,6 +1029,7 @@ core_mounts_image() {
     toolchain_library=''
     toolchain_path=''
     toolchain_env=()
+    engine_store=''
     if ((toolchains_enabled && ! qualification_probe)); then
         command -v python3 >/dev/null \
             || die "host Python 3 is required for the toolchain library; set ${P}_TOOLCHAINS=0 to omit it"
@@ -1035,10 +1044,23 @@ core_mounts_image() {
                 library) toolchain_library=$toolchain_first ;;
                 path) toolchain_path+=":$toolchain_first" ;;
                 env) toolchain_env+=(--env "$toolchain_first=$toolchain_second") ;;
+                store) engine_store=$toolchain_first ;;
                 *) die 'unexpected toolchain library output' ;;
             esac
         done <<<"$toolchain_output"
         [[ "$toolchain_library" == /* ]] || die 'toolchain library check returned no library'
+    fi
+    # A library with images gives the session a private container engine
+    # (session-container-engine); its image is named after the agent image.
+    engine_image_name=''
+    engine_mounts=()
+    if [[ -n "$engine_store" ]]; then
+        [[ "$engine_store" == "$toolchain_library/.images" ]] || die 'unexpected image store from the toolchain library'
+        engine_image_name=${cfg_ENGINE_IMAGE:-$AGENT_IMAGE-engine:latest}
+        engine image exists "$engine_image_name" \
+            || die "the container engine image $engine_image_name is missing; rerun --container-setup to prepare it, or set ${P}_TOOLCHAINS=0"
+        engine_mounts=(--mount "$workspace_mount")
+        ((trust_host_ca == 0)) || engine_mounts+=(--ca-bundle "$ca_bundle")
     fi
 
     # Restricted sessions use the shared helper; this wrapper keeps only the
@@ -1117,7 +1139,7 @@ core_mounts_image() {
 
     # Every core bind passes the same path rule as agent mounts (M7).
     for core_path in "$workspace_mount" "${writable_state[@]}" ${toolchain_library:+"$toolchain_library"} \
-        ${ca_bundle:+"$ca_bundle"} ${host_socket:+"$host_socket"}; do
+        ${ca_bundle:+"$ca_bundle"}; do
         [[ "$core_path" == /* && "$core_path" != *[:$'\n'$'\r']* ]] \
             || die "bind paths must be absolute and contain no colon, CR or LF: $core_path"
     done
@@ -1152,14 +1174,6 @@ core_mounts_image() {
     fi
     ((run_timeout == 0)) || container_args+=(--timeout "$run_timeout")
     [[ ! -t 0 || ! -t 1 ]] || container_args+=(--tty)
-    if ((podman_access)); then
-        # The nested Podman client keeps its storage in private tmpfs mounts (U12).
-        container_args+=(
-            --volume "$host_socket:/run/podman/podman.sock:rw"
-            --tmpfs '/var/lib/containers:rw,noexec,nosuid,nodev,mode=0700,U,size=256m'
-            --tmpfs '/run/containers:rw,noexec,nosuid,nodev,mode=0700,U,size=64m'
-        )
-    fi
     ((trust_host_ca == 0)) || container_args+=(--volume "$ca_bundle:$AGENT_HOME/ca/bundle.pem:ro")
     # Unrestricted sessions run the image entrypoint, so --init reaps orphans;
     # the guard rejects its mount below /run, so restricted sessions cannot (U12).
@@ -1185,6 +1199,8 @@ core_mounts_image() {
 # Reserve the name with create, so an actual process exit code 125 is never
 # confused with a create-time naming collision. Remove only our own container.
 container_id=''
+engine_id=''
+engine_name=''
 client_pid=''
 diagnostics_pid=''
 diagnostics_fd=''
@@ -1356,6 +1372,7 @@ shutdown() {
             done
         fi
         [[ -z "$container_id" ]] || control rm --force --time 0 --ignore "$container_id" >/dev/null
+        [[ -z "$engine_id" ]] || control rm --force --volumes --time 0 --ignore "$engine_id" >/dev/null
         if [[ -n "$session_start_pid" ]]; then
             # The session helper owns a separate process group. Reap the whole
             # group before its leader, including an engine client that ignores TERM.
@@ -1390,6 +1407,170 @@ shutdown() {
     fi
     exit "$primary_status"
 }
+# Whether a created container carries exactly the session budgets: every enforced
+# one and no unenforced one (the agent's, and the engine's, design D7). The
+# rlimits are listed by name in brackets, so the field is never empty. On the
+# process rlimit fallback, the remaining arguments are the start of the created
+# command, which must set the limit inside the container.
+budgets_applied() {
+    local id=$1 description=$2 configured_budgets configured_memory configured_cpu configured_pids
+    local configured_rlimits extra entry value
+    shift 2
+    capture_response configured_budgets engine inspect --type container \
+        --format '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}} [{{range .HostConfig.Ulimits}}{{.Name}}={{.Soft}}:{{.Hard}},{{end}}]' "$id" \
+        || die "cannot inspect $description resource budgets; agent not started"
+    # shellcheck disable=SC2154 # set by capture_response
+    read -r configured_memory configured_cpu configured_pids configured_rlimits extra <<< "${configured_budgets%$'\n'}"
+    [[ -z "${extra:-}" && "$configured_memory" == "$expected_memory" && "$configured_cpu" == "$expected_cpu" \
+        && "${configured_rlimits:-}" =~ ^\[([A-Z_]+=[0-9]+:[0-9]+,)*\]$ ]] || return 1
+    if ((pids_enforced)); then
+        [[ "$configured_pids" == "$pids_limit" ]]
+        return
+    fi
+    [[ "$configured_pids" =~ ^(0|-1)$ ]] || return 1
+    [[ "$process_budget" == rlimit ]] || return 0
+    # A process rlimit the engine applies at creation is shared by every
+    # container of the user. One above the budget is the engine's default from
+    # the user's own limits; one at or below it is refused.
+    configured_rlimits=${configured_rlimits#[}
+    while [[ "$configured_rlimits" == *,* ]]; do
+        entry=${configured_rlimits%%,*}
+        configured_rlimits=${configured_rlimits#*,}
+        [[ "$entry" == RLIMIT_NPROC=* ]] || continue
+        entry=${entry#*=}
+        for value in "${entry%:*}" "${entry#*:}"; do
+            # More than 18 digits is above any budget (and outside Bash arithmetic).
+            ((${#value} > 18 || 10#$value > pids_limit)) || return 1
+        done
+    done
+    created_command_starts "$id" "$@"
+}
+
+# Whether a created container's command starts with the given values: .Path,
+# then each .Args entry read alone with index, which reads the same on Podman
+# 4.3 and 6.2. A container created with --init reports the init program.
+created_command_starts() {
+    local id=$1 value expected index=0
+    shift
+    (($#)) || return 1
+    capture_response value engine inspect --type container --format '{{.Path}}' "$id" || return 1
+    # shellcheck disable=SC2154 # set by capture_response
+    [[ "${value%$'\n'}" == "$1" ]] || return 1
+    shift
+    for expected in "$@"; do
+        capture_response value engine inspect --type container --format "{{index .Args $index}}" "$id" || return 1
+        [[ "${value%$'\n'}" == "$expected" ]] || return 1
+        index=$((index + 1))
+    done
+}
+
+# This launcher as <pid>-<start time>: unique while it runs, never reused after.
+launcher_identity() {
+    local stat fields
+    { read -r stat <"/proc/$1/stat"; } 2>/dev/null || return 1
+    read -r -a fields <<<"${stat##*) }"
+    [[ "${fields[19]:-}" =~ ^[0-9]+$ ]] || return 1
+    printf '%s-%s' "$1" "${fields[19]}"
+}
+
+# Remove the engines, of any wrapper, whose launcher no longer runs: an
+# interrupted launch could not remove its own (session-owned engine storage).
+engine_reconcile() {
+    local listing id owner
+    # The owner comes from inspect: in `ps` templates `.Labels` is a map in
+    # Podman 4.3 and a string in Podman 6.2, and no label template works on both.
+    listing=$(engine ps --filter "label=sandbox-engine.owner" --format '{{.ID}}' 2>/dev/null) || return 0
+    while read -r id; do
+        [[ "$id" =~ ^[a-f0-9]{12,64}$ ]] || continue
+        owner=$(engine container inspect --format '{{index .Config.Labels "sandbox-engine.owner"}}' "$id" \
+            2>/dev/null) || continue
+        [[ "$owner" =~ ^[0-9]+-[0-9]+$ ]] || continue
+        [[ "$(launcher_identity "${owner%%-*}" || true)" != "$owner" ]] || continue
+        engine rm --force --volumes --time 0 --ignore "$id" >/dev/null 2>&1 || true
+    done <<<"$listing"
+}
+
+# The session's private container engine (session-container-engine). It is
+# created first with the session's network options, and the session joins its
+# network namespace (design D1). Shutdown removes it with its storage.
+core_engine_start() {
+    local seccomp="$script_dir/launcher/engine/seccomp.json" default_profile index ready='' attempt owner
+    local engine_limit engine_soft engine_hard engine_cgroup network_args=() engine_args=() engine_command=()
+    engine_reconcile
+    if [[ ! -f "$seccomp" ]]; then
+        # A checkout has no prepared profile: derive one from the engine host's default.
+        capture_response default_profile engine info --format '{{.Host.Security.SECCOMPProfilePath}}' \
+            || die 'cannot query the default seccomp profile of the Podman engine'
+        single_record default_profile 'unverifiable default seccomp profile path from the Podman engine'
+        seccomp=$session_dir/engine-seccomp.json
+        python3 -I "$script_dir/setup/engine.py" seccomp "$default_profile" "$seccomp" >/dev/null \
+            || die 'cannot derive the container engine seccomp profile'
+    fi
+    for index in "${!container_args[@]}"; do
+        if [[ "${container_args[$index]}" == --network=* ]]; then
+            network_args+=("${container_args[$index]}")
+            unset 'container_args[index]'
+        fi
+    done
+    container_args=("${container_args[@]}")
+    owner=$(launcher_identity "$$") || die 'cannot identify this launcher for its container engine'
+    engine_name=$prefix-engine-$session_token
+    python3 -I "$script_dir/setup/engine.py" options --name "$engine_name" --seccomp "$seccomp" \
+        --store "$engine_store" "${engine_mounts[@]}" --label "$ownership_label=$session_token" \
+        --label "sandbox-engine.owner=$owner" >"$session_dir/engine.args" || die 'invalid container engine options'
+    mapfile -d '' -t engine_args <"$session_dir/engine.args"
+    ((${#engine_args[@]})) || die 'invalid container engine options'
+    # The engine's first process is its startup program (no --init): it sets the
+    # process limit given after the port, delegates the engine's cgroup subtree
+    # when eligible, and hands over to the services as the engine user.
+    engine_command=(/usr/local/bin/sandbox-engine-start 2375)
+    [[ "$process_budget" != rlimit ]] || engine_command+=("$pids_limit")
+    engine_id=$(podman run --detach "${engine_args[@]}" "${network_args[@]}" "${budget_args[@]}" \
+        "$engine_image_name" "${engine_command[@]:1}" </dev/null) || die "cannot start the container engine $engine_name"
+    [[ "$engine_id" =~ ^[a-f0-9]{64}$ ]] || die 'invalid container engine ID returned by Podman'
+    budgets_applied "$engine_id" 'container engine' "${engine_command[@]}" \
+        || die "container engine resource budgets were not applied as expected; engine reports controllers $cgroup_controllers with the $cgroup_manager cgroup manager; agent not started"
+    printf '%s: container engine %s: the session budgets apply to it as well\n' "$AGENT_NAME" "$engine_name" >&2
+    for ((attempt = 0; attempt < 30; attempt++)); do
+        # Commands in the engine run as its user, never as its startup root.
+        ready=$(engine exec --user podman "$engine_id" podman --remote --url tcp://127.0.0.1:2375 info \
+            --format '{{.Host.Security.Rootless}}' 2>/dev/null) && [[ "$ready" == true ]] && break
+        ready=''
+        sleep 1
+    done
+    [[ "$ready" == true ]] || die "the container engine $engine_name did not answer as a rootless engine within 30 seconds; agent not started"
+    # The engine's cgroup delegation (support-nested-systemd-containers): a
+    # delegated engine is silent, an ineligible one is announced with its reason,
+    # and any other state stops the launch.
+    capture_response engine_cgroup engine exec --user podman "$engine_id" /usr/local/bin/sandbox-engine-cgroup \
+        || die "cannot read the cgroup delegation state of the container engine $engine_name; agent not started"
+    single_record engine_cgroup "invalid cgroup delegation state from the container engine $engine_name; agent not started"
+    # shellcheck disable=SC2154 # set by capture_response
+    case $engine_cgroup in
+        delegated) ;;
+        'ineligible: '*)
+            [[ "${engine_cgroup#ineligible: }" =~ ^[[:print:]]{1,200}$ ]] \
+                || die "invalid cgroup delegation state from the container engine $engine_name; agent not started"
+            printf '%s: container engine %s: systemd containers and explicit limits for nested containers are unavailable: %s\n' \
+                "$AGENT_NAME" "$engine_name" "${engine_cgroup#ineligible: }" >&2
+            ;;
+        *) die "the container engine $engine_name reports an unexpected cgroup delegation state; agent not started" ;;
+    esac
+    if [[ "$process_budget" == rlimit ]]; then
+        # The startup program is PID 1 and keeps the limit through its exec calls.
+        # A process started with exec gets the engine-applied limits instead, so
+        # only PID 1's reading is evidence.
+        capture_response engine_limit engine exec --user podman "$engine_id" grep '^Max processes ' /proc/1/limits \
+            || die "cannot read the process rlimit of the container engine $engine_name; agent not started"
+        # shellcheck disable=SC2154 # set by capture_response
+        read -r _ _ engine_soft engine_hard _ <<<"${engine_limit%$'\n'}"
+        [[ "${engine_soft:-}" == "$pids_limit" && "${engine_hard:-}" == "$pids_limit" ]] \
+            || die "the container engine $engine_name does not run with the process rlimit fallback (soft and hard $pids_limit); agent not started"
+    fi
+    : >"$session_dir/hosts"
+    container_args+=(--network "container:$engine_id" --volume "$session_dir/hosts:/etc/hosts:ro")
+}
+
 # Phases 6-7: session directory, qualification check, creation, budget
 # verification, start and lifetime notice; shutdown runs from the traps.
 core_create_start() {
@@ -1406,7 +1587,10 @@ core_create_start() {
     session_token=${session_dir##*/}
     printf '%s: network mode=%s\n' "$AGENT_NAME" "$network_mode" >&2
     if [[ "$network_mode" != unrestricted ]] && ((qualification_probe == 0)); then
-        env "${P}_IMAGE=$image" python3 -I "$script_dir/network/qualify.py" check &
+        # A session with a container engine also needs the engine's qualification.
+        qualification_check=(check)
+        [[ -z "$engine_store" ]] || qualification_check+=(--engine)
+        env "${P}_IMAGE=$image" python3 -I "$script_dir/network/qualify.py" "${qualification_check[@]}" &
         qualification_check_pid=$!
         if wait "$qualification_check_pid"; then
             qualification_check_pid=''
@@ -1441,6 +1625,8 @@ core_create_start() {
         container_args+=("${restricted[@]:1:${restricted[0]}}")
         args=("${restricted[@]:$((1 + restricted[0]))}")
     fi
+    core_process_step
+    [[ -z "$engine_store" ]] || core_engine_start
     # Measure the session from just before the container is created, so the
     # engine's lifetime limit cannot have started earlier, with a monotonic clock:
     # WSL2 steps the wall clock to resynchronise with the host, which moves
@@ -1499,37 +1685,22 @@ core_create_start() {
         fi
     done
     [[ -n "$container_id" ]] || die 'could not reserve a container name after 20 attempts'
+    if [[ -n "$engine_id" ]]; then
+        # A container joined to another's network gets no entry of its own, and
+        # Podman refuses --add-host there; the private file restores it (design D1).
+        printf '127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n127.0.0.1\t%s %s\n' \
+            "${container_id:0:12}" "$name" >"$session_dir/hosts"
+    fi
 
     # Engine flags alone are not evidence: require the created configuration to
-    # carry every enforced budget and no unenforced one. Setup smoke and
-    # qualification measure the effective cgroups.
-    # The rlimits are listed by name in brackets, so the field is never empty.
-    capture_response configured_budgets engine inspect --type container \
-        --format '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}} [{{range .HostConfig.Ulimits}}{{.Name}}={{.Soft}}:{{.Hard}},{{end}}]' "$container_id" \
-        || die 'cannot inspect agent resource budgets; agent not started'
-    # shellcheck disable=SC2154 # set by capture_response
-    read -r configured_memory configured_cpu configured_pids configured_rlimits extra <<< "${configured_budgets%$'\n'}"
-    budgets_applied=0
-    if [[ -z "${extra:-}" && "$configured_memory" == "$expected_memory" && "$configured_cpu" == "$expected_cpu" \
-            && "${configured_rlimits:-}" =~ ^\[([A-Z_]+=[0-9]+:[0-9]+,)*\]$ ]]; then
-        if ((pids_enforced)); then
-            [[ "$configured_pids" == "$pids_limit" ]] && budgets_applied=1
-        elif [[ "$configured_pids" =~ ^(0|-1)$ ]]; then
-            # The fallback needs exactly one process rlimit entry at the budget; otherwise
-            # an engine default inherited from the user's own limits is not a budget.
-            if [[ "$process_budget" != rlimit ]]; then
-                budgets_applied=1
-            elif [[ "$configured_rlimits" == *"RLIMIT_NPROC=$pids_limit:$pids_limit,"* ]]; then
-                local other_rlimits=${configured_rlimits/"RLIMIT_NPROC=$pids_limit:$pids_limit,"/}
-                [[ "$other_rlimits" != *RLIMIT_NPROC=* ]] && budgets_applied=1
-            fi
-        fi
+    # carry every enforced budget and no unenforced one, and on the process
+    # rlimit fallback the step that sets it. Setup smoke and qualification
+    # measure the effective limits.
+    if ! budgets_applied "$container_id" agent "${process_command[@]}"; then
+        [[ "$process_budget" != rlimit ]] \
+            || die "agent resource budgets were not applied as expected (memory=$expected_memory nano_cpus=$expected_cpu process rlimit fallback: the container must start with the step that sets the process rlimit to $pids_limit, and no engine process rlimit at or below it); engine reports controllers $cgroup_controllers with the $cgroup_manager cgroup manager; check the process rlimit fallback and rootless cgroup v2 controller delegation; agent not started"
+        die "agent resource budgets were not applied as expected (memory=$expected_memory nano_cpus=$expected_cpu pids=$( ((pids_enforced)) && printf '%s' "$pids_limit" || printf 'unenforced')); engine reports controllers $cgroup_controllers with the $cgroup_manager cgroup manager; check rootless cgroup v2 controller delegation; agent not started"
     fi
-    if ((budgets_applied == 0)) && [[ "$process_budget" == rlimit ]]; then
-        die "agent resource budgets were not applied as expected (memory=$expected_memory nano_cpus=$expected_cpu process rlimit fallback nproc=$pids_limit:$pids_limit); engine reports controllers $cgroup_controllers with the $cgroup_manager cgroup manager; check the process rlimit fallback and rootless cgroup v2 controller delegation; agent not started"
-    fi
-    ((budgets_applied)) \
-        || die "agent resource budgets were not applied as expected (memory=$expected_memory nano_cpus=$expected_cpu pids=$( ((pids_enforced)) && printf '%s' "$pids_limit" || printf 'unenforced')); engine reports controllers $cgroup_controllers with the $cgroup_manager cgroup manager; check rootless cgroup v2 controller delegation; agent not started"
 
     # Explicit stdin redirection prevents Bash from replacing stdin with /dev/null
     # for the background client; traps can forward signals while wait is active.

@@ -1,0 +1,34 @@
+{
+  "schema": 2,
+  "name": "maven3.9",
+  "version": "3.9.16",
+  "sources": [
+    {
+      "image": "docker.io/library/maven@sha256:99e61abcff91a9b1333463bd8451fb18495d6eba9250ac66a338b518f8278320",
+      "path": "/usr/share/maven"
+    }
+  ],
+  "path": [
+    "bin"
+  ],
+  "env": {
+    "MAVEN_HOME": {
+      "toolchain": ""
+    },
+    "MAVEN_OPTS": {
+      "value": "-Dmaven.repo.local=/tmp/m2"
+    }
+  },
+  "requires": [
+    "java21"
+  ],
+  "notes": [
+    "Maven prints a jansi native-library warning because /tmp is noexec; output is unaffected.",
+    "Dependency downloads are blocked unless the network policy allows the repository; keep dependencies in the workspace or use an unrestricted session."
+  ],
+  "check": [
+    "mvn",
+    "-v"
+  ],
+  "default": true
+}

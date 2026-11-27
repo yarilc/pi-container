@@ -11,6 +11,7 @@ Agent-specific names come from the protected agent profile. The wrapper owns
 the session directory, its shutdown budget and the agent container.
 """
 import argparse
+import json
 import os
 from pathlib import Path
 import re
@@ -152,6 +153,21 @@ def prepare(args):
     print(' '.join(record))
 
 
+def image_program(image):
+    """An image's entrypoint and default command, which it runs without --entrypoint."""
+    output = run(['podman', 'image', 'inspect', '--format', '[{{json .Config.Entrypoint}},{{json .Config.Cmd}}]', image],
+                 stdout=subprocess.PIPE, text=True).stdout
+    try:
+        configured = json.loads(output)
+        fields = [field or [] for field in configured] if type(configured) is list and len(configured) == 2 else []
+        program = [*fields[0], *fields[1]] if all(type(field) is list for field in fields) else []
+    except (ValueError, TypeError, IndexError):
+        program = []
+    if not program or any(type(part) is not str or not part or '\0' in part for part in program):
+        die('cannot read the program of the proxy image; agent not started')
+    return program
+
+
 def start(args):
     # Own process group: the wrapper terminates this operation and every engine
     # client it started as one unit, then recovers ownership with ``stop``.
@@ -162,14 +178,16 @@ def start(args):
                           stdout=subprocess.PIPE, text=True).stdout.rstrip('\n')
     note(f'network profile={args.profile} policy={policy_identity}')
     note(f'egress session={token} diagnostics={session}/logs/denials.jsonl')
-    fixture, command = [], []
+    # The proxy program: the proxy image's own (read below when needed), or the TLS
+    # qualification fixture's.
+    fixture, entry, command, program = [], [], [], []
     if args.probe:
         fixture += ['--label', PROFILE.label('qualification') + '=' + args.token]
         if args.tls:
-            fixture += ['--entrypoint', 'python3',
-                        '--volume', f'{Path(args.installation) / "network/qualification_proxy.py"}:/qualification-proxy.py:ro',
+            fixture += ['--volume', f'{Path(args.installation) / "network/qualification_proxy.py"}:/qualification-proxy.py:ro',
                         '--volume', f'{Path(args.qualification_input).parent}:/qualification:ro']
-            command = ['-I', '/qualification-proxy.py']
+            entry, command = ['--entrypoint', 'python3'], ['-I', '/qualification-proxy.py']
+            program = ['python3', *command]
     # Proxy budgets are enforced only when the engine delegates their controller;
     # unenforced ones are announced and verified absent (never half-applied).
     controllers = run(['podman', 'info', '--format', '{{.Host.CgroupControllers}}'],
@@ -189,11 +207,15 @@ def start(args):
         die('unverifiable cgroup controller list or cgroup manager from the Podman engine; agent not started')
     limit = PROXY_PIDS_LIMIT
     budgets = ['--memory=256m' if 'memory' in enforced else None,
-               *{'cgroup': [f'--pids-limit={limit}'], 'rlimit': ['--pids-limit=-1', '--ulimit', f'nproc={limit}:{limit}'],
-                 'none': ['--pids-limit=-1']}[process]]
+               f'--pids-limit={limit}' if process == 'cgroup' else '--pids-limit=-1']
     if 'memory' not in enforced:
         note('proxy memory budget not enforced: ' + agent_budgets.cgroup_reason('memory', manager))
     if process == 'rlimit':
+        # The proxy's first process sets the limit, never the engine: a limit
+        # applied at creation is shared by every container of the user. The step
+        # then executes what the immutable proxy image would run by itself.
+        program = program or image_program(args.proxy_image)
+        entry, command = ['--entrypoint', '/bin/sh'], [*agent_budgets.process_step(limit), *program]
         note(f'proxy process budget enforced through the process rlimit ({limit} tasks of the proxy user, '
              'threads included): ' + agent_budgets.cgroup_reason('pids', manager))
     elif process == 'none':
@@ -213,7 +235,7 @@ def start(args):
              '--volume', f'{session}/transport:/transport:rw',
              '--volume', f'{session}/logs:/logs:rw',
              '--env', 'EGRESS_PROFILE=' + args.profile, '--env', 'EGRESS_SESSION=' + token,
-             *fixture, args.proxy_image, *command], stdout=output)
+             *fixture, *entry, args.proxy_image, *command], stdout=output)
     proxy_id = read(session / 'proxy.stdout')
     if not IDENTITY.fullmatch(proxy_id):
         die('invalid egress proxy container ID')
@@ -234,14 +256,21 @@ def start(args):
         if bounded(['podman', 'inspect', '--type', 'container', '--format', '{{json .HostConfig}}', proxy_id],
                    CHECK_SECONDS, output):
             die('cannot inspect proxy resource budgets; agent not started')
+    records = [session / 'proxy.config', session / 'proxy.effective']
+    if process == 'rlimit':
+        # The created command, which must start with the step that sets the limit.
+        records.append(session / 'proxy.command')
+        with open(records[-1], 'w') as output:
+            if bounded(['podman', 'inspect', '--type', 'container', '--format', '[{{json .Path}},{{json .Args}}]',
+                        proxy_id], CHECK_SECONDS, output):
+                die('cannot inspect the proxy command; agent not started')
     hardening = Path(args.installation) / 'network/proxy_hardening.py'
     with open(session / 'proxy.effective', 'w') as output:
         if bounded(['podman', 'exec', proxy_id, 'python3', '-I', '-c', hardening.read_text(), 'probe'],
                    CHECK_SECONDS, output):
             die('cannot verify effective proxy hardening; check rootless cgroup v2 memory/pids controllers '
                 'and proxy image; agent not started')
-    run([PYTHON, '-I', hardening, 'verify', session / 'proxy.config', session / 'proxy.effective',
-         ','.join(enforced), process])
+    run([PYTHON, '-I', hardening, 'verify', *records[:2], ','.join(enforced), process, *records[2:]])
     print(policy_identity)
 
 

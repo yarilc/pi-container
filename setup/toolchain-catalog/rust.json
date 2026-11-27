@@ -1,0 +1,61 @@
+{
+  "schema": 2,
+  "name": "rust",
+  "version": "1.100.0",
+  "sources": [
+    {
+      "url": "https://static.rust-lang.org/dist/rustc-1.100.0-x86_64-unknown-linux-gnu.tar.xz",
+      "sha256": "f1d0b1dec81dab6f523cd098507763487b0d4bd7fd2c87582f154128719be03b",
+      "path": "rustc-1.100.0-x86_64-unknown-linux-gnu/rustc/bin",
+      "target": "bin"
+    },
+    {
+      "url": "https://static.rust-lang.org/dist/rustc-1.100.0-x86_64-unknown-linux-gnu.tar.xz",
+      "sha256": "f1d0b1dec81dab6f523cd098507763487b0d4bd7fd2c87582f154128719be03b",
+      "path": "rustc-1.100.0-x86_64-unknown-linux-gnu/rustc/lib",
+      "target": "lib"
+    },
+    {
+      "url": "https://static.rust-lang.org/dist/cargo-1.100.0-x86_64-unknown-linux-gnu.tar.xz",
+      "sha256": "7e29ce07d7c6e92d1826870575ba27d57fff6cb3e754aa57d99099cb88fab35d",
+      "path": "cargo-1.100.0-x86_64-unknown-linux-gnu/cargo/bin",
+      "target": "bin"
+    },
+    {
+      "url": "https://static.rust-lang.org/dist/rust-std-1.100.0-x86_64-unknown-linux-gnu.tar.xz",
+      "sha256": "4591b6486594ded52ecd6135db95bf9355bbd3ca7a380888b141528bbcf9a5d4",
+      "path": "rust-std-1.100.0-x86_64-unknown-linux-gnu/rust-std-x86_64-unknown-linux-gnu/lib",
+      "target": "lib"
+    },
+    {
+      "url": "https://static.rust-lang.org/dist/rust-std-1.100.0-x86_64-unknown-linux-musl.tar.xz",
+      "sha256": "9d5211bc7b40195f9700a6f9133831832a32f50d0e2a2c0ae8af801e7656de5c",
+      "path": "rust-std-1.100.0-x86_64-unknown-linux-musl/rust-std-x86_64-unknown-linux-musl/lib",
+      "target": "lib"
+    }
+  ],
+  "path": [
+    "bin",
+    "lib/rustlib/x86_64-unknown-linux-gnu/bin"
+  ],
+  "env": {
+    "CARGO_HOME": {
+      "value": "/tmp/cargo"
+    },
+    "CARGO_BUILD_TARGET": {
+      "value": "x86_64-unknown-linux-musl"
+    },
+    "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER": {
+      "value": "rust-lld"
+    }
+  },
+  "notes": [
+    "Builds target x86_64-unknown-linux-musl and link with rust-lld, because the runtime image has no C linker; crates with build scripts or procedural macros need a host C linker and fail.",
+    "Dependency downloads are blocked unless the network policy allows the repository; keep dependencies in the workspace or use an unrestricted session."
+  ],
+  "check": [
+    "cargo",
+    "--version"
+  ],
+  "default": true
+}

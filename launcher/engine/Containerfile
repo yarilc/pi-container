@@ -1,0 +1,45 @@
+# Private per-session container engine (session-container-engine, design D3).
+# The base image's own defaults target other uses; each one the spike measured
+# is replaced here rather than overridden when the engine starts.
+# Pin an -immutable tag: quay.io rebuilds the other podman/stable tags daily and
+# deletes their earlier manifests, so a digest taken from them stops resolving.
+# The digest is the multi-architecture index.
+FROM quay.io/podman/stable:v6.2.0-immutable@sha256:e0da0a3aba6b332587c693dc206efa2dd2888dde286c280ef852cbad72c0e701
+
+# Rootless engine defaults with private namespaces for nested containers.
+COPY containers.conf /etc/containers/containers.conf
+COPY storage.conf /etc/containers/storage.rootless.conf.d/30-sandbox-engine.conf
+# Removed: the vendor drop-in selecting journald (empty `podman logs`) and the
+# rootless drop-in giving every nested container the engine's /proc. Emptied:
+# the mount passthrough of the engine host's subscription secrets. Added: the
+# skeleton root file system of the qualification probe, run with the engine's
+# /usr bound read-only (design D10), and the API service's runtime directory.
+RUN rm -f /usr/share/containers/containers.conf.d/00-vendor.conf \
+          /etc/containers/containers.rootless.conf.d/20-image_build.conf \
+    && : > /etc/containers/mounts.conf \
+    && : > /usr/share/containers/mounts.conf \
+    && mkdir -p /opt/sandbox-engine/probe-rootfs \
+    && cd /opt/sandbox-engine/probe-rootfs \
+    && mkdir dev etc proc run sys tmp usr var \
+    && ln -s usr/bin bin && ln -s usr/sbin sbin && ln -s usr/lib lib && ln -s usr/lib64 lib64 \
+    && install -d -o podman -g podman -m 0700 /run/user/1000 /var/lib/sandbox-engine \
+    && test -x /usr/libexec/podman/catatonit && command -v capsh >/dev/null
+# The startup program (start.sh) is the engine's first process: it delegates the
+# engine's own cgroup subtree when the engine is eligible (cgroup.sh), then runs
+# the services (entrypoint.sh) under catatonit as the engine user. The launcher
+# starts it as root; any other use of the image starts as the podman user.
+COPY --chmod=0755 start.sh /usr/local/bin/sandbox-engine-start
+COPY --chmod=0755 cgroup.sh /usr/local/bin/sandbox-engine-cgroup
+COPY --chmod=0755 entrypoint.sh /usr/local/bin/sandbox-engine
+# The resolver of restricted sessions: an engine created with --network=none has
+# no generated /etc/resolv.conf, which nested bridge networks need. Engines with a
+# network get Podman's generated file over it.
+COPY resolv.conf /etc/resolv.conf
+ENV XDG_RUNTIME_DIR=/run/user/1000
+# The capabilities the engine is started with (container_options() in
+# setup/engine.py); the startup program keeps CHOWN only in the bounding set.
+# The base labels itself with Podman's defaults, which the engine drops, so
+# Podman would log an error at every engine start.
+LABEL io.containers.capabilities="SETUID,SETGID,SYS_CHROOT,CHOWN"
+USER podman
+ENTRYPOINT ["/usr/local/bin/sandbox-engine-start"]

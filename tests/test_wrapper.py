@@ -11,7 +11,6 @@ import json
 import os
 from pathlib import Path
 import shutil
-import socket
 import subprocess
 import sys
 import tempfile
@@ -56,11 +55,6 @@ class WrapperTests(unittest.TestCase):
         self.env = {'PATH': str(self.bin) + ':' + os.environ['PATH'], 'HOME': str(self.home),
                     'PI_CONTAINER_NETWORK': 'unrestricted', 'PI_CONTAINER_MAINTENANCE': '1',
                     'FAKE_LABEL_HASH': LABEL_HASH, 'FAKE_LOG': str(self.log)}
-        self.socket = socket.socket(socket.AF_UNIX)
-        self.socket_path = self.base / 'podman.sock'
-        self.socket.bind(str(self.socket_path))
-        self.addCleanup(self.socket.close)
-        self.env['PI_CONTAINER_PODMAN_SOCKET'] = str(self.socket_path)
 
     def run_wrapper(self, *args, wrapper=WRAPPER, **env):
         self.log.unlink(missing_ok=True)
@@ -253,7 +247,7 @@ class RestrictedTests(WrapperTests):
         self.runtime = self.base / 'runtime'
         self.runtime.mkdir(mode=0o700)
         self.keys = {name: 'host-' + name for name in KEYS.values()}
-        self.restricted = {'PI_CONTAINER_PODMAN': '', 'FAKE_NETWORK': '1', 'FAKE_INFO': 'true linux true',
+        self.restricted = {'FAKE_NETWORK': '1', 'FAKE_INFO': 'true linux true',
                            'CONTAINER_HOST': 'unix:///run/service.sock', **self.keys}
 
     def run_offline(self, *args, **env):
@@ -333,8 +327,6 @@ class RestrictedTests(WrapperTests):
                 result = run('-p', 'x', PI_CONTAINER_YOLO='1')
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stderr.count(NOTICE), 1)
-        control = self.wrapper.parent / 'network/control.py'
-        control.write_text(control.read_text() + "if args[0]=='qualification-input': print('f'*32+' 0')\n")
         result = self.run_offline('--container-qualify-probe', PI_CONTAINER_YOLO='1')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.tail(self.agent_create()), ['/usr/bin/python3', '-I',

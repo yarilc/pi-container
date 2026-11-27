@@ -61,60 +61,8 @@ Building the image, including the first build, needs exact
 `network/relay.py`, `network/mux.py` or `.version` changes, the image is
 stale: the launch stops until `--container-build` is run again under
 maintenance. For restricted networking, see [Network modes](#network-modes).
-
-## Optional host Podman API access
-
-**⚠️ WARNING:** Mounting the host Podman socket gives the container full
-control over the host's container runtime. The AI agent can use this to
-create privileged containers, mount host filesystems, and effectively
-escape container isolation. **This feature is OFF by default**.
-
-To enable, set `PI_CONTAINER_PODMAN=1`:
-
-```bash
-PI_CONTAINER_PODMAN=1 pic "Debug the failing container"
-```
-
-The container includes the `podman` CLI so you can interact
-with the **host's Podman service** from inside the container.
-
-```bash
-# Inside pi, or via `pic -p`:
-podman ps       # Lists host containers
-podman images   # Lists host images
-```
-
-### Podman socket architecture
-
-Only exact `PI_CONTAINER_PODMAN=1` enables delegation; the client is part of
-every image. Unset, empty, `0`, `false`, `true`, `yes`, and all other values
-disable it.
-
-Selection uses `PI_CONTAINER_PODMAN_SOCKET`, then explicit Unix `CONTAINER_HOST`, then
-`${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock`. The accessible socket
-must be absolute, canonical, readable/writable, and report a rootless service
-with an absolute `Host.RemoteSocket.Path` (a `unix://` URL is reduced to its
-path). A reported path made only of slashes is refused, and so is one that
-exists in the wrapper's own namespace as anything but a socket; a path the
-wrapper cannot see is accepted as the remapped socket of a containerized
-wrapper. Enabled verification failures stop
-before image operations; no warning-only fallback or automatic service start
-occurs. Start the rootless service yourself if needed, for example
-`systemctl --user start podman.socket`.
-
-The verified service reports the host-side bind source, which may differ from
-the socket visible to a containerized caller. It is mounted at
-`/run/podman/podman.sock`, with session
-`CONTAINER_HOST=unix:///run/podman/podman.sock`. Disabled sessions explicitly
-unset `CONTAINER_HOST`; `PI_CONTAINER_ENV_VARS` cannot change this selection or
-inject a named connection. Delegated sessions get private tmpfs mounts at
-`/var/lib/containers` and `/run/containers` for nested Podman. Containerized callers must preserve host absolute workspace
-and state paths. Use a same-host service; a Unix URI alone does not establish
-host identity. Client/server version compatibility is still required.
-
-Delegation gives the service user's authority over host containers and allows
-further host mounts beyond the workspace. It is independent of native Pi
-permission controls.
+For running container-based tests through a private session engine (replacing
+host Podman delegation), see [Container tests](#container-tests).
 
 ## Usage
 
@@ -327,8 +275,9 @@ Restricted modes never forward host proxy or CA variables.
 | `PI_CONTAINER_CONFIG_DIR` | Private host directory replacing only `~/.pi`; conflicts with `PI_CONTAINER_STATE_DIR`. Inside the session it is always `/pi-home/.pi` |
 | `PI_CONTAINER_TRUST_HOST_CA`, `PI_CONTAINER_CA_BUNDLE` | Opt-in host CA trust; see [Host CA trust](#host-ca-trust) |
 | `PI_CONTAINER_IMAGE` | Override the container image name (default: `localhost/pi-container:latest`) |
-| `PI_CONTAINER_PODMAN` | Only exact `1` enables the client and verified host socket; all other values disable delegation |
-| `PI_CONTAINER_PODMAN_SOCKET` | Absolute accessible socket override; then Unix `CONTAINER_HOST`, then `${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock` |
+| `PI_CONTAINER_ENGINE_IMAGE` | Override the session container engine image name (default: `localhost/pi-container-engine:latest`) |
+| `PI_CONTAINER_TOOLCHAINS` | `0`, `false` or `no` omits `/toolchains` and disables the session container engine (default: enabled) |
+| `PI_CONTAINER_TOOLCHAINS_DIR` | Toolchain library shared by the wrappers (default: `${XDG_DATA_HOME:-~/.local/share}/sandbox-toolchains`) |
 | `PI_CONTAINER_STATE_DIR` | Private host directory holding `.pi` and `.agents` instead of `~/.pi` and `~/.agents`; see [Isolated state](#isolated-state) |
 | `PI_CONTAINER_MEMORY_LIMIT` | Container memory limit (default: `4g`); see [Session hardening](#session-hardening-budgets-and-lifetime) |
 | `PI_CONTAINER_CPU_LIMIT` | Container CPU limit (default: `2`) |
@@ -343,7 +292,11 @@ Restricted modes never forward host proxy or CA variables.
 | `TERM`, `COLORTERM`, `LANG`, `LC_ALL` | Forwarded by name when set |
 | `EDITOR`, `VISUAL` | Always `nano` in the session |
 
-Earlier names (`PI_IMAGE_NAME`, `PI_ENABLE_PODMAN`, `PI_PODMAN_SOCKET`,
+Host Podman delegation was removed: exact `PI_CONTAINER_PODMAN=1` stops every
+launch and build-only refresh with migration guidance pointing to image
+toolchains ([Container tests](#container-tests)), while other values of
+`PI_CONTAINER_PODMAN` and `PI_CONTAINER_PODMAN_SOCKET` are ignored. Earlier
+names (`PI_IMAGE_NAME`, `PI_ENABLE_PODMAN`, `PI_PODMAN_SOCKET`,
 `PI_MEMORY_LIMIT`, `PI_CPU_LIMIT`, `PI_PIDS_LIMIT`, `PI_RUN_TIMEOUT`,
 `PI_ALLOW_UNSAFE_PWD`, `PI_MOUNT_GITCONFIG`, `PI_ENV_VARS`,
 `PI_READONLY_CONFIG`, `PI_NETWORK`, `PI_PULL_ALWAYS`, `PI_DEBUG`) and
@@ -357,14 +310,14 @@ stops with `setup required:` guidance before any engine call or state change.
 Unknown values fail before image operations, and a failed restricted launch
 never retries with unrestricted networking.
 
-| Mode | Agent network | Podman delegation |
+| Mode | Agent network | Session container engine |
 | --- | --- | --- |
-| `offline` | Own loopback, pipes and connected socket pairs only; no model provider is reachable | Rejected |
-| `provider` (default) | As offline, plus the exact HTTPS host of one protected provider profile through an external proxy | Rejected |
-| `unrestricted` (explicit only) | Ordinary runtime networking | Exact `PI_CONTAINER_PODMAN=1` |
+| `offline` | Own loopback, pipes and connected socket pairs only; no model provider is reachable | Private engine inside the offline namespace when the library holds images; no host socket |
+| `provider` (default) | As offline, plus the exact HTTPS host of one protected provider profile through an external proxy | Private engine inside the provider namespace when the library holds images; no host socket |
+| `unrestricted` (explicit only) | Ordinary runtime networking | Private engine inside the session namespace when the library holds images; no host socket |
 
 The restricted implementation is shared with `sandbox-container` and copied
-unchanged from its tag `sandbox-ref-28`; see
+unchanged from its tag `sandbox-ref-36`; see
 [docs/network-contract.md](docs/network-contract.md) and
 [network/README.md](network/README.md).
 
@@ -465,13 +418,13 @@ import the CAs that Windows trusts
 
 ## Toolchains
 
-Sessions can use extra toolchains, such as Java, Go or Python, without Podman
-access, an unrestricted network or a rebuilt image. The operator keeps a
+Sessions can use extra toolchains, such as Java, Go or Python, without host
+Podman access, an unrestricted network or a rebuilt image. The operator keeps a
 toolchain library on the host. Every session sees it read-only, with `nosuid`
 and `nodev`, at `/toolchains`. The library is shared by the Claude, Codex,
-OpenCode, Pi and Antigravity wrappers. A toolchain adds no network, IPC or
-privilege capability: it runs under the same restrictions as the rest of the
-session.
+OpenCode, Pi and Antigravity wrappers and the reference shell. A toolchain adds
+no network, IPC or privilege capability: it runs under the same restrictions as
+the rest of the session.
 
 - **Location:** `${XDG_DATA_HOME:-~/.local/share}/sandbox-toolchains`, or
   `PI_CONTAINER_TOOLCHAINS_DIR`. The launcher creates it private (`0700`) when
@@ -482,7 +435,7 @@ session.
   `PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1` contains the default library, so that
   launch stops. Move the library with `PI_CONTAINER_TOOLCHAINS_DIR`, or omit it.
 - **Disable:** `PI_CONTAINER_TOOLCHAINS=0` (or `false`, `no`) starts a session
-  without the mount.
+  without the mount and without a session container engine.
 - **Live updates:** a toolchain added or removed on the host appears in
   running sessions without a restart.
 
@@ -492,46 +445,81 @@ The operator runs these commands on the host; `--container-toolchain` must be
 the first argument:
 
 ```bash
-pic --container-toolchain add java21.json   # install or replace from a recipe
-pic --container-toolchain list              # name, version, default, size, verified base
+pic --container-toolchain add java21            # install or replace a catalog recipe
+pic --container-toolchain add ~/recipes/x.json  # install or replace an operator recipe
+pic --container-toolchain list                  # installed toolchains, then the catalog
 pic --container-toolchain remove java21
-pic --container-toolchain verify [java21]   # rerun the checks on the current runtime image
+pic --container-toolchain verify [java21]       # rerun the checks on the current runtime image
 ```
 
-- **Sources:** a toolchain is a relocatable directory tree, taken either from
-  a path inside an OCI image referenced by `@sha256:` digest, or from a local
-  archive with its SHA-256. The command never downloads archives.
-- **Pulls:** pulling a missing image requires exact
-  `PI_CONTAINER_MAINTENANCE=1`. Like image builds, the pull happens on the
-  host, outside runtime filtering.
-- **Extraction:** it rejects absolute paths, `..`, device nodes and links
-  that leave the toolchain, and clears setuid and setgid bits.
+An argument without `/` that does not end in `.json` names a recipe of the
+release's catalog (see [Recipes](#recipes)); any other argument is a recipe
+file. `list` shows the name, version, default flag, size, requirements and
+verified base of each installed toolchain, then the catalog recipes that are
+not installed.
+
+- **Sources:** a toolchain is a relocatable directory tree, assembled from one
+  or more sources: a path inside an OCI image referenced by `@sha256:` digest,
+  an HTTPS archive URL with its SHA-256, or a local archive with its SHA-256.
+  A toolchain can also, or only, provide container images for the session
+  container engine (see [Images](#images)); `list` shows them with the others,
+  and `remove` deletes images no other toolchain lists, once no session engine
+  runs.
+- **Operator recipes:** keep them outside project directories, for example in
+  `~/recipes`. A session can write its workspace and state directories, so an
+  agent could have written a recipe found there: `add` refuses a recipe file
+  inside the directory it runs from (its parent, when setup saved the worktree
+  scope) or inside a state directory, before fetching anything. Catalog names
+  are not affected, and neither are the local archives that a recipe pins by
+  SHA-256.
+- **Fetching:** `add` fetches what the recipe names by itself and prints each
+  image and URL first. It pulls a missing image and downloads archive URLs
+  without `PI_CONTAINER_MAINTENANCE`, because the content is fixed by its
+  digest or SHA-256 and no code runs while it is fetched and extracted.
+  Downloads use HTTPS only and follow redirects only to HTTPS. They trust the
+  host CA bundle that setup saved when host CA trust is enabled, and the system
+  trust otherwise, and they use the host's proxy variables. Like image builds,
+  pulls and downloads happen on the host, outside runtime filtering. `add`
+  never builds an image; image builds still require maintenance.
+- **Extraction:** every archive is checked against its SHA-256 before anything
+  is extracted, and is extracted from a private copy in the library, so a local
+  archive changed afterwards cannot reach the toolchain. Extraction rejects
+  absolute paths, `..`, device nodes and links that leave the toolchain, and
+  clears setuid and setgid bits. A file that two sources provide fails the
+  command.
 - **Atomic changes:** changes take a library lock and replace directories
   atomically.
 - **Check:** before accepting a toolchain, `add` runs the recipe's `check`
   command in the Pi runtime image (`PI_CONTAINER_IMAGE`), without network and
-  with the session's identity and hardening. A toolchain that needs a newer C
-  library than the image's glibc fails here. The manifest records the base
-  image from the installed `Containerfile`. If that base changes, the
-  toolchain stays visible but loses its default environment until `verify`
-  succeeds, and the launcher prints one warning naming it. All five wrappers
-  build from the same base, so a toolchain verified by another wrapper keeps
-  its default environment here.
+  with the session's identity and hardening (starting in `/` so no
+  working-directory chown occurs). A toolchain that needs a newer C library
+  than the image's glibc fails here. The manifest records the base image from
+  the installed `Containerfile`.
+- **After an update:** when `--container-setup` selects a new release, it
+  reruns the check of every installed toolchain verified on another base,
+  records the new base when the check passes, and prints any failure without
+  blocking setup. Until a toolchain passes `verify` on the new base, it stays
+  visible but loses its default environment, and the launcher prints one
+  warning naming it. All five wrappers build from the same base, so a toolchain
+  verified by another wrapper keeps its default environment here.
 
 ### Recipes
 
-A recipe is a JSON file that the operator keeps and reviews:
+A recipe is a JSON file in the shipped release catalog
+(`setup/toolchain-catalog/`) or kept and reviewed by the operator outside
+writable mounts:
 
 | Key | Meaning |
 | --- | --- |
-| `schema`, `name`, `version` | `1`; `[a-z0-9][a-z0-9._-]*`; free version text |
-| `source` | `{"image": "<ref>@sha256:<digest>", "path": "/abs/path"}` or `{"archive": "/abs/file.tar.xz", "sha256": "<hex>", "strip_components": 1}` |
-| `path` | directories relative to the toolchain, added to `PATH` (default `["bin"]`) |
+| `schema`, `name`, `version` | `2` (schema `1` with single `source` still supported); `[a-z0-9][a-z0-9._-]*`; free version text |
+| `sources` | ordered list of `{"image": "<ref>@sha256:<digest>", "path": "/abs/path"}`, `{"url": "https://...", "sha256": "<hex>", ...}`, or `{"archive": "/abs/file.tar.xz", "sha256": "<hex>", ...}` (with optional `strip_components`, `subpath`, `into`) |
+| `images` | container images for the session container engine (see [Images](#images)) |
+| `path` | directories relative to the toolchain, added to `PATH` (default `["bin"]` when `sources` are present) |
 | `env` | variables: `{"toolchain": "<relative path>"}` or `{"value": "<literal>"}` |
 | `requires` | other toolchains whose environment is loaded first |
 | `notes` | short instructions shown to the agent in `toolchains.md` |
 | `check` | command run in the runtime image before the toolchain is accepted |
-| `default` | `true` adds the toolchain to new sessions' environment |
+| `default` | `true` adds the toolchain to new sessions' environment (`false` required for image-only recipes) |
 
 - **Protected variables:** recipes cannot set `PATH`, `HOME`, loader, proxy
   or CA variables, any `XDG_` variable (a wrapper may place its state with
@@ -566,19 +554,64 @@ A recipe is a JSON file that the operator keeps and reviews:
   access that provider and offline modes do not grant. Provide dependencies in
   the workspace, or use an unrestricted session.
 
-The verified example recipes (Temurin 21, Maven 3.9, Go, Node.js 24,
-Python 3.13 and Rust) are kept in the reference repository, in
-[`sandbox-container/docs/toolchains/`](https://github.com/yarilc/sandbox-container/tree/main/docs/toolchains),
-with their versions, digests, checksums and usage notes in its
-[README "Toolchains" section](https://github.com/yarilc/sandbox-container#toolchains).
-They do not depend on the agent.
+#### Images
+
+A recipe can also list container images. Sessions started while the library
+holds at least one image get a private container engine that runs them
+([Container tests](#container-tests)). Each image is one of:
+
+| Image | Form |
+| --- | --- |
+| Registry image | `"<ref>@sha256:<digest>"`; a reference without a digest is refused |
+| Local image | `{"local": "sha256:<full image ID>", "name": "localhost/<name>[:tag]"}` |
+
+```json
+{"schema": 2, "name": "postgres16", "version": "16.4", "default": false,
+ "images": ["docker.io/library/postgres@sha256:<digest>"],
+ "check": ["podman", "run", "--rm", "--network=none", "docker.io/library/postgres@sha256:<digest>", "postgres", "--version"]}
+```
+
+- **Store:** `add` keeps the images in the library's image store, `.images`,
+  through a helper container of the engine image (`localhost/pi-container-engine:latest`).
+  Registry images are pulled on the host, with host CA trust when setup enabled
+  it, and keep both their index and platform digests. A local image is copied
+  from the host engine by its full ID (`podman image inspect --format '{{.Id}}' <image>`)
+  and named as the recipe says; `add` fails if the host engine has no image with
+  that ID. An image several toolchains list is stored once.
+- **Image-only recipes** have no `sources`, `path` or `env`, and `default` must
+  be `false`; `toolchains.md` lists their images with a `podman run` example.
+- **Check:** for a recipe with images, `check` runs in the runtime image against
+  a temporary engine like a session's, without network, so a check that runs
+  the image proves it runs offline.
+- **Live updates:** an image added while sessions run is usable by their engines
+  at once. Removing an image, or replacing a toolchain with one that drops an
+  image, waits until no session engine runs: the command fails and names the
+  running sessions.
+- **Catalog recipes** never list local images.
+- **Cleanup:** image layers in `.images` can belong to your subordinate IDs, as in
+  any rootless Podman storage. Remove image toolchains with `remove`, which
+  deletes their layers through the helper; deleting the directory directly needs
+  `podman unshare rm -rf`.
+
+The shipped catalog recipes (`setup/toolchain-catalog/`) pin these versions and
+sources:
+
+| Name | Version | Source | Default | Notes |
+| --- | --- | --- | --- | --- |
+| `java21` | Temurin 21.0.13 | image `eclipse-temurin@sha256:0a3f3298…`, `/opt/java/openjdk` | yes | `JAVA_HOME` |
+| `maven3.9` | 3.9.16 | image `maven@sha256:99e61abc…`, `/usr/share/maven` | yes | requires `java21`; local repository in `/tmp/m2`; harmless jansi warning |
+| `go` | 1.27.4 | image `golang@sha256:4fa7c968…`, `/usr/local/go` | yes | `GOTOOLCHAIN=local`; caches in `/tmp`; `go test` needs `GOTMPDIR` in the workspace |
+| `node24` | 24.22.3 | archive `node-v24.22.3-linux-x64.tar.xz` from `nodejs.org` | no | the image's Node.js 22 stays first |
+| `python3.13` | 3.13.18 | python-build-standalone `20261110` `install_only` archive from GitHub | no | the image's `python3` stays first; virtual environments in the workspace |
+| `rust` | 1.100.0 | `rustc`, `cargo` and `rust-std` (host and `x86_64-unknown-linux-musl`) archives from `static.rust-lang.org` | yes | target `x86_64-unknown-linux-musl` linked by `rust-lld`; crates with build scripts or procedural macros fail |
 
 ### Telling the agent
 
 The wrapper never edits `AGENTS.md` or other instruction files. The library
 contains a generated `/toolchains/toolchains.md` with the usage rules and every
-installed toolchain, plus a machine-readable `/toolchains/index.json`. Add one
-line to the project's `AGENTS.md`, or to `~/.pi/agent/AGENTS.md`:
+installed toolchain (including image references and `podman run` examples), plus
+a machine-readable `/toolchains/index.json`. Add one line to the project's
+`AGENTS.md`, or to `~/.pi/agent/AGENTS.md`:
 
 ```markdown
 Read /toolchains/toolchains.md before using or looking for build tools.
@@ -590,6 +623,116 @@ toolchains added after the session started.
 
 SELinux and AppArmor enforcement were not tested with the library mount. On
 hosts that enforce them, profile the tools you add.
+
+## Container tests
+
+Sessions never receive the host Podman API. When the toolchain library holds at
+least one image toolchain, every session instead gets a private, rootless
+Podman engine of its own (`localhost/pi-container-engine:latest`), in every
+network mode. The engine shares the session's network namespace, so its
+containers have the session's egress: an offline session's containers reach
+nothing outside, and a provider session's containers reach only what the proxy
+policy allows. The session reaches its engine at
+`CONTAINER_HOST=tcp://127.0.0.1:2375`, also given as `DOCKER_HOST` for
+Docker-API clients such as Testcontainers. The engine runs the library's images
+offline by their pinned references, mounts only the workspace (at the same
+path) and the library's read-only image store, holds no secrets, and is removed
+with its storage when the session ends. Without images in the library, or with
+`PI_CONTAINER_TOOLCHAINS=0`, there is no engine and `CONTAINER_HOST` and
+`DOCKER_HOST` are absent from the session, including image or engine defaults.
+
+```bash
+pic --container-toolchain add ~/recipes/postgres16.json   # see Images
+pic --container-shell -c 'podman run --rm --network=none docker.io/library/postgres@sha256:<digest> postgres --version'
+```
+
+- **Engine image preparation:** guided setup builds the engine image from
+  `launcher/engine/Containerfile` and writes the derived seccomp profile to
+  `launcher/engine/seccomp.json` in the release. For direct checkout runs,
+  prepare the engine image under maintenance:
+  `podman build --pull=never --tag localhost/pi-container-engine:latest launcher/engine`.
+- **Images:** add them as toolchains ([Images](#images)). In offline and
+  provider sessions the engine pulls nothing; in unrestricted sessions it can
+  also pull, and pulled or built images stay in the session's storage. An image
+  added during a session is usable at once; the first image needs a new
+  session, because a session without library images starts without an engine.
+- **Workspace:** a container that bind-mounts a path inside the workspace sees
+  the workspace files, and files its root creates there belong to you. Any
+  other path a nested container mounts is the engine's own file system, never
+  the host's.
+- **Isolation:** each nested container has its own process view and host name
+  (its container ID). Two sessions have separate engines and never see each
+  other's containers.
+- **Lifetime:** the launcher starts the engine before Pi, waits until it
+  answers as a rootless engine, and removes it with its storage when the
+  session ends, also after a signal. A later launch removes the engine of a
+  launch that was killed.
+- **Budgets:** the engine gets the session's memory, CPU and process budgets,
+  checked like the agent's; together the session can therefore use twice the
+  agent's budget, and the launch says so. On the process rlimit fallback the
+  engine's first process sets the limit before anything else, and the launch
+  reads it from that process before the session starts; the engine and
+  everything it runs share that one limit. Explicit `--memory` or
+  `--pids-limit` limits on nested containers apply for every cgroup controller
+  the engine has (see **Systemd containers and nested limits** below); a limit
+  that needs a controller the engine lacks fails, and the container does not
+  start.
+- **Hardening exceptions:** the engine container is the one container that
+  relaxes the standard policy, only as nested rootless containers and image
+  operations need: `SETUID` and `SETGID` for the user-namespace helpers and
+  `SYS_CHROOT` for layer extraction and builds (with no-new-privileges kept
+  on), the FUSE and TUN devices, an unmasked procfs, SELinux labelling
+  disabled, a seccomp profile derived from the host's default that also allows
+  `sethostname` and `setdomainname`, and a startup step that delegates the
+  engine's own cgroup subtree. That step is the engine's first process: it
+  starts as the root of the engine's user namespace (never you) with `CHOWN` as
+  well, hands the subtree to the unprivileged `podman` user, and then runs
+  everything else as that user. Afterwards no engine process runs as root, and
+  `CHOWN` stays only in the bounding set, where no-new-privileges keeps it
+  unreachable. The engine user is mapped to you (`--userns=keep-id:uid=1000,gid=1000`),
+  which needs 65535 subordinate IDs in one contiguous range. The engine image
+  declares these four capabilities (`SETUID`, `SETGID`, `SYS_CHROOT` and
+  `CHOWN`) in its `io.containers.capabilities` label, so Podman starts the
+  engine without a capability error. A tool that needs more privilege is
+  unsupported.
+- **Systemd containers and nested limits:** on an eligible engine, nested
+  containers get cgroups of their own, so an image that starts systemd runs it
+  as PID 1:
+
+  ```bash
+  # an image toolchain whose image starts /sbin/init, such as a Rocky Linux 9 init image
+  podman run --detach --name target --systemd=always docker.io/rockylinux/rockylinux@sha256:<digest>
+  podman exec target timeout 120 sh -c 'until systemctl is-system-running | grep -qE "^(running|degraded)$"; do sleep 1; done'
+  podman exec target systemd-run --unit=probe --property=Type=oneshot /bin/true
+  ```
+
+  An engine is eligible when its cgroup namespace is private and its cgroup v2
+  root is mounted read-write with `nsdelegate` and belongs to the root of its
+  user namespace. This holds for native Linux with the `systemd` cgroup manager
+  and for the Windows Podman machine (`cgroupfs`); no host change is needed.
+  Explicit nested limits apply for each controller the engine has: `memory` and
+  `pids` where the rootless engine delegates them (native Linux with `systemd`);
+  the Windows Podman machine delegates none, so explicit nested limits fail
+  there and systemd resource-control unit settings (such as `MemoryMax=` or
+  `TasksMax=`) have no effect. The engine's own limit files, and so the session
+  budgets, stay unwritable from the engine and from nested containers. When an
+  engine is ineligible (for example on a host with cgroup v1), the launch
+  announces `systemd containers and explicit limits for nested containers are
+  unavailable` with the reason, and the session starts without them. Systemd
+  containers and cgroup delegation are untested under enforcing SELinux or
+  active AppArmor profiles.
+- **Host `/sys` in the session:** the session joins the engine's network
+  namespace, and a rootless container that joins another namespace cannot mount
+  a sysfs of its own: Podman bind-mounts the host's `/sys` read-only instead. A
+  session with an engine therefore sees the host's network interfaces in
+  `/sys/class/net` (names, MAC addresses, link state and counters), while its
+  network namespace still has only loopback, as `/proc/net/dev` shows.
+
+Migration: host Podman delegation (`PI_CONTAINER_PODMAN=1`, with
+`PI_CONTAINER_PODMAN_SOCKET`) was removed. Exact `PI_CONTAINER_PODMAN=1` stops
+every launch with migration guidance, other values are ignored, and
+`--container-setup` drops saved delegation settings. Add the images your tests
+need as toolchains ([Images](#images)); the next session has its engine.
 
 ## Windows with Podman machine
 
@@ -698,9 +841,10 @@ one on Windows.
 
 Limits on Windows:
 
-- No Podman delegation: `PI_CONTAINER_PODMAN=1` is refused, and a release
-  whose setup saved delegation, for example from a Linux shell in the machine,
-  asks to rerun setup from Windows.
+- No host Podman delegation, as on Linux: `PI_CONTAINER_PODMAN=1` is refused
+  with migration guidance, and a release whose setup saved delegation asks to
+  rerun setup from Windows. Sessions with image toolchains get their private
+  container engine in the machine ([Container tests](#container-tests)).
 - PowerShell pipeline input, such as
   `'x' | .\pi-container.ps1 --container-shell -c cat`, is refused, because
   PowerShell alters it. Redirect a file from `cmd.exe` instead:
@@ -756,6 +900,31 @@ setup proposes, the machine's system bundle (see
 [Host CA trust](#host-ca-trust)): setup passes it to the image builds and saves
 it for sessions. Rerun setup after the machine is recreated, and enable the
 import again on the new machine.
+
+### Toolchains on Windows
+
+The [toolchain](#toolchains) commands run from PowerShell like the other
+options, from any directory outside the checkout:
+
+```powershell
+pi-container --container-toolchain add java21
+pi-container --container-toolchain add C:\Users\me\recipes\x.json
+pi-container --container-toolchain list
+```
+
+- **Location:** the library lives inside the Podman machine's distribution, in
+  `~/.local/share/sandbox-toolchains` of the machine user, or in
+  `PI_CONTAINER_TOOLCHAINS_DIR` (a distribution path). Every wrapper that runs
+  in the machine shares it. Recreating the machine removes it: after the new
+  setup, add the toolchains again.
+- **Windows paths:** a recipe path or a local archive path in a recipe written
+  as a Windows drive path (`C:\...` or `C:/...`) is translated to its drive
+  mount in the machine. Network shares, paths inside a WSL distribution and
+  drives that the distribution does not mount are refused. Keep your recipes
+  outside project folders (see [Managing the library](#managing-the-library)).
+- **Network:** pulls and downloads run inside the machine. On a network that
+  re-signs TLS, they trust the CA that `podman machine set --import-native-ca`
+  adds to the machine (see [Trusting a host CA on Windows](#trusting-a-host-ca-on-windows)).
 
 ### Install as a command
 
@@ -907,8 +1076,7 @@ Temporary storage is declared explicitly. `/tmp` and `/var/tmp` are each
 the shared-state home is 512 MiB with mode 1777, and `~/.npm` defaults to
 256 MiB (`PI_NPM_CACHE_SIZE`, a size with unit `k`, `m` or `g`, overrides it;
 an invalid size stops the launch before any engine call). All are
-rw,nosuid,nodev,noexec; the npm cache uses mode 0700 and your UID/GID. Delegated-client stores at `/var/lib/containers` (256 MiB)
-and `/run/containers` (64 MiB) use the same hardening and private ownership.
+rw,nosuid,nodev,noexec; the npm cache uses mode 0700 and your UID/GID.
 Private tmpfs ownership uses Podman `U`; host binds never use recursive
 ownership changes. Every temporary store disappears with the session.
 
@@ -986,20 +1154,32 @@ cgroup manager, which applies no cgroup limits` and the matching CPU line, and
 the process budget uses the fallback below.
 
 The process budget has a fallback. Without the `pids` controller, the agent
-container gets a soft and hard process rlimit (`--ulimit nproc=N:N`) at the
+container's first process sets its soft and hard process rlimit to the
 selected budget, and the notice reads `agent process budget enforced through the
-process rlimit (512 tasks of the session user, threads included)`. The limit is
-per session: Linux 5.14 and later count it per user namespace, and every
-container has its own. The session cannot raise it, because it has no
-capabilities. Container startup uses a few of these tasks, so slightly fewer
-than `N` processes are available. The fallback applies only when the engine
-reports kernel 5.14 or later (`podman info --format '{{.Host.Kernel}}'`). Older
-or unrecognized kernels may count every process of your user, so the process
-budget then stays unenforced, and the notice names the reason. The memory and
-CPU budgets have no fallback. The provider proxy's process budget uses the same
-fallback. Which mechanism enforces each process budget is part of the restricted
-qualification identity, and each launch checks the configured rlimit as it
-checks the cgroup limits.
+process rlimit (512 tasks of the session user, threads included)`:
+
+- **Where it is set.** The container starts with a fixed `/bin/sh` step,
+  `{ ulimit -u N 2>/dev/null || ulimit -p N; } && exec <program>`, before Pi,
+  the shell or, in restricted modes, the guard runs (dash names the limit `-p`).
+  If the limit cannot be set, the container stops before anything else runs,
+  and each launch checks that the created container starts with this step.
+- **Per session.** Linux 5.14 and later count the limit per user namespace, and
+  the step sets it inside the container's own. The wrapper never uses
+  `--ulimit nproc`: the engine applies that limit before it creates the
+  container's user namespace, and the kernel then checks every fork against
+  the processes of all your containers together.
+- **Not raisable.** The session cannot raise the limit, because it has no
+  capabilities. Its own shell and init process count against it, so slightly
+  fewer than `N` processes are left for commands.
+- **Availability.** The fallback applies only when the engine reports kernel
+  5.14 or later (`podman info --format '{{.Host.Kernel}}'`). Older or
+  unrecognized kernels may count every process of your user, so the process
+  budget then stays unenforced, and the notice names the reason. The memory and
+  CPU budgets have no fallback. The provider proxy's and session engine's
+  process budgets use the same fallback. Which mechanism enforces each process
+  budget is part of the restricted qualification identity, and each launch
+  checks the created container's startup step and absence of an engine-applied
+  process rlimit.
 
 Risk: without the memory or process budget, a session can exhaust host memory
 or processes for your user; without a CPU budget it can saturate every CPU.
@@ -1052,6 +1232,11 @@ profile.
 Exact `PI_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1` permits a refused directory with a
 warning; it relaxes no other check.
 
+No session receives a host Podman socket. A session's private container engine
+mounts only the workspace and the library's read-only image store, so its
+containers stay inside the project-only filesystem boundary and the session's
+network boundary ([Container tests](#container-tests)).
+
 ### Permissions
 
 Pi 1.5.2 runs its tools (read, bash, edit, write and extension tools) without
@@ -1085,8 +1270,10 @@ pinned by digest, with the toolset shared with the other wrappers: `bash`,
 `.version`) and OpenSpec (`@fission-ai/openspec@2.0.0`) are installed from npm
 at exact versions; npm verifies each package's registry integrity, and the
 build fails unless `pi --version` and `openspec --version` report the recorded
-versions. The Podman client is part of every image; host socket access stays
-the separate `PI_CONTAINER_PODMAN=1` opt-in.
+versions. The Podman client is part of every image so sessions can talk to
+their private container engine when image toolchains are installed
+([Container tests](#container-tests)); host Podman socket delegation was
+removed.
 
 OpenSpec 2.0.0 uses the project's `.agents/skills` directory. In Pi, trust the
 project to use commands such as `/skill:openspec-propose`.
@@ -1133,21 +1320,27 @@ CVEs.
 pi-container/
 ├── Containerfile              # Image definition (pinned inputs)
 ├── pi-container.sh            # Thin entry script shared by every wrapper
+├── pi-container.ps1           # Windows PowerShell entry for Podman machine
 ├── launcher/core.sh           # Shared launcher core (from sandbox-container)
+├── launcher/engine/           # Shared session container engine image and entry
+├── launcher/windows/          # Shared Windows Podman machine helpers
+├── setup/                     # Guided setup, engine prep, and toolchain catalog
+├── network/                   # Egress proxy, policy, guard, and mux helpers
 ├── agent/launcher.sh          # Pi's agent part: profile data and hooks
 ├── agent/profile.json         # Pi profile for the shared components
-├── .containerignore            # Build context allowlist
-├── .version                    # Single source of truth for Pi version
-├── test.sh                     # Disposable image build plus real checks
-├── test-wrapper.sh             # Synthetic wrapper entrypoint (Python 3)
-├── tests/                      # Fake engine, pin checks, real rootless acceptance
-├── docs/validation.md          # Commands, results, and verification limits
+├── agent/policies/            # Pi provider egress policy profiles
+├── .containerignore           # Build context allowlist
+├── .version                   # Single source of truth for Pi version
+├── test.sh                    # Disposable image build plus real checks
+├── test-wrapper.sh            # Synthetic wrapper entrypoint (Python 3)
+├── tests/                     # Fake engine, pin checks, real rootless acceptance
+├── docs/validation.md         # Commands, results, and verification limits
 ├── .github/workflows/ci.yml   # CI pipeline
-├── AGENTS.md                   # Repository guidelines
-├── SECURITY.md                 # Vulnerability disclosure policy
-├── LICENSE                     # MIT license
+├── AGENTS.md                  # Repository guidelines
+├── SECURITY.md                # Vulnerability disclosure policy
+├── LICENSE                    # MIT license
 ├── .gitignore
-└── README.md                   # This file
+└── README.md                  # This file
 ```
 
 ### Updating pinned image inputs
@@ -1224,7 +1417,7 @@ for lint commands.
 ## Shared sandbox components and the agent profile
 
 `network/`, `setup/`, `launcher/` and the shared tests come unchanged from the
-reference repository `sandbox-container` (tag `sandbox-ref-28`) and are shared
+reference repository `sandbox-container` (tag `sandbox-ref-36`) and are shared
 with the Claude, Codex, Antigravity and OpenCode wrappers. They contain no
 Pi-specific names. `launcher/core.sh` is the whole launcher: `pi-container.sh`
 is the thin entry script every wrapper shares, and `agent/launcher.sh` holds the
@@ -1239,10 +1432,16 @@ in `sandbox-container`):
 - `agent_help` documents these variables and the provider keys.
 
 The shared launcher tests (`tests/test_launcher.py`, with the fake engine
-`tests/fake_podman.py`) run the core against fixture agent parts;
-`tests/test_wrapper.py` covers only Pi's part. Every other agent-specific value
-is declared in `agent/profile.json`. The changes for users of earlier versions
-are listed in [CHANGELOG.md](CHANGELOG.md).
+`tests/fake_podman.py`), session engine tests (`tests/test_engine.py`),
+toolchain library tests (`tests/test_toolchains.py`), terminal probe
+(`tests/guard_terminal_probe.py`), setup tests (`tests/test_setup.py`), Windows
+entry tests (`tests/test_windows_bootstrap.py`, `tests/test_windows_enter.py`),
+and network/session suites run the shared components (`launcher/engine/`,
+`setup/engine.py`, `setup/toolchain-catalog/`, and the rest of `launcher/`,
+`setup/`, and `network/`) against fixture agent parts; `tests/test_wrapper.py`
+covers only Pi's part. Every other agent-specific value is declared in
+`agent/profile.json`. The changes for users of earlier versions are listed in
+[CHANGELOG.md](CHANGELOG.md).
 
 ## Security
 

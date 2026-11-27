@@ -30,7 +30,7 @@ REAL_QUALIFICATION_LABEL = REAL_PROFILE.label('qualification')
 REAL_WORK_GLOB = '.' + REAL_PROFILE.name + '-qualification-*'
 # Setup modules the installed runtime fixture needs: qualification digests the
 # shared ones, and ordinary launches run the toolchain module.
-FIXTURE_SETUP_FILES = ('setup/common.py', 'setup/toolchains.py')
+FIXTURE_SETUP_FILES = ('setup/common.py', 'setup/toolchains.py', 'setup/engine.py')
 
 
 class QualificationContracts(unittest.TestCase):
@@ -40,7 +40,7 @@ class QualificationContracts(unittest.TestCase):
         self.assertLessEqual(shared, set(FIXTURE_SETUP_FILES))
 
     def identity(self):
-        return dict(mode='provider', revision=records.REVISION, runtime='a'*64, proxy='b'*64,
+        return dict(mode='provider', revision=records.REVISION, runtime='a'*64, proxy='b'*64, engine='',
                     policy='c'*64, platform=dict(abi=3), code={'guard':'d'*64},
                     hardening=dict(capabilities=[], no_new_privs=True, pids=128, memory=268435456,
                                    enforced=['memory', 'pids'], process='cgroup',
@@ -86,6 +86,141 @@ class QualificationContracts(unittest.TestCase):
         for data in (b'{"schema":1,"schema":1}', b'{}\n{}', b'x'*65537):
             with self.assertRaises(ValueError):
                 records.decode(data)
+
+    def test_engine_identity_requires_the_engine_checks(self):
+        # session-container-engine: Engine containment is qualified.
+        identity = dict(self.identity(), engine=dict(image='e' * 64, seccomp='f' * 64))
+        report = dict(self.report(), identity=identity, fingerprint=records.digest(records.canonical(identity)),
+                      engine_cgroup='delegated')
+        with self.assertRaises(ValueError):
+            records.validate_report(report, identity)
+        report['checks'] = {name: 'passed' for name in records.expected_checks(True, True)}
+        records.validate_report(report, identity)
+        # support-nested-systemd-containers: the engine's cgroup delegation state is recorded.
+        for state in ('delegated', 'ineligible: cgroup v1 hierarchies are present'):
+            records.validate_report(dict(report, engine_cgroup=state), identity)
+        for state in (None, '', 'eligible', 'ineligible: ', 'ineligible: \x1b[2J', 'delegated\n', 1):
+            with self.subTest(state=state), self.assertRaises(ValueError):
+                records.validate_report(dict(report, engine_cgroup=state), identity)
+        with self.assertRaises(ValueError):
+            records.validate_report({key: value for key, value in report.items() if key != 'engine_cgroup'}, identity)
+        with self.assertRaises(ValueError):
+            records.validate_report(dict(self.report(), engine_cgroup='delegated'), self.identity())
+        for key in ('image', 'seccomp'):
+            changed = copy.deepcopy(identity); changed['engine'][key] = '0' * 64
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                records.validate_report(report, changed)
+        # A report from before the engine is stale once the installation has one.
+        with self.assertRaises(ValueError):
+            records.validate_report(self.report(), identity)
+        self.assertIn('setup/engine.py', records.SHARED_CODE)
+        self.assertIn('launcher/engine/Containerfile', records.SHARED_CODE)
+
+    def test_engine_launch_requires_a_qualified_engine(self):
+        qualify.require_engine(['check'], self.identity())
+        qualify.require_engine(['check', '--engine'], dict(self.identity(), engine=dict(image='e' * 64, seccomp='f' * 64)))
+        with self.assertRaisesRegex(qualify.GateError, 'session container engine is not qualified'):
+            qualify.require_engine(['check', '--engine'], self.identity())
+
+    # PID 1 after the engine's startup hand-over, with no root process (design D5).
+    ENGINE_STATE = ('Uid: 1000 1000 1000 1000\nCapPrm: 00000000000400c0\nCapEff: 00000000000400c0\n'
+                    'CapBnd: 00000000000400c1\nCapAmb: 00000000000400c0\nNoNewPrivs: 1\nSeccomp: 2\nroot=0\n'
+                    'uid=1000\nmap=1000:0:1\nfuse=c tun=c\nstore=read-only')
+
+    def engine_gate(self, **answers):
+        """A gate whose engine calls answer the session engine probes."""
+        gate = qualify.Gate({}); calls = []
+        security = answers.get('security', ['no-new-privileges', 'label=disable', 'unmask=all',
+                                            'seccomp=' + str(qualify.ROOT / records.ENGINE_SECCOMP)])
+        state = answers.get('state', self.ENGINE_STATE)
+        probe = answers.get('probe', 'pid1=bash\nprocs=1\nhost=0123456789ab\nsecrets=0\nroutes=0\ntcp=closed')
+        cgroup = answers.get('cgroup', 'delegated')
+        limits = 'limit=memory.max:denied\nlimit=pids.max:denied\nlimit=cgroup.max.descendants:denied\n' \
+                 'limit=cgroup.max.depth:denied'
+        written = answers.get('written', limits)
+        nested = answers.get('nested', 'cgroup=0::/' + 'c' * 64 + '\n' + limits)
+        ready = iter(answers.get('ready', ['true']))
+        def engine(*args, **_):
+            calls.append(args)
+            if args[:1] == ('inspect',):
+                return json.dumps(security)
+            if args[:1] == ('exec',):
+                # Commands in the engine run as its user (support-nested-systemd-containers, design D4).
+                self.assertEqual(args[1:3], ('--user', 'podman'))
+            if args[:1] == ('exec',) and 'info' in args:
+                return next(ready)
+            if args[:1] == ('exec',) and 'run' in args:
+                return nested if '--cgroupns=host' in args else probe
+            if args[:1] == ('exec',) and args[-1] == '/usr/local/bin/sandbox-engine-cgroup':
+                return cgroup
+            if args[:1] == ('exec',) and 'capsh' in args:
+                return written
+            if args[:1] == ('exec',):
+                return state
+            return 'e' * 64
+        patch.object(gate, 'engine', side_effect=engine).start()
+        self.addCleanup(patch.stopall)
+        return gate, calls
+
+    def test_engine_case_checks_hardening_views_and_reach(self):
+        base = tempfile.TemporaryDirectory(); self.addCleanup(base.cleanup)
+        identity = dict(self.identity(), engine=dict(image='e' * 64, seccomp='f' * 64))
+        gate, calls = self.engine_gate(ready=['false', 'true'])
+        with patch.object(qualify.time, 'sleep'):
+            gate.engine_case(Path(base.name), identity)
+        self.assertEqual(gate.engine_cgroup, 'delegated')
+        run = next(call for call in calls if call[:2] == ('run', '--detach'))
+        self.assertIn('--network=none', run)
+        self.assertIn('--userns=keep-id:uid=1000,gid=1000', run)
+        self.assertEqual(run[run.index('--user') + 1], '0:0')
+        self.assertNotIn('--init', run)
+        self.assertEqual(run[-2:], ('e' * 64, '2375'))
+        self.assertIn(PROFILE.label('qualification') + '=' + gate.token, run)
+        nested = next(call for call in calls if call[:1] == ('exec',) and 'run' in call)
+        self.assertIn('--network=host', nested)
+        self.assertIn('/opt/sandbox-engine/probe-rootfs:O', nested)
+        # The limit files: from the engine user without capabilities, and from a nested root.
+        self.assertIn(('exec', '--user', 'podman', run[run.index('--name') + 1],
+                       'capsh', '--caps==', '--', '-c', qualify.LIMIT_PROBE), calls)
+        cgroup = next(call for call in calls if call[:1] == ('exec',) and '--cgroupns=host' in call)
+        self.assertIn('--security-opt=unmask=ALL', cgroup)
+        self.assertEqual(cgroup[-3:], ('bash', '-c', qualify.NESTED_CGROUP_PROBE))
+        self.assertEqual(calls[-1][:3], ('rm', '--force', '--volumes'))
+        # An ineligible engine passes, and its reason is recorded.
+        ineligible = 'ineligible: /sys/fs/cgroup is mounted without nsdelegate'
+        gate, _ = self.engine_gate(cgroup=ineligible, nested='cgroup=0::/\nlimit=cgroup.max.descendants:denied\n'
+                                                              'limit=cgroup.max.depth:denied')
+        gate.engine_case(Path(tempfile.mkdtemp(dir=base.name)), identity)
+        self.assertEqual(gate.engine_cgroup, ineligible)
+        state = self.ENGINE_STATE
+        failures = {
+            'security': dict(security=['label=disable']),
+            'capabilities': dict(state=state.replace('CapBnd: 00000000000400c1', 'CapBnd: 000001ffffffffff')),
+            'bounding set without CHOWN': dict(state=state.replace('CapBnd: 00000000000400c1', 'CapBnd: 00000000000400c0')),
+            'CHOWN permitted': dict(state=state.replace('CapPrm: 00000000000400c0', 'CapPrm: 00000000000400c1')),
+            'root PID 1': dict(state=state.replace('Uid: 1000 1000 1000 1000', 'Uid: 0 0 0 0')),
+            'root process': dict(state=state.replace('root=0', 'root=1')),
+            'writable store': dict(state=state.replace('store=read-only', 'store=writable')),
+            'shared procfs': dict(probe='pid1=podman\nprocs=40\nhost=0123456789ab\nsecrets=0\nroutes=0\ntcp=closed'),
+            'route out': dict(probe='pid1=bash\nprocs=1\nhost=0123456789ab\nsecrets=0\nroutes=1\ntcp=open'),
+            'secrets': dict(probe='pid1=bash\nprocs=1\nhost=0123456789ab\nsecrets=2\nroutes=0\ntcp=closed'),
+            'eligible but not delegated': dict(cgroup='eligible'),
+            'unexpected cgroup state': dict(cgroup='ineligible: \x1b[2J'),
+            'limit writable by the engine': dict(written='limit=memory.max:writable\nlimit=cgroup.max.depth:denied'),
+            'limit probe without results': dict(written='capsh: command not found'),
+            'limit writable by a nested root': dict(nested='cgroup=0::/' + 'c' * 64 + '\nlimit=pids.max:writable\n'
+                                                           'limit=cgroup.max.depth:denied'),
+            'nested container at the delegated root': dict(nested='cgroup=0::/\nlimit=cgroup.max.descendants:denied\n'
+                                                                  'limit=cgroup.max.depth:denied'),
+            'nested container in the engine leaf': dict(nested='cgroup=0::/engine\nlimit=cgroup.max.descendants:denied\n'
+                                                               'limit=cgroup.max.depth:denied'),
+        }
+        for name, answers in failures.items():
+            with self.subTest(name=name):
+                gate, _ = self.engine_gate(**answers)
+                with self.assertRaises(qualify.GateError):
+                    gate.engine_case(Path(tempfile.mkdtemp(dir=base.name)), identity)
+                self.assertIsNone(gate.engine_cgroup)
 
     def test_ipv6_state_requires_consistent_kernel_evidence(self):
         import errno
@@ -602,8 +737,9 @@ class QualificationRuntime(unittest.TestCase):
         (self.install/'network').mkdir(mode=0o700)
         shutil.copyfile(REAL_ROOT/REAL_PROFILE.wrapper, self.install/REAL_PROFILE.wrapper)
         # The wrapper may read its recipe and declared agent files on every launch.
+        # The engine's build inputs from their one list (setup/engine.py), so a new input is never missing.
         for relative in ('Containerfile', '.containerignore', 'launcher/core.sh', 'agent/launcher.sh',
-                         *REAL_PROFILE.install_files):
+                         *qualify.engine_module.INPUTS, *REAL_PROFILE.install_files):
             (self.install/relative).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             shutil.copyfile(REAL_ROOT/relative, self.install/relative)
         (self.install/'agent/policies').mkdir(mode=0o700, parents=True)
@@ -616,6 +752,19 @@ class QualificationRuntime(unittest.TestCase):
         for relative in FIXTURE_SETUP_FILES:
             shutil.copyfile(REAL_ROOT/relative, self.install/relative)
         shutil.copytree(self.guard.name, self.install/'network/bin')
+        # With the engine image prepared, the installation gets the engine's seccomp
+        # profile as setup would write it, so qualification also runs the engine case.
+        engine_image = os.environ.get(real_env('ENGINE_IMAGE'), REAL_PROFILE.image('engine', 'latest'))
+        if subprocess.run(['podman', 'image', 'exists', engine_image], capture_output=True).returncode == 0:
+            default = subprocess.run(['podman', 'info', '--format', '{{.Host.Security.SECCOMPProfilePath}}'],
+                                     capture_output=True, text=True, check=True).stdout.strip()
+            content = subprocess.run(['podman', 'run', '--rm', '--network=none', '--volume', default + ':/default.json:ro',
+                                      '--entrypoint', 'cat', os.environ.get(real_env('IMAGE'), AGENT_IMAGE),
+                                      '/default.json'], capture_output=True, check=True).stdout
+            (self.base/'default-seccomp.json').write_bytes(content)
+            sys.path.insert(0, str(REAL_ROOT/'setup'))
+            import engine as engine_module
+            engine_module.write_seccomp(self.base/'default-seccomp.json', self.install/'launcher/engine/seccomp.json')
         self.project=self.base/'project'; self.project.mkdir()
         self.home=self.base/'home'; self.home.mkdir(mode=0o700)
         self.runtime=self.base/'egress'; self.runtime.mkdir(mode=0o700)

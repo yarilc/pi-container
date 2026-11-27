@@ -14,6 +14,7 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sandbox_profile import AGENT_IMAGE, PROFILE, env as profile_env
+from qualification_records import ipv6_state
 IMAGE = os.environ.get(profile_env("IMAGE"), AGENT_IMAGE)
 FIXTURE = Path(__file__).with_name('network_fixture.py')
 
@@ -61,13 +62,16 @@ class NetworkFeasibility(unittest.TestCase):
                     time.sleep(0.05)
                 sessions.append((session, transport, token, name))
 
+            # The engine host's IPv6 state, detected as the qualification gate does.
+            ipv6 = ipv6_state()
+
             def probe(session):
                 directory, transport, token, _ = session
                 return self.command('run', '--rm', '--network=none', '--read-only', *common,
                                     '--volume', f'{directory / "fixture.py"}:/probe.py:ro',
                                     '--volume', f'{directory / "cert.pem"}:/cert.pem:ro',
                                     '--volume', f'{transport}:/transport:ro',
-                                    '--entrypoint', 'python3', IMAGE, '/probe.py', 'probe', token)
+                                    '--entrypoint', 'python3', IMAGE, '/probe.py', 'probe', token, ipv6)
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
                 for output in executor.map(probe, sessions):

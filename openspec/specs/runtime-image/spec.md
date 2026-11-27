@@ -18,7 +18,7 @@ The image SHALL be built on `docker.io/library/node:22-bookworm-slim` referenced
 #### Scenario: Tool inventory in a session
 
 - **WHEN** a session runs as the mapped non-root user
-- **THEN** each listed tool, `pi`, `openspec` and `podman` are available, with or without delegation
+- **THEN** each listed tool, `pi`, `openspec` and `podman` are available, with or without a session container engine
 
 ### Requirement: Runtime image inputs are pinned
 
@@ -128,3 +128,12 @@ The runtime image SHALL either declare no `WORKDIR` or declare one that an earli
 #### Scenario: Recipe regression is rejected by tests
 - **WHEN** the recipe declares a `WORKDIR` that no earlier build step creates
 - **THEN** the credential-free unit suite fails
+
+### Requirement: Separate runtime and session engine images
+
+Pi's runtime image (`localhost/pi-container:latest`, built from `Containerfile`) and its session container engine image (`localhost/pi-container-engine:latest`, built from `launcher/engine/Containerfile` by guided setup) SHALL remain separate images with distinct inputs and lifecycles. Runtime builds (`--container-build`) SHALL remain independent of the session engine image.
+
+#### Scenario: Derived engine image name
+
+- **WHEN** guided setup prepares the session container engine for Pi's profile (`images.agent = localhost/pi-container`)
+- **THEN** setup builds and records `localhost/pi-container-engine:latest` without modifying `localhost/pi-container:latest`

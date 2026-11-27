@@ -17,7 +17,15 @@ import hashlib
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'network'))
 from revisions import TLS_ENFORCEMENT  # noqa: E402
+sys.path.insert(0, str(ROOT / 'tests'))
+from guard_terminal_probe import terminal_skip_reason  # noqa: E402
+sys.path.insert(0, str(ROOT / 'setup'))
+import engine  # noqa: E402
 IMAGE = os.environ.get('PI_CONTAINER_IMAGE', 'localhost/pi-container:latest')
+ENGINE_IMAGE = os.environ.get('PI_CONTAINER_ENGINE_IMAGE', 'localhost/pi-container-engine:latest')
+# A small pinned image that the engine tests copy into the library's store.
+SAMPLE = os.environ.get('SANDBOX_TEST_ENGINE_SAMPLE', 'docker.io/library/alpine@sha256:'
+                        'c64c687cbea9300178b30c95835354e34c4e4febc4badfe27102879de0483b5e')
 
 
 @unittest.skipUnless(os.environ.get('SANDBOX_RUNTIME_TESTS') == '1', 'requires real rootless engine')
@@ -36,6 +44,27 @@ class NetworkRuntime(unittest.TestCase):
         if result.returncode:
             raise RuntimeError(result.stdout + result.stderr)
 
+    def remove_toolchain_on_cleanup(self, name, values):
+        """Store layers belong to the engine's subordinate IDs: only the toolchain command removes them."""
+        self.addCleanup(subprocess.run, [sys.executable, '-I', str(self.install / 'setup/toolchains.py'), 'remove', name],
+                        cwd=self.project, env=self.env | values, capture_output=True, timeout=300)
+
+    def engine_profile(self):
+        """The engine seccomp profile derived once from the engine host's default, or None without an engine image."""
+        cached = Path(self.guard_output.name) / 'engine-seccomp.json'
+        if cached.exists():
+            return cached
+        if subprocess.run(['podman', 'image', 'exists', ENGINE_IMAGE], capture_output=True).returncode:
+            return None
+        default = subprocess.run(['podman', 'info', '--format', '{{.Host.Security.SECCOMPProfilePath}}'],
+                                 capture_output=True, text=True, check=True, timeout=60).stdout.strip()
+        content = subprocess.run(['podman', 'run', '--rm', '--network=none', '--volume', default + ':/default.json:ro',
+                                  '--entrypoint', 'cat', IMAGE, '/default.json'], capture_output=True, check=True, timeout=60).stdout
+        source = Path(self.guard_output.name) / 'default-seccomp.json'
+        source.write_bytes(content)
+        engine.write_seccomp(source, cached)
+        return cached
+
     def podman(self, *args):
         result = subprocess.run(['podman', *args], capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -53,21 +82,23 @@ class NetworkRuntime(unittest.TestCase):
         for source in list((ROOT / 'network').glob('*.py')) + [ROOT / 'network/resolv.conf']:
             shutil.copyfile(source, self.install / 'network' / source.name)
         (self.install / 'agent/policies').mkdir(mode=0o700, parents=True, exist_ok=True)
-        (self.install / 'launcher').mkdir(mode=0o700, exist_ok=True)
-        for name in ('agent/profile.json', 'agent/policies/default.json', 'agent/launcher.sh', 'launcher/core.sh'):
-            shutil.copyfile(ROOT / name, self.install / name)
-        # The Pi wrapper also reads its recipe and version for the staleness hash.
-        for name in ('.version', 'Containerfile', '.containerignore'):
-            shutil.copyfile(ROOT / name, self.install / name)
         (self.install / 'setup').mkdir(mode=0o700, exist_ok=True)
-        for name in ('setup/common.py', 'setup/toolchains.py'):
+        (self.install / 'launcher/engine').mkdir(mode=0o700, parents=True, exist_ok=True)
+        # The Pi wrapper also reads its recipe and version for the staleness hash.
+        for name in ('agent/profile.json', 'agent/policies/default.json', 'agent/launcher.sh', 'launcher/core.sh',
+                     'setup/common.py', 'setup/toolchains.py', 'setup/engine.py', *engine.INPUTS,
+                     '.version', 'Containerfile', '.containerignore'):
             shutil.copyfile(ROOT / name, self.install / name)
+        shutil.copytree(ROOT / 'setup/toolchain-catalog', self.install / 'setup/toolchain-catalog', dirs_exist_ok=True)
         binary_dir = self.install / 'network/bin'
         binary_dir.mkdir(mode=0o700, exist_ok=True)
         for name in ('sandbox-egress-guard', 'sandbox-egress-guard.sha256'):
             (binary_dir / name).unlink(missing_ok=True)
             shutil.copyfile(Path(self.guard_output.name) / name, binary_dir / name)
         (binary_dir / 'sandbox-egress-guard').chmod(0o500)
+        engine_profile = self.engine_profile()
+        if engine_profile:
+            shutil.copyfile(engine_profile, self.install / engine.SECCOMP)
         self.project = self.base / 'project'
         self.project.mkdir()
         self.runtime = self.base / 'runtime'
@@ -173,36 +204,101 @@ exit 0
                 owned.append(ident)
         return owned
 
-    def test_restricted_delegation_grid_and_disabled_override(self):
+    def test_leftover_delegation_opt_in_and_other_values(self):
+        # Host Podman delegation was removed: exact PI_CONTAINER_PODMAN=1 stops
+        # every launch in all modes, and other values or the old socket override are ignored.
         _, provider = self.provider_fixture()
-        for mode in ('offline', 'provider'):
+        for mode in ('offline', 'provider', 'unrestricted'):
             # Provider mode checks its own settings first, so the grid supplies them.
             settings = provider if mode == 'provider' else {}
             for state in ('', self.env['PI_CONTAINER_STATE_DIR']):
                 for shell in (False, True):
                     for yolo in ('0', '1'):
                         result = subprocess.run([str(self.wrapper), *(['--container-shell'] if shell else ['--version'])],
-                            cwd=self.project, env=self.env | settings | {'PI_CONTAINER_NETWORK':mode,
-                                'PI_CONTAINER_STATE_DIR':state, 'PI_CONTAINER_YOLO':yolo,
-                                'PI_CONTAINER_PODMAN':'1'}, input='', capture_output=True, text=True, timeout=10)
-                        self.assertNotEqual(result.returncode, 0)
-                        self.assertIn('rejects PI_CONTAINER_PODMAN=1', result.stderr)
+                            cwd=self.project, env=self.env | settings | {'PI_CONTAINER_NETWORK': mode,
+                                'PI_CONTAINER_STATE_DIR': state, 'PI_CONTAINER_YOLO': yolo,
+                                'PI_CONTAINER_PODMAN': '1'}, input='', capture_output=True, text=True, timeout=10)
+                        self.assertEqual(result.returncode, 1)
+                        self.assertIn('PI_CONTAINER_PODMAN=1: host Podman delegation was removed', result.stderr)
         for mode in ('offline', 'provider'):
             for state in ('', self.env['PI_CONTAINER_STATE_DIR']):
-                environment = provider | {'PI_CONTAINER_NETWORK':mode}
-                result = self.shell('test ! -S /run/podman/podman.sock; test -z "${CONTAINER_HOST+x}"\n',
+                environment = provider | {'PI_CONTAINER_NETWORK': mode}
+                result = self.shell('test ! -S /run/podman/podman.sock; test -z "${CONTAINER_HOST+x}${DOCKER_HOST+x}"\n',
                     **environment, PI_CONTAINER_STATE_DIR=state,
                     PI_CONTAINER_PODMAN='true', PI_CONTAINER_PODMAN_SOCKET='/absent/disabled.sock')
                 self.assert_success(result)
 
-    def test_offline_defaults_and_delegation_rejection(self):
-        result = self.shell("python3 - <<'PY'\nimport os,socket\nassert os.listdir('/sys/class/net') == ['lo']\nassert 'HTTP_PROXY' not in os.environ\ntry: socket.create_connection(('1.1.1.1',443),1)\nexcept OSError: pass\nelse: raise AssertionError('direct route')\nPY\n")
+    def test_offline_defaults_and_leftover_delegation_refusal(self):
+        result = self.shell("python3 - <<'PY'\nimport os,socket\nassert sorted(l.split(':',1)[0].strip() for l in open('/proc/net/dev').read().splitlines()[2:]) == ['lo']\nassert 'HTTP_PROXY' not in os.environ\ntry: socket.create_connection(('1.1.1.1',443),1)\nexcept OSError: pass\nelse: raise AssertionError('direct route')\nPY\n")
         self.assert_success(result)
         self.assertIn('mode=offline', result.stderr)
         self.assertFalse(list(self.runtime.iterdir()))
         result = self.shell('true\n', qualify=False, PI_CONTAINER_PODMAN='1')
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('rejects PI_CONTAINER_PODMAN=1', result.stderr)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('PI_CONTAINER_PODMAN=1: host Podman delegation was removed', result.stderr)
+
+    def test_offline_session_engine_has_no_external_path(self):
+        # session-container-engine: Engine shares the session network boundary / Offline nested container.
+        for image in (ENGINE_IMAGE, SAMPLE):
+            if subprocess.run(['podman', 'image', 'exists', image], capture_output=True).returncode:
+                self.skipTest('prepare ' + image + ' in the engine first')
+        sample_id = self.podman('image', 'inspect', '--format', '{{.Id}}', SAMPLE).removeprefix('sha256:')
+        # Bind sources must exist at the same path for the engine service.
+        values = {'TMPDIR': str(self.base), 'PI_CONTAINER_ENGINE_IMAGE': ENGINE_IMAGE}
+        recipe = self.base / 'sample.json'
+        recipe.write_text(json.dumps({'schema': 2, 'name': 'sample', 'version': '1', 'default': False,
+                                      'images': [{'local': 'sha256:' + sample_id, 'name': 'localhost/sandbox-test-sample:1'}],
+                                      'check': ['podman', 'run', '--rm', '--network=none', 'localhost/sandbox-test-sample:1',
+                                                'true']}))
+        added = subprocess.run([sys.executable, '-I', str(self.install / 'setup/toolchains.py'), 'add', str(recipe)],
+                               cwd=self.project, env=self.env | values, capture_output=True, text=True, timeout=300)
+        self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
+        self.remove_toolchain_on_cleanup('sample', values)
+        result = self.shell(r"""
+test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
+# The namespace has only loopback; /sys/class/net may be the host's.
+test "$(tail -n +3 /proc/net/dev | cut -d: -f1 | tr -d ' ' | sort | tr '\n' ' ')" = 'lo '
+podman network create engine-test-net >/dev/null
+for network in host none default engine-test-net; do
+  flags=(--network="$network"); [ "$network" != default ] || flags=()
+  out=$(podman run --rm "${flags[@]}" localhost/sandbox-test-sample:1 sh -c \
+    'wget -q -T 3 -O /dev/null http://1.1.1.1/ && echo REACHED; nslookup -timeout=2 example.com >/dev/null 2>&1 && echo RESOLVED; echo RAN' 2>&1)
+  case $out in *REACHED*|*RESOLVED*) echo "EXTERNAL_PATH $network: $out"; exit 1 ;; esac
+  case $out in *RAN*) ;; *) echo "NOT_RUN $network: $out"; exit 1 ;; esac
+done
+! podman pull --quiet docker.io/library/busybox:latest >/dev/null 2>&1
+echo OFFLINE_ENGINE_OK
+""", **values)
+        self.assert_success(result)
+        self.assertIn('OFFLINE_ENGINE_OK', result.stdout)
+        self.assertIn('mode=offline', result.stderr)
+
+    def test_image_recipe_check_runs_without_network(self):
+        # toolchain-library: Verified against the runtime image / Image check without network.
+        for image in (ENGINE_IMAGE, SAMPLE):
+            if subprocess.run(['podman', 'image', 'exists', image], capture_output=True).returncode:
+                self.skipTest('prepare ' + image + ' in the engine first')
+        sample_id = self.podman('image', 'inspect', '--format', '{{.Id}}', SAMPLE).removeprefix('sha256:')
+        values = {'PI_CONTAINER_ENGINE_IMAGE': ENGINE_IMAGE}
+        for name, check, accepted in (
+                ('offline-ok', ['true'], True),
+                ('needs-network', ['wget', '-q', '-T', '3', '-O', '/dev/null', 'http://1.1.1.1/'], False)):
+            with self.subTest(name=name):
+                reference = 'localhost/sandbox-test-' + name + ':1'
+                recipe = self.base / (name + '.json')
+                recipe.write_text(json.dumps({'schema': 2, 'name': name, 'version': '1', 'default': False,
+                                              'images': [{'local': 'sha256:' + sample_id, 'name': reference}],
+                                              'check': ['podman', 'run', '--rm', reference, *check]}))
+                added = subprocess.run([sys.executable, '-I', str(self.install / 'setup/toolchains.py'), 'add',
+                                        str(recipe)], cwd=self.project, env=self.env | values, capture_output=True,
+                                       text=True, timeout=300)
+                self.assertEqual(added.returncode == 0, accepted, added.stdout + added.stderr)
+                if accepted:
+                    self.remove_toolchain_on_cleanup(name, values)
+                library = Path(self.env['HOME']) / '.local/share/sandbox-toolchains'
+                self.assertEqual((library / name / 'toolchain.json').exists(), accepted)
+                if not accepted:
+                    self.assertIn('toolchain check failed', added.stderr)
 
     def test_restricted_hardening_identity_and_proxy_readiness(self):
         _, provider = self.provider_fixture()
@@ -418,17 +514,43 @@ test "$(curl --fail --silent --show-error --max-time 10 https://localhost.locald
         self.assertEqual(proc.stdout.readline().strip(), 'network-ready')
         return proc
 
+    def engine_budgets(self):
+        """Delegated controllers and process mechanism of the engine, by the launcher's rule."""
+        import agent_budgets
+        delegated = agent_budgets.delegated(self.podman('info', '--format', '{{.Host.CgroupControllers}}'),
+                                            self.podman('info', '--format', '{{.Host.CgroupManager}}'))
+        return delegated, agent_budgets.process_mechanism(delegated, self.podman('info', '--format', '{{.Host.Kernel}}'))
+
     def test_agent_budgets_are_effective_and_lifetime_cleans_owned_proxy(self):
+        # Each budget is checked as the engine enforces it: a cgroup limit only for a
+        # delegated controller, the process rlimit as fallback (agent_budgets).
+        delegated, mechanism = self.engine_budgets()
         _, provider = self.provider_fixture()
         check = """from pathlib import Path
 import sys
 memory, nano, pids = map(int, sys.argv[1:4])
+delegated, mechanism = sys.argv[4].split(','), sys.argv[5]
 root = Path('/sys/fs/cgroup')
 assert Path('/proc/self/cgroup').read_text() == '0::/\\n'
-assert int((root / 'memory.max').read_text()) == memory
-assert int((root / 'pids.max').read_text()) == pids
-quota, period = (root / 'cpu.max').read_text().split()
-assert int(quota) * 10**9 == nano * int(period)
+def limit(name):
+    path = root / name
+    return path.read_text().split() if path.exists() else ['max']
+if 'memory' in delegated:
+    assert int(limit('memory.max')[0]) == memory
+else:
+    assert limit('memory.max') == ['max'], limit('memory.max')
+quota, *period = limit('cpu.max')
+if 'cpu' in delegated:
+    assert int(quota) * 10**9 == nano * int(period[0])
+else:
+    assert quota == 'max', quota
+if mechanism == 'cgroup':
+    assert int(limit('pids.max')[0]) == pids
+else:
+    assert limit('pids.max') == ['max'], limit('pids.max')
+if mechanism == 'rlimit':
+    line = next(l for l in Path('/proc/self/limits').read_text().splitlines() if l.startswith('Max processes'))
+    assert line.split()[2:4] == [str(pids), str(pids)], line
 print('AGENT_BUDGETS_OK')
 """
         cases = (({}, (4 << 30, 2 * 10**9, 512)),
@@ -438,7 +560,8 @@ print('AGENT_BUDGETS_OK')
             for budgets, expected in cases:
                 with self.subTest(mode=mode, budgets=budgets):
                     environment = provider | budgets | {'PI_CONTAINER_NETWORK': mode}
-                    script = ("python3 - " + ' '.join(map(str, expected)) + " <<'PY'\n" + check + 'PY\n')
+                    script = ("python3 - " + ' '.join(map(str, [*expected, ','.join(delegated) or 'none', mechanism]))
+                              + " <<'PY'\n" + check + 'PY\n')
                     result = self.shell(script, **environment)
                     self.assert_success(result)
                     self.assertIn('AGENT_BUDGETS_OK', result.stdout)
@@ -447,6 +570,31 @@ print('AGENT_BUDGETS_OK')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(f'session lifetime limit reached (4 s); exit status {result.returncode}', result.stderr)
         self.assertEqual(self.owned_proxies(), [])
+        self.assertFalse(list(self.runtime.iterdir()))
+
+    def test_proxy_starts_beside_containers_holding_more_than_its_budget(self):
+        # set-process-limits-inside-containers: on the rlimit fallback the proxy's process
+        # budget is its own. A limit applied at creation would count every container of the
+        # user, and the proxy could not start or pass its effective check.
+        if self.engine_budgets()[1] != 'rlimit':
+            self.skipTest('the engine does not use the process rlimit fallback')
+        _, environment = self.provider_fixture()
+        crowd = 'pi-test-crowd-' + uuid.uuid4().hex[:12]
+        self.addCleanup(subprocess.run, ['podman', 'rm', '--force', '--time', '0', '--ignore', crowd],
+                        capture_output=True, timeout=60)
+        self.podman('run', '--detach', '--rm', '--name', crowd, '--userns=keep-id', '--user',
+                    f'{os.getuid()}:{os.getgid()}', '--network=none', '--entrypoint', '/bin/sh', IMAGE, '-c',
+                    'i=0; while [ $i -lt 150 ]; do sleep 600 & i=$((i + 1)); done; wait')
+        deadline = time.monotonic() + 60
+        # The header line, the shell and its 150 sleeping children.
+        while len(self.podman('top', crowd, 'pid').splitlines()) < 152:
+            self.assertLess(time.monotonic(), deadline, 'the crowd container did not start its processes')
+            time.sleep(0.5)
+        result = self.shell('test "$HTTP_PROXY" = http://127.0.0.1:18080\necho PROXY_BESIDE_CROWD_OK\n',
+                            **environment)
+        self.assert_success(result)
+        self.assertIn('PROXY_BESIDE_CROWD_OK', result.stdout)
+        self.assertIn('proxy process budget enforced through the process rlimit (128 tasks', result.stderr)
         self.assertFalse(list(self.runtime.iterdir()))
 
     def test_proxy_death_fails_closed_and_preserves_status(self):
@@ -462,6 +610,7 @@ print('AGENT_BUDGETS_OK')
         self.assertFalse(list(self.runtime.iterdir()))
 
     def test_proxy_budgets_at_maximum_streams_and_slow_inspection(self):
+        delegated, mechanism = self.engine_budgets()
         _, environment = self.provider_fixture()
         shutil.copyfile(ROOT / 'tests/proxy_budget_fixture.py', self.project / 'budget.py')
         proc = self.start_session('python3 budget.py', environment)
@@ -472,12 +621,22 @@ print('AGENT_BUDGETS_OK')
         def sample(phase):
             data = json.loads(self.podman('exec', proxy_id, 'python3', '-c',
                 "from pathlib import Path; import json; p=Path('/sys/fs/cgroup'); "
-                "print(json.dumps({n:int((p/n).read_text()) for n in "
-                "('memory.current','memory.peak','pids.current','pids.max','memory.max')}))"))
-            self.assertEqual(data['pids.max'], 128)
-            self.assertEqual(data['memory.max'], 268435456)
-            self.assertLessEqual(data['memory.peak'], 268435456)
-            self.assertLessEqual(data['pids.current'], 128)
+                "print(json.dumps({n:(p/n).read_text().strip() for n in "
+                "('memory.current','memory.peak','pids.current','pids.max','memory.max') if (p/n).exists()}))"))
+            if 'memory' in delegated:
+                self.assertEqual(data['memory.max'], str(256 * 1024 * 1024))
+                self.assertLessEqual(int(data.get('memory.peak', data['memory.current'])), 256 * 1024 * 1024)
+            else:
+                self.assertEqual(data.get('memory.max', 'max'), 'max')
+            if mechanism == 'cgroup':
+                self.assertEqual(data['pids.max'], '128')
+                self.assertLessEqual(int(data['pids.current']), 128)
+            else:
+                self.assertEqual(data.get('pids.max', 'max'), 'max')
+            if mechanism == 'rlimit':
+                limits = self.podman('exec', proxy_id, 'cat', '/proc/1/limits')
+                processes = next(line for line in limits.splitlines() if line.startswith('Max processes'))
+                self.assertEqual(processes.split()[2:4], ['128', '128'])
             print('proxy budget evidence: ' + phase + ' ' + json.dumps(data, sort_keys=True), flush=True)
 
         sample('64-slow-inspections')
@@ -492,6 +651,7 @@ print('AGENT_BUDGETS_OK')
         self.assertFalse(list(self.runtime.iterdir()))
 
     def test_proxy_resource_exhaustion_is_bounded_and_fails_closed(self):
+        delegated, _ = self.engine_budgets()
         _, environment = self.provider_fixture()
         processes = """import errno,subprocess
 children=[]
@@ -510,6 +670,8 @@ finally:
         memory = "blocks=[]\nwhile True: blocks.append(bytearray(8*1024*1024))\n"
         for kind, script in (('pids', processes), ('memory', memory)):
             with self.subTest(resource=kind):
+                if kind not in delegated:
+                    self.skipTest('proxy ' + kind + ' exhaustion needs a delegated cgroup controller')
                 proc = self.start_session('printf "network-ready\\n"; read -r marker; '
                     'if curl --fail --silent --max-time 3 --cacert cert.pem https://localhost.localdomain:8443/; '
                     'then exit 42; fi; exit 37', environment)
@@ -595,13 +757,25 @@ time.sleep(300)
                     proc = subprocess.Popen([str(self.wrapper), '--container-shell'], cwd=self.project,
                                             env=values, stdin=subprocess.DEVNULL,
                                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                    if phase == 'interrupt':
-                        deadline = time.monotonic() + 15
-                        while not marker.exists() and proc.poll() is None and time.monotonic() < deadline:
-                            time.sleep(0.02)
-                        self.assertTrue(marker.exists(), 'create interception not reached')
-                        proc.terminate()
-                    stdout, stderr = proc.communicate(timeout=25)
+                    try:
+                        if phase == 'interrupt':
+                            # Before the intercepted create, a provider launch checks its
+                            # qualification, which can take most of a minute on a loaded host.
+                            deadline = time.monotonic() + 60
+                            while not marker.exists() and proc.poll() is None and time.monotonic() < deadline:
+                                time.sleep(0.02)
+                            self.assertTrue(marker.exists(), 'create interception not reached')
+                            proc.terminate()
+                        # After the signal, 25 s keep the 20-second shutdown deadline under test.
+                        stdout, stderr = proc.communicate(timeout=25 if phase == 'interrupt' else 90)
+                    finally:
+                        if proc.poll() is None:
+                            proc.terminate()
+                            try:
+                                proc.communicate(timeout=30)
+                            except subprocess.TimeoutExpired:
+                                proc.kill()
+                                proc.communicate(timeout=30)
                     self.assertEqual(proc.returncode, 143 if phase == 'interrupt' else 17, stdout + stderr)
                     self.assertFalse(list(self.runtime.iterdir()))
         self.assertEqual(self.owned_proxies(), [])
@@ -673,26 +847,38 @@ sys.exit(37)
                 self.fail(f'guarded pipe timed out; isolated={bool(state)} stdout={error.stdout!r} stderr={error.stderr!r}')
             self.assertEqual(result.returncode, 37, result.stdout + result.stderr)
             self.assertEqual(json.loads(result.stdout), {'argv':arguments, 'stdin':'synthetic stdin\n', 'tty':False})
-            master, slave = pty.openpty()
-            try:
-                proc = subprocess.Popen([str(self.wrapper), '--tty-probe'], cwd=self.project, env=environment,
-                    stdin=slave, stdout=slave, stderr=subprocess.PIPE)
-                os.close(slave); slave = -1
-                _, error = proc.communicate(timeout=30)
-                self.assertEqual(proc.returncode, 37, error.decode())
-                output = b''
-                while True:
-                    try:
-                        data = os.read(master, 65536)
-                    except OSError:
-                        break
-                    if not data: break
-                    output += data
-                records = [json.loads(line) for line in output.decode().splitlines() if line.startswith('{"argv"')]
-                self.assertEqual(records, [{'argv':['--tty-probe'], 'stdin':'', 'tty':True}])
-            finally:
-                if slave >= 0: os.close(slave)
-                os.close(master)
+            with self.subTest(terminal=True, isolated=bool(state)):
+                reason = terminal_skip_reason(IMAGE)
+                if reason:
+                    self.skipTest(reason)
+                master, slave = pty.openpty()
+                proc = None
+                try:
+                    proc = subprocess.Popen([str(self.wrapper), '--tty-probe'], cwd=self.project, env=environment,
+                        stdin=slave, stdout=slave, stderr=subprocess.PIPE)
+                    os.close(slave); slave = -1
+                    _, error = proc.communicate(timeout=30)
+                    self.assertEqual(proc.returncode, 37, error.decode())
+                    output = b''
+                    while True:
+                        try:
+                            data = os.read(master, 65536)
+                        except OSError:
+                            break
+                        if not data: break
+                        output += data
+                    records = [json.loads(line) for line in output.decode().splitlines() if line.startswith('{"argv"')]
+                    self.assertEqual(records, [{'argv':['--tty-probe'], 'stdin':'', 'tty':True}])
+                finally:
+                    if proc is not None and proc.poll() is None:
+                        proc.terminate()
+                        try:
+                            proc.communicate(timeout=25)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.communicate(timeout=5)
+                    if slave >= 0: os.close(slave)
+                    os.close(master)
 
     def test_bootstrap_failure_after_proxy_setup_cleans_owned_resources(self):
         _, environment = self.provider_fixture()
@@ -801,6 +987,9 @@ os.execv(real,[real,*args])
 
     def test_pi_tui_starts_and_quits_under_the_guard(self):
         import pty
+        reason = terminal_skip_reason(IMAGE)
+        if reason:
+            self.skipTest(reason)
         for state in ('', self.env['PI_CONTAINER_STATE_DIR']):
             with self.subTest(state=state):
                 environment = self.env | {'PI_CONTAINER_STATE_DIR': state}
@@ -836,8 +1025,12 @@ os.execv(real,[real,*args])
                     pump(1)
                 finally:
                     if proc.poll() is None:
-                        proc.kill()
-                        proc.communicate(timeout=5)
+                        proc.terminate()
+                        try:
+                            proc.communicate(timeout=25)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.communicate(timeout=5)
                     os.close(master)
                 self.assertEqual(proc.returncode, 0, error.decode() + output.decode(errors='replace')[-2000:])
                 self.assertIn('network mode=offline', error.decode())

@@ -1,0 +1,37 @@
+{
+  "schema": 2,
+  "name": "go",
+  "version": "1.27.4",
+  "sources": [
+    {
+      "image": "docker.io/library/golang@sha256:4fa7c968ba93f1635670522dbb01a2c78150443e1385746924566079f36570ea",
+      "path": "/usr/local/go"
+    }
+  ],
+  "path": [
+    "bin"
+  ],
+  "env": {
+    "GOTOOLCHAIN": {
+      "value": "local"
+    },
+    "GOTELEMETRY": {
+      "value": "off"
+    },
+    "GOCACHE": {
+      "value": "/tmp/go-build"
+    },
+    "GOPATH": {
+      "value": "/tmp/go"
+    }
+  },
+  "notes": [
+    "go test and go run execute files from GOTMPDIR and /tmp is noexec: create a workspace directory and set GOTMPDIR to it, for example mkdir -p .gotmp && GOTMPDIR=$PWD/.gotmp go test ./...",
+    "Dependency downloads are blocked unless the network policy allows the repository; keep dependencies in the workspace or use an unrestricted session."
+  ],
+  "check": [
+    "go",
+    "version"
+  ],
+  "default": true
+}

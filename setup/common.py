@@ -30,12 +30,18 @@ WINDOWS_ENTRY = 'WRAPPER_WINDOWS_ENTRY'
 DRIVE_MOUNT = re.compile(r'/mnt/[A-Za-z](?:/|$)')
 
 
+# Reviewed toolchain recipes that every release installs (`--container-toolchain add <name>`).
+TOOLCHAIN_CATALOG = tuple('setup/toolchain-catalog/' + name + '.json'
+                          for name in ('go', 'java21', 'maven3.9', 'node24', 'python3.13', 'rust'))
 MANIFEST = (
     PROFILE.wrapper, 'launcher/core.sh', 'launcher/windows/bootstrap.sh', 'launcher/windows/enter.sh',
     'agent/launcher.sh', 'Containerfile', '.containerignore', agent_profile.PROFILE, agent_profile.POLICY,
     'setup/common.py', 'setup/setup.py', 'setup/launch.py', 'setup/smoke.py', 'setup/diagnostics.py',
-    'setup/toolchains.py',
+    'setup/toolchains.py', 'setup/engine.py', *TOOLCHAIN_CATALOG,
     'network/Containerfile', 'network/.containerignore',
+    'launcher/engine/Containerfile', 'launcher/engine/.containerignore', 'launcher/engine/cgroup.sh',
+    'launcher/engine/containers.conf', 'launcher/engine/entrypoint.sh', 'launcher/engine/resolv.conf',
+    'launcher/engine/start.sh', 'launcher/engine/storage.conf',
     'network/guard-build.Containerfile', 'network/build-guard.sh',
     'network/guard.c', 'network/guard_landlock.h', 'network/guard_seccomp.h',
     'network/control.py', 'network/policy.py', 'network/agent_profile.py', 'network/session.py',
@@ -53,20 +59,25 @@ GUARD_INPUTS = ('network/guard.c', 'network/guard_landlock.h',
 IMAGE_ID = re.compile(r'(?:sha256:)?[a-f0-9]{64}')
 FIELDS = {
     'schema_version', 'installation', 'command', 'network', 'auth',
-    'state_dir', 'config_dir', 'runtime_dir', 'endpoint', 'delegation_socket',
-    'podman', 'yolo', 'worktree', 'trust_ca', 'ca_bundle', 'image', 'image_id',
+    'state_dir', 'config_dir', 'runtime_dir', 'endpoint',
+    'yolo', 'worktree', 'trust_ca', 'ca_bundle', 'image', 'image_id',
     'proxy_image', 'toolchain_image', 'guard_sources_sha256',
+    'engine_image', 'engine_sources_sha256', 'engine_seccomp_sha256',
     'memory_limit', 'cpu_limit', 'pids_limit', 'run_timeout',
 }
 # Saved agent budgets/lifetime and the wrapper variable suffix each one supplies.
 BUDGETS = {'memory_limit': 'MEMORY_LIMIT', 'cpu_limit': 'CPU_LIMIT',
            'pids_limit': 'PIDS_LIMIT', 'run_timeout': 'RUN_TIMEOUT'}
-SCHEMA_VERSION = 2
-# Schema 1 preferences predate budgets; they are upgraded with the defaults.
-FIELDS_V1 = FIELDS - set(BUDGETS)
-BOOLS = ('podman', 'yolo', 'worktree', 'trust_ca')
-PATHS = ('installation', 'command', 'state_dir', 'config_dir', 'runtime_dir',
-         'delegation_socket', 'ca_bundle')
+SCHEMA_VERSION = 3
+# Schema 2 preferences may still hold the removed host Podman delegation
+# settings, and schema 1 also predates budgets; upgrade() migrates both.
+DELEGATION = ('podman', 'delegation_socket')
+# Schema 3 adds the session container engine image and seccomp profile.
+ENGINE_FIELDS = ('engine_image', 'engine_sources_sha256', 'engine_seccomp_sha256')
+FIELDS_V2 = (FIELDS - set(ENGINE_FIELDS)) | set(DELEGATION)
+FIELDS_V1 = FIELDS_V2 - set(BUDGETS)
+BOOLS = ('yolo', 'worktree', 'trust_ca')
+PATHS = ('installation', 'command', 'state_dir', 'config_dir', 'runtime_dir', 'ca_bundle')
 
 
 def overlap(left, right):
@@ -183,14 +194,14 @@ def validate(value):
         raise SetupError('Provider mode requires an authentication profile.')
     if value['yolo'] and not PROFILE.approval_bypass_env:
         raise SetupError('The agent profile declares no permission bypass.')
-    if value['network'] != 'unrestricted' and (value['podman'] or value['endpoint'] == 'local'):
-        raise SetupError('Restricted modes require a Unix service and prohibit delegation.')
+    if value['network'] != 'unrestricted' and value['endpoint'] == 'local':
+        raise SetupError('Restricted modes require a Unix service.')
     if value['state_dir'] and value['config_dir']:
         raise SetupError('Isolated state conflicts with a shared ' + PROFILE.display_name + ' configuration directory.')
     endpoint_url(value['endpoint'])
     if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9./:_-]{0,254}', value['image']):
         raise SetupError('Invalid runtime image name.')
-    for name in ('image_id', 'proxy_image', 'toolchain_image', 'guard_sources_sha256'):
+    for name in ('image_id', 'proxy_image', 'toolchain_image', 'guard_sources_sha256', *ENGINE_FIELDS):
         if value[name] and not IMAGE_ID.fullmatch(value[name]):
             raise SetupError('Invalid immutable image or source identity.')
     if value['network'] == 'provider' and (not value['runtime_dir'] or not value['proxy_image']):
@@ -205,23 +216,43 @@ def validate(value):
 
 
 def upgrade(value):
-    """Accept exactly the schema 1 field set and add the default budgets."""
-    if (isinstance(value, dict) and set(value) == FIELDS_V1 and type(value.get('schema_version')) is int
-            and value['schema_version'] == 1):
-        value = dict(value, schema_version=SCHEMA_VERSION)
+    """Accept exactly the older field sets: schema 1 gains the default budgets,
+    and schema 1 and 2 lose the removed host Podman delegation settings."""
+    if not isinstance(value, dict) or type(value.get('schema_version')) is not int:
+        return value
+    if value['schema_version'] == 1 and set(value) == FIELDS_V1:
+        value = dict(value, schema_version=2)
         for name, suffix in BUDGETS.items():
             value[name] = agent_budgets.DEFAULTS[suffix]
+    if value['schema_version'] == 2 and set(value) == FIELDS_V2:
+        value = {key: item for key, item in value.items() if key not in DELEGATION}
+        value.update(dict.fromkeys(ENGINE_FIELDS, ''), schema_version=SCHEMA_VERSION)
     return value
 
 
-def load(path):
+def saved_delegation(value):
+    """Whether raw saved preferences enable the removed host Podman delegation."""
+    return isinstance(value, dict) and value.get('podman') is True
+
+
+def read_preferences(path):
     path = trusted(path)
     info = path.stat()
     if not path.is_file() or info.st_uid != os.getuid() or info.st_mode & 0o077:
         raise SetupError('Managed preferences must be a private caller-owned regular file.')
     if info.st_size > 65536:
         raise SetupError('Managed preferences exceed 64 KiB.')
-    return validate(upgrade(json.loads(path.read_text(), object_pairs_hook=unique_object)))
+    return json.loads(path.read_text(), object_pairs_hook=unique_object)
+
+
+def load(path, *, migrate=False):
+    """Validated preferences. Saved delegation stops launches; setup migrates it away."""
+    value = read_preferences(path)
+    if saved_delegation(value) and not migrate:
+        raise SetupError('The saved preferences enable host Podman delegation, which was removed; rerun '
+                         '--container-setup to migrate them. Sessions get a private container engine when '
+                         'the toolchain library holds images.')
+    return validate(upgrade(value))
 
 
 def save(path, value):
@@ -237,10 +268,11 @@ def defaults(root=None):
                 command=str(home / '.local/bin' / PROFILE.name),
                 network='provider' if PROFILE.auth else 'offline', auth=next(iter(PROFILE.auth), 'none'),
                 state_dir='', config_dir='', runtime_dir=str(home / '.local/state' / PROFILE.state_name),
-                endpoint='default', delegation_socket='', podman=False, yolo=False,
+                endpoint='default', yolo=False,
                 worktree=False, trust_ca=False, ca_bundle='',
                 image=PROFILE.image('agent', 'latest'), image_id='', proxy_image='',
                 toolchain_image='', guard_sources_sha256='',
+                **dict.fromkeys(ENGINE_FIELDS, ''),
                 **{name: agent_budgets.DEFAULTS[suffix] for name, suffix in BUDGETS.items()})
 
 
@@ -257,8 +289,7 @@ def runtime_environment(value, release, *, overrides=True):
     selected = {
         name('NETWORK'): value['network'],
         name('STATE_DIR'): value['state_dir'], PROFILE.config_dir_env: value['config_dir'],
-        name('IMAGE'): value['image'], name('PODMAN'): '1' if value['podman'] else '0',
-        name('PODMAN_SOCKET'): value['delegation_socket'],
+        name('IMAGE'): value['image'], name('ENGINE_IMAGE'): value['engine_image'],
         name('TRUST_HOST_CA'): '1' if value['trust_ca'] else '0',
         name('CA_BUNDLE'): value['ca_bundle'],
         'CONTAINER_HOST': endpoint_url(value['endpoint']),

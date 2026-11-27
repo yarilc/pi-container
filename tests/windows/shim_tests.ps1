@@ -474,9 +474,9 @@ try {
     }
     Test-Case 'Network modes from setup, without delegation / Delegation requested' {
         $env:FIXTURE_AGENT_PODMAN = '1'
-        Assert-Refused (Invoke-Entry { & $Entry }) 'Podman delegation (FIXTURE_AGENT_PODMAN=1) is unsupported on Podman machine'
+        Assert-Refused (Invoke-Entry { & $Entry }) 'FIXTURE_AGENT_PODMAN=1: host Podman delegation was removed; add the images your tests need with --container-toolchain add'
         $env:FIXTURE_AGENT_NETWORK = 'offline'
-        Assert-Refused (Invoke-Entry { & $Entry --container-qualify }) 'Podman delegation (FIXTURE_AGENT_PODMAN=1) is unsupported'
+        Assert-Refused (Invoke-Entry { & $Entry --container-qualify }) 'FIXTURE_AGENT_PODMAN=1: host Podman delegation was removed'
     }
     Test-Case 'Network modes from setup, without delegation / Mode from setup; explicit unrestricted' {
         $env:FIXTURE_AGENT_PODMAN = '0'
@@ -513,7 +513,7 @@ try {
         Assert-Equal 0 $r.Code 'status'
         foreach ($text in @('FIXTURE_AGENT_WSL_DISTRO', 'FIXTURE_AGENT_WSL_USER', 'FIXTURE_AGENT_WSL_INSTALLATION',
                 'FIXTURE_AGENT_NETWORK           unrestricted, offline or provider (default: the mode setup saved)',
-                'Podman delegation (FIXTURE_AGENT_PODMAN=1) is refused.', 'pipeline input', '--container-install', '--container-uninstall',
+                'Host Podman delegation was removed: FIXTURE_AGENT_PODMAN=1 is refused.', 'pipeline input', '--container-install', '--container-uninstall',
                 'Authentication keys forwarded when set: FIXTURE_API_KEY.')) {
             Assert-Text $text $r.Out 'Windows part'
         }
