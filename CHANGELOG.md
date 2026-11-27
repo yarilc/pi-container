@@ -58,6 +58,32 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
 
 ### Changed
 
+- Shared files from `sandbox-container` tag `sandbox-ref-36`
+  (`adopt-sandbox-ref-36`). Every installation runs `--container-setup` again.
+  Visible changes:
+  - **BREAKING:** host Podman delegation (`PI_CONTAINER_PODMAN=1`,
+    `PI_CONTAINER_PODMAN_SOCKET`) is removed in every mode. Exact
+    `PI_CONTAINER_PODMAN=1` stops launches and build-only refreshes before engine
+    queries with migration guidance pointing to image toolchains; other values
+    are ignored, and rerunning `--container-setup` migrates saved preferences
+    to schema 3 without delegation settings;
+  - private session container engine (`localhost/pi-container-engine:latest`)
+    for sessions when the enabled toolchain library holds at least one image
+    toolchain, reachable on `tcp://127.0.0.1:2375` (`CONTAINER_HOST` and
+    `DOCKER_HOST`) inside the session's network namespace, mounting only the
+    workspace and read-only `.images` store, with nested systemd support and
+    explicit nested limits on eligible engines, and its four capabilities
+    declared in `io.containers.capabilities`;
+  - shipped release toolchain catalog (`java21`, `maven3.9`, `go`, `node24`,
+    `python3.13`, `rust`), host-side HTTPS archive downloads and image pulls
+    without maintenance consent, image-only and mixed toolchain recipes,
+    Windows drive-path translation for `--container-toolchain add`, and
+    automatic toolchain re-verification during `--container-setup`;
+  - process rlimit fallback is set inside each container by its first process
+    rather than via `--ulimit nproc`, so other containers of the user do not
+    consume the session's or proxy's budget;
+  - guarded terminal availability probing (`tests/guard_terminal_probe.py`) and
+    portable runtime tests.
 - Shared files from `sandbox-container` tag `sandbox-ref-28`
   (`adopt-sandbox-ref-28`). Every installation runs `--container-setup` again.
   Visible changes:

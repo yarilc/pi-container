@@ -46,10 +46,24 @@ if command in os.environ.get('FAKE_FAIL', '').split(','):
     sys.exit(17)
 if command == 'create':
     pathlib.Path(args[args.index('--cidfile') + 1]).write_text(os.environ['FAKE_PROXY'] + '\n')
+    # The created command as Podman reports it: the image follows EGRESS_SESSION=<token>
+    # and the options after it; --entrypoint replaces the image's entrypoint.
+    image = next(i for i, a in enumerate(args) if a.startswith('EGRESS_SESSION=')) + 1
+    while args[image].startswith('--'):
+        image += 2
+    options = args[:image]
+    entry = [options[options.index('--entrypoint') + 1]] if '--entrypoint' in options else \
+        ['python3', '/opt/sandbox-egress/proxy.py']
+    created = entry + args[image + 1:]
+    pathlib.Path(os.environ['FAKE_LOG'] + '.command').write_text(json.dumps([created[0], created[1:]]))
     print(os.environ.get('FAKE_CREATED', os.environ['FAKE_PROXY']))
+elif args[:2] == ['image', 'inspect']:
+    print(os.environ.get('FAKE_IMAGE_PROGRAM', '[["python3","/opt/sandbox-egress/proxy.py"],null]'))
 elif command == 'inspect':
     if args[-2] == '{{json .HostConfig}}':
         print(os.environ.get('FAKE_CONFIG', '{"PidsLimit":128,"Memory":268435456}'))
+    elif args[-2] == '[{{json .Path}},{{json .Args}}]':
+        print(os.environ.get('FAKE_COMMAND', pathlib.Path(os.environ['FAKE_LOG'] + '.command').read_text()))
     else:
         print(os.environ.get('FAKE_OWNER', ''))
 elif command == 'exec':
@@ -280,16 +294,20 @@ class SessionHelper(unittest.TestCase):
         self.assertEqual(create[-1], 'd' * 64)
 
     def test_proxy_budgets_follow_delegated_controllers(self):
-        rlimit = ',"Ulimits":[{"Name":"RLIMIT_NPROC","Soft":128,"Hard":128}]}'
+        # network-egress: Proxy process budget falls back to the process rlimit. The
+        # proxy's first process sets the limit; the engine applies none at creation.
+        default_rlimit = ',"Ulimits":[{"Name":"RLIMIT_NPROC","Soft":63948,"Hard":63948}]}'
         config = {'memory': '{"PidsLimit":0,"Memory":268435456}', 'pids': '{"PidsLimit":128,"Memory":0}',
                   'none': '{"PidsLimit":-1,"Memory":0}',
-                  'memory-rlimit': '{"PidsLimit":0,"Memory":268435456' + rlimit,
-                  'rlimit': '{"PidsLimit":-1,"Memory":0' + rlimit}
+                  'memory-default': '{"PidsLimit":0,"Memory":268435456' + default_rlimit,
+                  'rlimit': '{"PidsLimit":-1,"Memory":0}'}
         effective = ('{{"pids":{},"memory":{},"capabilities":[0,0,0,0,0],"no_new_privs":1,"seccomp":2,'
                      '"nproc":{}}}')
         default, fallback = '[63948,63948]', '[128,128]'
+        script = '{ ulimit -u 128 2>/dev/null || ulimit -p 128; } && exec "$0" "$@"'
+        step = ['-c', script, 'python3', '/opt/sandbox-egress/proxy.py']
         old = '5.10.0-28-amd64'
-        cases = (('[cpu memory]', None, config['memory-rlimit'], effective.format('null', 268435456, fallback),
+        cases = (('[cpu memory]', None, config['memory-default'], effective.format('null', 268435456, fallback),
                   ['memory'], 'rlimit'),
                  ('[cpu memory]', old, config['memory'], effective.format('null', 268435456, default),
                   ['memory'], 'none'),
@@ -308,7 +326,16 @@ class SessionHelper(unittest.TestCase):
                 self.assertEqual('--memory=256m' in create, 'memory' in enforced)
                 self.assertEqual('--pids-limit=128' in create, process == 'cgroup')
                 self.assertEqual('--pids-limit=-1' in create, process != 'cgroup')
-                self.assertEqual('nproc=128:128' in create, process == 'rlimit')
+                self.assertNotIn('--ulimit', create)
+                image = create.index('d' * 64)
+                if process == 'rlimit':
+                    self.assertEqual(create[image - 2:image], ['--entrypoint', '/bin/sh'])
+                    self.assertEqual(create[image + 1:], step)
+                    self.assertIn(['inspect', '--type', 'container', '--format', '[{{json .Path}},{{json .Args}}]',
+                                   PROXY], self.engine_calls())
+                else:
+                    self.assertNotIn('--entrypoint', create)
+                    self.assertEqual(create[-1], 'd' * 64)
                 self.assertEqual('proxy memory budget not enforced: cgroup controller memory' in result.stderr,
                                  'memory' not in enforced)
                 self.assertEqual('proxy process budget not enforced: cgroup controller pids' in result.stderr,
@@ -329,11 +356,45 @@ class SessionHelper(unittest.TestCase):
         create = next(call for call in self.engine_calls() if call[0] == 'create')
         self.assertFalse(any(a.startswith('--memory') for a in create))
         self.assertNotIn('--pids-limit=128', create)
-        self.assertEqual(create[create.index('--ulimit') + 1], 'nproc=128:128')
+        self.assertNotIn('--ulimit', create)
+        self.assertEqual(create[create.index('d' * 64) + 1:], step)
         manager = 'the rootless engine uses the cgroupfs cgroup manager, which applies no cgroup limits'
         self.assertIn('proxy memory budget not enforced: ' + manager, result.stderr)
         self.assertIn('proxy process budget enforced through the process rlimit (128 tasks of the proxy user, '
                       'threads included): ' + manager, result.stderr)
+        # The TLS qualification fixture runs its own program through the same step.
+        shutil.rmtree(self.session); self.session.mkdir(mode=0o700)
+        Path(str(self.log)).unlink(missing_ok=True)
+        (self.base / 'qualification').mkdir()
+        result = self.start('--probe', '--token', TOKEN, '--tls', '--workspace', str(self.base / 'workspace'),
+                            '--qualification-input', str(self.base / 'qualification/input.json'),
+                            env=env, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        create = next(call for call in self.engine_calls() if call[0] == 'create')
+        self.assertEqual(create.count('--entrypoint'), 1)
+        self.assertEqual(create[create.index('d' * 64) + 1:], [*step[:3], '-I', '/qualification-proxy.py'])
+        self.assertFalse(any(call[:2] == ['image', 'inspect'] for call in self.engine_calls()))
+        # The step executes what the proxy image runs by itself: its entrypoint and default command.
+        for program, expected in (('[["python3","/test/upstream.py"],null]', ['python3', '/test/upstream.py']),
+                                  ('[null,["/bin/sh"]]', ['/bin/sh']),
+                                  ('[["/entry","a b"],["c"]]', ['/entry', 'a b', 'c'])):
+            with self.subTest(program=program):
+                shutil.rmtree(self.session); self.session.mkdir(mode=0o700)
+                Path(str(self.log)).unlink(missing_ok=True)
+                result = self.start(env=env | {'FAKE_IMAGE_PROGRAM': program}, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                create = next(call for call in self.engine_calls() if call[0] == 'create')
+                self.assertEqual(create[create.index('d' * 64) + 1:], [*step[:2], *expected])
+                self.assertIn(['image', 'inspect', '--format', '[{{json .Config.Entrypoint}},{{json .Config.Cmd}}]',
+                               'd' * 64], self.engine_calls())
+        for program in ('[null,null]', '[[],[]]', '[[""],null]', '["python3",null]', 'not json', '[[1],null]'):
+            with self.subTest(unreadable_program=program):
+                shutil.rmtree(self.session); self.session.mkdir(mode=0o700)
+                Path(str(self.log)).unlink(missing_ok=True)
+                result = self.start(env=env | {'FAKE_IMAGE_PROGRAM': program}, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('cannot read the program of the proxy image', result.stderr)
+                self.assertFalse(any(call[0] == 'create' for call in self.engine_calls()))
         for bad in ('', 'Systemd'):
             with self.subTest(manager=bad):
                 shutil.rmtree(self.session); self.session.mkdir(mode=0o700)
@@ -341,19 +402,37 @@ class SessionHelper(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn('unverifiable cgroup controller list or cgroup manager', result.stderr)
         # A delegated budget that is missing, or an unenforced one that appears, stops startup;
-        # so does a fallback that the engine drops or the proxy does not measure.
-        for controllers, configured, measured in (
-                ('[cpu memory]', config['memory'], effective.format(128, 268435456, fallback)),
-                ('[cpu memory]', '{"PidsLimit":128,"Memory":268435456}', effective.format('null', 268435456, fallback)),
-                ('[cpu memory pids]', config['memory'], effective.format('null', 268435456, default)),
-                ('[cpu memory]', config['memory'], effective.format('null', 268435456, fallback)),
-                ('[cpu memory]', config['memory-rlimit'], effective.format('null', 268435456, default)),
-                ('[cpu memory]', config['memory-rlimit'], effective.format('null', 268435456, '[128,null]')),
-                ('bogus', config['none'], effective.format('null', 'null', default))):
-            with self.subTest(controllers=controllers, configured=configured, measured=measured):
+        # so does a fallback without the step, with an engine-applied limit at or below the
+        # budget, or that the proxy does not measure.
+        at_budget = ',"Ulimits":[{"Name":"RLIMIT_NPROC","Soft":128,"Hard":128}]}'
+        below = ',"Ulimits":[{"Name":"RLIMIT_NPROC","Soft":64,"Hard":63948}]}'
+        command = lambda *args: json.dumps(['/bin/sh', list(args)])
+        for controllers, configured, measured, extra in (
+                ('[cpu memory]', config['memory'], effective.format(128, 268435456, fallback), {}),
+                ('[cpu memory]', '{"PidsLimit":128,"Memory":268435456}', effective.format('null', 268435456, fallback),
+                 {}),
+                ('[cpu memory pids]', config['memory'], effective.format('null', 268435456, default), {}),
+                ('[cpu memory]', config['memory'], effective.format('null', 268435456, default), {}),
+                ('[cpu memory]', config['memory'], effective.format('null', 268435456, '[128,null]'), {}),
+                ('[cpu memory]', '{"PidsLimit":0,"Memory":268435456' + at_budget,
+                 effective.format('null', 268435456, fallback), {}),
+                ('[cpu memory]', '{"PidsLimit":0,"Memory":268435456' + below,
+                 effective.format('null', 268435456, fallback), {}),
+                ('[cpu memory]', config['memory'], effective.format('null', 268435456, fallback),
+                 {'FAKE_COMMAND': json.dumps(['python3', ['/opt/sandbox-egress/proxy.py']])}),
+                ('[cpu memory]', config['memory'], effective.format('null', 268435456, fallback),
+                 {'FAKE_COMMAND': command('-c', script.replace('128', '512'), 'python3')}),
+                ('[cpu memory]', config['memory'], effective.format('null', 268435456, fallback),
+                 {'FAKE_COMMAND': command('-c', 'ulimit -u 128 && exec "$0" "$@"', 'python3')}),
+                ('[cpu memory]', config['memory'], effective.format('null', 268435456, fallback),
+                 {'FAKE_COMMAND': command('-c', script)}),
+                ('[cpu memory]', config['memory'], effective.format('null', 268435456, fallback),
+                 {'FAKE_COMMAND': '{"Path":"/bin/sh"}'}),
+                ('bogus', config['none'], effective.format('null', 'null', default), {})):
+            with self.subTest(controllers=controllers, configured=configured, measured=measured, extra=extra):
                 shutil.rmtree(self.session); self.session.mkdir(mode=0o700)
                 env = self.ready_env() | {'FAKE_CONTROLLERS': controllers, 'FAKE_CONFIG': configured,
-                                          'FAKE_EFFECTIVE': measured}
+                                          'FAKE_EFFECTIVE': measured} | extra
                 result = self.start(env=env, text=True)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertRegex(result.stderr, 'proxy hardening unavailable|unverifiable cgroup controller list')
@@ -367,28 +446,47 @@ class SessionHelper(unittest.TestCase):
         hardening.verify({'PidsLimit': -1, 'Memory': 0}, full | dict(pids=None, memory=None), ())
         hardening.verify({'PidsLimit': -1, 'Memory': 0, 'Ulimits': None},
                          full | dict(pids=None, memory=None, nproc=[None, None]), (), 'none')
-        # The process rlimit fallback: one RLIMIT_NPROC entry at 128, measured in the proxy.
+        # The process rlimit fallback: the proxy starts with the step that sets 128, the
+        # engine applies no limit at or below it, and the proxy measures 128.
+        import agent_budgets
+        self.assertEqual(hardening.STEP, ['/bin/sh', *agent_budgets.process_step(128)])
+        script = '{ ulimit -u 128 2>/dev/null || ulimit -p 128; } && exec "$0" "$@"'
+        step = ['/bin/sh', ['-c', script, 'python3', '/opt/sandbox-egress/proxy.py']]
+        default = {'Name': 'RLIMIT_NPROC', 'Soft': 63948, 'Hard': 63948}
         nproc = {'Name': 'RLIMIT_NPROC', 'Soft': 128, 'Hard': 128}
         fallback = full | dict(pids=None, memory=None, nproc=[128, 128])
-        hardening.verify({'PidsLimit': -1, 'Memory': 0, 'Ulimits': [nproc]}, fallback, (), 'rlimit')
-        hardening.verify({'PidsLimit': 0, 'Memory': 0, 'Ulimits': [{'Name': 'RLIMIT_NOFILE', 'Soft': 1, 'Hard': 1}, nproc]},
-                         fallback, (), 'rlimit')
-        for config, effective, process in (
-                ({'PidsLimit': -1, 'Memory': 0}, fallback, 'rlimit'),
-                ({'PidsLimit': -1, 'Memory': 0, 'Ulimits': [nproc | {'Soft': 64}]}, fallback, 'rlimit'),
-                ({'PidsLimit': -1, 'Memory': 0, 'Ulimits': [nproc | {'Hard': '128'}]}, fallback, 'rlimit'),
-                ({'PidsLimit': -1, 'Memory': 0, 'Ulimits': [nproc, nproc]}, fallback, 'rlimit'),
-                ({'PidsLimit': -1, 'Memory': 0, 'Ulimits': nproc}, fallback, 'rlimit'),
-                ({'PidsLimit': 128, 'Memory': 0, 'Ulimits': [nproc]}, fallback, 'rlimit'),
-                ({'PidsLimit': -1, 'Memory': 0, 'Ulimits': [nproc]}, fallback | dict(nproc=[128, None]), 'rlimit'),
-                ({'PidsLimit': -1, 'Memory': 0, 'Ulimits': [nproc]}, fallback | dict(nproc=[63948, 63948]), 'rlimit'),
-                ({'PidsLimit': -1, 'Memory': 0, 'Ulimits': [nproc]}, fallback | dict(pids=128), 'rlimit'),
-                ({'PidsLimit': -1, 'Memory': 0, 'Ulimits': [nproc]}, {k: v for k, v in fallback.items() if k != 'nproc'},
-                 'rlimit'),
-                ({'PidsLimit': -1, 'Memory': 0}, full | dict(pids=None, memory=None, nproc='128'), 'none'),
-                ({'PidsLimit': -1, 'Memory': 0}, full | dict(pids=None, memory=None), 'other')):
-            with self.subTest(config=config, effective=effective, process=process), self.assertRaises(ValueError):
-                hardening.verify(config, effective, (), process)
+        hardening.verify({'PidsLimit': -1, 'Memory': 0}, fallback, (), 'rlimit', step)
+        hardening.verify({'PidsLimit': -1, 'Memory': 0, 'Ulimits': [default]}, fallback, (), 'rlimit', step)
+        hardening.verify({'PidsLimit': 0, 'Memory': 0, 'Ulimits': [{'Name': 'RLIMIT_NOFILE', 'Soft': 1, 'Hard': 1}]},
+                         fallback, (), 'rlimit', [step[0], [*step[1][:3], '-I', '/qualification-proxy.py']])
+        hardening.verify({'PidsLimit': -1, 'Memory': 0}, fallback, (), 'rlimit', [step[0], [*step[1][:2], '/bin/sh']])
+        for config, effective, process, command in (
+                ({'PidsLimit': -1, 'Memory': 0}, fallback, 'rlimit', None),
+                ({'PidsLimit': -1, 'Memory': 0}, fallback, 'rlimit', ['python3', ['/opt/sandbox-egress/proxy.py']]),
+                ({'PidsLimit': -1, 'Memory': 0}, fallback, 'rlimit', [step[0], [step[1][0], script.replace('128', '64'),
+                                                                               *step[1][2:]]]),
+                ({'PidsLimit': -1, 'Memory': 0}, fallback, 'rlimit', [step[0], step[1][:2]]),
+                ({'PidsLimit': -1, 'Memory': 0}, fallback, 'rlimit', [step[0], [*step[1][:2], '']]),
+                ({'PidsLimit': -1, 'Memory': 0}, fallback, 'rlimit', [step[0], [*step[1][:2], None]]),
+                ({'PidsLimit': -1, 'Memory': 0}, fallback, 'rlimit', ['/bin/bash', step[1]]),
+                ({'PidsLimit': -1, 'Memory': 0}, fallback, 'rlimit', step[1]),
+                ({'PidsLimit': -1, 'Memory': 0}, fallback, 'rlimit', {'Path': '/bin/sh'}),
+                ({'PidsLimit': -1, 'Memory': 0, 'Ulimits': [nproc]}, fallback, 'rlimit', step),
+                ({'PidsLimit': -1, 'Memory': 0, 'Ulimits': [default | {'Soft': 64}]}, fallback, 'rlimit', step),
+                ({'PidsLimit': -1, 'Memory': 0, 'Ulimits': [default | {'Hard': 128}]}, fallback, 'rlimit', step),
+                ({'PidsLimit': -1, 'Memory': 0, 'Ulimits': [default | {'Hard': '63948'}]}, fallback, 'rlimit', step),
+                ({'PidsLimit': -1, 'Memory': 0, 'Ulimits': [default, nproc]}, fallback, 'rlimit', step),
+                ({'PidsLimit': -1, 'Memory': 0, 'Ulimits': default}, fallback, 'rlimit', step),
+                ({'PidsLimit': 128, 'Memory': 0}, fallback, 'rlimit', step),
+                ({'PidsLimit': -1, 'Memory': 0}, fallback | dict(nproc=[128, None]), 'rlimit', step),
+                ({'PidsLimit': -1, 'Memory': 0}, fallback | dict(nproc=[63948, 63948]), 'rlimit', step),
+                ({'PidsLimit': -1, 'Memory': 0}, fallback | dict(pids=128), 'rlimit', step),
+                ({'PidsLimit': -1, 'Memory': 0}, {k: v for k, v in fallback.items() if k != 'nproc'}, 'rlimit', step),
+                ({'PidsLimit': -1, 'Memory': 0}, full | dict(pids=None, memory=None, nproc='128'), 'none', None),
+                ({'PidsLimit': -1, 'Memory': 0}, full | dict(pids=None, memory=None), 'other', None)):
+            with self.subTest(config=config, effective=effective, process=process, command=command), \
+                    self.assertRaises(ValueError):
+                hardening.verify(config, effective, (), process, command)
         with self.assertRaises(ValueError):
             hardening.verify({'PidsLimit': 128, 'Memory': 0}, full | dict(pids=128, memory=None), ('pids',), 'rlimit')
         self.assertEqual(hardening.process_rlimit('Max open files 1 1 files\nMax processes 128 128 processes\n'),

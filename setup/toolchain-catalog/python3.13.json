@@ -1,0 +1,29 @@
+{
+  "schema": 2,
+  "name": "python3.13",
+  "version": "3.13.18+20261110",
+  "sources": [
+    {
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.13.18%2B20261110-x86_64-unknown-linux-gnu-install_only.tar.gz",
+      "sha256": "50c774f6674740739f791c05a9177ed03e2fe02abebda9bca3512eb7309b37cc",
+      "strip_components": 1
+    }
+  ],
+  "path": [
+    "bin"
+  ],
+  "env": {
+    "PIP_CACHE_DIR": {
+      "value": "/tmp/pip-cache"
+    }
+  },
+  "notes": [
+    "The runtime image's own python3 stays first on PATH; call python3.13 through env.sh and create virtual environments in the workspace, for example python3.13 -m venv .venv.",
+    "Dependency downloads are blocked unless the network policy allows the repository; keep dependencies in the workspace or use an unrestricted session."
+  ],
+  "check": [
+    "python3.13",
+    "--version"
+  ],
+  "default": false
+}

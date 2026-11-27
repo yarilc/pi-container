@@ -31,5 +31,5 @@ owned=1
 PI_CONTAINER_IMAGE="$image" PI_CONTAINER_NETWORK=unrestricted PI_CONTAINER_MAINTENANCE=1 \
     bash "$root/pi-container.sh" --container-build
 # Actual wrapper acceptance verifies the built image, installation, ownership,
-# temp mounts, worktrees, delegated children, native timeout, and bounded signals.
+# temp mounts, worktrees, session container engine, native timeout, and bounded signals.
 PI_CONTAINER_IMAGE="$image" bash "$root/tests/run-runtime.sh"

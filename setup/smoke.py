@@ -6,6 +6,14 @@ import subprocess
 import sys
 
 
+def namespace_interfaces():
+    # The network namespace's own interfaces. /sys/class/net can be the host's:
+    # Podman bind-mounts the host /sys into a session that joins its engine's
+    # network namespace.
+    lines = Path('/proc/self/net/dev').read_text().splitlines()[2:]
+    return sorted(line.split(':', 1)[0].strip() for line in lines)
+
+
 def process_rlimit(text):
     # Soft and hard 'Max processes' of /proc/self/limits; None is unlimited.
     for line in text.splitlines():
@@ -37,6 +45,8 @@ def hardening(memory, nano_cpus, pids, enforced=('cpu', 'memory', 'pids'), root=
 def budgets(memory, nano_cpus, pids, enforced, root, process=None, limits=Path('/proc/self/limits'),
             manager='systemd'):
     # The process budget uses the pids cgroup, the process rlimit fallback or nothing.
+    # On the fallback the container's first process set the limit, so this
+    # container's own limit is counted per container (launcher/core.sh process_step).
     process = process or ('cgroup' if 'pids' in enforced else 'none')
     assert process in ('cgroup', 'rlimit', 'none') and (process == 'cgroup') == ('pids' in enforced), \
         'invalid process budget mechanism'
@@ -78,7 +88,7 @@ def main(mode, trust_ca, home, config_env, command, memory, nano_cpus, pids, enf
         else:
             assert name not in os.environ
     if mode != 'unrestricted':
-        assert os.listdir('/sys/class/net') == ['lo']
+        assert namespace_interfaces() == ['lo']
         try:
             test = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         except PermissionError:

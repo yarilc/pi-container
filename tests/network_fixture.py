@@ -1,4 +1,5 @@
 """Credential-free topology fixture, never a production egress proxy."""
+import errno
 import http.server
 import os
 from pathlib import Path
@@ -67,7 +68,7 @@ def serve(token):
     proxy.serve_forever()
 
 
-def probe(token):
+def probe(token, ipv6):
     class Relay(socketserver.BaseRequestHandler):
         def handle(self):
             connection = socket.socket(socket.AF_UNIX)
@@ -115,10 +116,19 @@ def probe(token):
         else:
             connection.close()
             raise AssertionError('direct connection succeeded: ' + host)
+    # The engine host's IPv6 state, detected by the harness as the qualification gate does.
+    assert ipv6 in ('present', 'absent'), ipv6
     for family, address in ((socket.AF_INET, ('1.1.1.1', 53)),
                             (socket.AF_INET, ('1.1.1.1', 443)),
                             (socket.AF_INET6, ('2606:4700:4700::1111', 53))):
-        with socket.socket(family, socket.SOCK_DGRAM) as udp:
+        try:
+            udp = socket.socket(family, socket.SOCK_DGRAM)
+        except OSError as error:
+            # Only a host without a kernel IPv6 stack may refuse the family.
+            assert family == socket.AF_INET6 and ipv6 == 'absent' and error.errno == errno.EAFNOSUPPORT, error
+            continue
+        with udp:
+            assert family != socket.AF_INET6 or ipv6 == 'present', 'IPv6 sockets exist on a host detected without IPv6'
             try:
                 udp.sendto(b'credential-free DNS/UDP probe', address)
             except OSError:
@@ -157,4 +167,4 @@ def ipc_probe(token):
 
 
 if __name__ == '__main__':
-    {'serve': serve, 'probe': probe, 'ipc-probe': ipc_probe}[sys.argv[1]](sys.argv[2])
+    {'serve': serve, 'probe': probe, 'ipc-probe': ipc_probe}[sys.argv[1]](*sys.argv[2:])

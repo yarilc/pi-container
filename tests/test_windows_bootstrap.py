@@ -62,7 +62,7 @@ class WindowsBootstrapTests(unittest.TestCase):
         for name, text in (('wslpath', FAKE_WSLPATH), ('managed-command', FAKE_COMMAND)):
             (bin_dir / name).write_text(text)
             (bin_dir / name).chmod(0o700)
-        self.saved = {'command': str(bin_dir / 'managed-command'), 'network': 'unrestricted', 'podman': False}
+        self.saved = {'command': str(bin_dir / 'managed-command'), 'network': 'unrestricted'}
         (self.release / 'setup.json').write_text(json.dumps(self.saved))
         self.drives = self.base / 'drives'
         self.project = self.drives / 'c/Work/my project'
@@ -203,16 +203,24 @@ class WindowsBootstrapTests(unittest.TestCase):
 
     def test_saved_delegation_stops_before_the_command(self):
         # windows-launcher: Saved delegation refused / Saved delegation.
-        saved = {key: value for key, value in self.saved.items() if key != 'podman'}
-        for value in ({**saved, 'podman': True}, {**saved, 'podman': 'false'}, saved):
+        # Schema 2 preferences may still enable the removed delegation; schema 3
+        # preferences have no such setting and run.
+        for value in ({**self.saved, 'podman': True}, {**self.saved, 'podman': 'false'}):
             with self.subTest(saved=value):
                 (self.release / 'setup.json').write_text(json.dumps(value))
                 result = self.run_bootstrap()
                 self.assertEqual(result.returncode, 1)
-                self.assertIn(PROFILE.name + ': the installation in ' + str(self.release) + ' saved Podman '
-                              'delegation, which Podman machine on Windows does not support; rerun setup from '
-                              'Windows with --container-setup', result.stderr)
+                self.assertIn(PROFILE.name + ': the installation in ' + str(self.release) + ' saved host Podman '
+                              'delegation, which was removed; rerun setup from Windows with --container-setup, '
+                              'which removes the setting', result.stderr)
                 self.assertFalse(self.record.exists())
+        for value in ({**self.saved, 'podman': False}, self.saved):
+            with self.subTest(saved=value):
+                self.record.unlink(missing_ok=True)
+                (self.release / 'setup.json').write_text(json.dumps(value))
+                result = self.run_bootstrap()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue(self.record.exists())
 
     def test_saved_network_modes_run_the_command(self):
         # windows-launcher: Saved delegation refused / Saved offline networking.

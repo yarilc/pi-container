@@ -138,10 +138,16 @@ def enforced(available, kind='agent'):
 
 
 # Process budgets fall back to the process rlimit when the pids controller is
-# missing. Since Linux 5.14 RLIMIT_NPROC is counted per user namespace, and
-# keep-id gives every container its own, so the limit is per session. Older or
+# missing. Since Linux 5.14 RLIMIT_NPROC is counted per user namespace. Older or
 # unrecognized kernels may count every process of the host user: no fallback.
 # launcher/core.sh implements the same rule; tests feed identical cases to both.
+#
+# The limit is set inside each container by its first process (process_step),
+# never with --ulimit. A new user namespace records its creator's limit, and a
+# fork inside it is also checked against that record one level up, where every
+# container of the user counts: a limit the engine applies at creation is
+# therefore shared by all of them. A limit set inside the namespace bounds only
+# the container and its descendants.
 KERNEL = re.compile(r'([0-9]{1,4})\.([0-9]{1,4})(?:[-.+_~][0-9A-Za-z._+~-]*)?')
 RLIMIT_KERNEL = (5, 14)
 
@@ -154,6 +160,15 @@ def process_mechanism(available, kernel):
     if match and (int(match[1]), int(match[2])) >= RLIMIT_KERNEL:
         return 'rlimit'
     return 'none'
+
+
+def process_step(limit):
+    """/bin/sh arguments that set the soft and hard process rlimit to limit, then
+    execute the program that follows in place of the shell, or stop before it
+    runs. The same text as process_step_script in launcher/core.sh."""
+    if type(limit) is not int or not 0 < limit <= MAX_PIDS:
+        raise BudgetError('PIDS_LIMIT')
+    return ['-c', f'{{ ulimit -u {limit} 2>/dev/null || ulimit -p {limit}; }} && exec "$0" "$@"']
 
 
 def fallback_reason(kernel):

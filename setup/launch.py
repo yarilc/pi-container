@@ -12,6 +12,9 @@ except ValueError as error:
     print('sandbox-egress: invalid managed installation (' + str(error) + '); rerun --container-setup.', file=sys.stderr)
     sys.exit(1)
 
+# Options that run on the host without a session and must come first.
+HOST_COMMANDS = ('--container-toolchain',)
+
 
 def main():
     release = Path(__file__).resolve().parents[1]
@@ -39,7 +42,10 @@ def main():
         trusted(release / name)
     env = runtime_environment(value, release)
     protect_mounts(value, env, args, launcher=launcher)
-    if value['worktree'] and '--container-qualify' not in args:
+    # The saved workspace scope applies to sessions only: a host management
+    # command must stay the first argument the wrapper receives.
+    host_command = bool(args) and args[0] in HOST_COMMANDS
+    if value['worktree'] and '--container-qualify' not in args and not host_command:
         args = ['--container-git-worktree', *args]
     os.execve('/bin/bash', ['bash', str(wrapper), *args], env)
 

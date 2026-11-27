@@ -12,8 +12,12 @@ pattern=test_runtime.py
 selection_env=(--env PI_RUNTIME_TESTS=1 --env SANDBOX_RUNTIME_TESTS=1)
 guard_environment=()
 project_mode=ro
+# Shared suites copied from the reference, run without real-engine opt-ins: every
+# shared test module of tests/test_alignment.py except test_setup, which --setup
+# runs with a writable checkout, plus Pi's image-pin checks.
 shared=(test_reference_copy test_alignment test_launcher test_agent_profile test_network_policy test_mux test_tls_client_hello
-    test_tls_proxy test_platform test_qualification test_guard test_session test_network_feasibility)
+    test_tls_proxy test_platform test_qualification test_guard test_session test_network_feasibility
+    test_engine test_toolchains test_windows_bootstrap test_windows_enter test_image_pins)
 case "${1:-}" in
     # The shared launcher tests and this wrapper's own: test_launcher.py, test_wrapper.py.
     --wrapper) pattern='test_[lw][ar][au]*.py' ;;
@@ -44,13 +48,16 @@ else
     selection=(-v "${shared[@]/#/tests.}")
     selection_env=()
 fi
-socket=${PI_CONTAINER_PODMAN_SOCKET:-}
-if [[ -z "$socket" && "${CONTAINER_HOST:-}" == unix:///?* ]]; then socket=${CONTAINER_HOST#unix://}; fi
+# The launch service's socket: a Unix CONTAINER_HOST, else the runtime directory's.
+# Host Podman delegation was removed, so no delegation override applies.
+socket=''
+if [[ "${CONTAINER_HOST:-}" == unix:///?* ]]; then socket=${CONTAINER_HOST#unix://}; fi
 socket=${socket:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock}
 response=$(podman --remote --url "unix://$socket" info --format '{{.Host.Security.Rootless}}{{"\n"}}{{.Host.RemoteSocket.Path}}')
-[[ "$response" == true$'\n'/* && "$response" != *$'\r'* ]] || { printf 'An accessible rootless Unix service with an absolute host socket path is required\n' >&2; exit 1; }
+[[ "$response" == true$'\n'* && "$response" != *$'\r'* ]] || { printf 'An accessible rootless Unix service with an absolute host socket path is required\n' >&2; exit 1; }
 host_socket=${response#*$'\n'}
-[[ "$host_socket" != *$'\n'* && -n "${host_socket//\//}" ]] || exit 1
+host_socket=${host_socket#unix://}
+[[ "$host_socket" == /* && "$host_socket" != *$'\n'* && -n "${host_socket//\//}" ]] || { printf 'An accessible rootless Unix service with an absolute host socket path is required\n' >&2; exit 1; }
 runner="localhost/pi-runtime-runner-$(id -u)-$$"
 volume=''
 runner_created=0
@@ -71,6 +78,10 @@ podman build --tag "$runner" --file "$root/tests/Containerfile.runner" "$root/te
 runner_created=1
 volume=$(podman volume create)
 native_root=$(podman volume inspect --format '{{.Mountpoint}}' "$volume")
+optional_env=()
+for name in PI_CONTAINER_ENGINE_IMAGE SANDBOX_TEST_ENGINE_SAMPLE SANDBOX_TEST_SYSTEMD_SAMPLE; do
+    [[ -z "${!name:-}" ]] || optional_env+=(--env "$name=${!name}")
+done
 # Wrapper fixtures need private, executable temporary storage: the runner's
 # /tmp is world-writable, and the toolchain library refuses such ancestors.
 podman run --rm --interactive --userns=keep-id --user "$(id -u):$(id -g)" \
@@ -79,7 +90,7 @@ podman run --rm --interactive --userns=keep-id --user "$(id -u):$(id -g)" \
     --env CONTAINER_HOST=unix:///run/podman/podman.sock \
     --env "PI_TEST_RUNNER_IMAGE=$runner" "${selection_env[@]}" --env "PI_TEST_ROOT=$native_root" \
     --env "SANDBOX_TEST_STATE_ROOT=$native_root" "${guard_environment[@]}" \
-    --env "PI_CONTAINER_IMAGE=$image" \
+    --env "PI_CONTAINER_IMAGE=$image" "${optional_env[@]}" \
     --tmpfs /tmp:rw,exec,nosuid,nodev,mode=1777 \
     --mount type=tmpfs,destination=/sandbox-test-tmp,tmpfs-mode=0700,U=true,tmpfs-size=1g \
     --env SANDBOX_TEST_TMPDIR=/sandbox-test-tmp \

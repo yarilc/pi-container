@@ -1266,3 +1266,170 @@ Notes:
 
 The installed launcher core, setup and guard change, so installations rerun
 `--container-setup`.
+
+## Adoption of `sandbox-ref-36`: 2026-11-27
+
+Change `adopt-sandbox-ref-36`, from `sandbox-ref-28` (`ba1ef14`) directly to
+`sandbox-ref-36` (`ce2c9d2`). It takes in `sandbox-ref-29` through
+`sandbox-ref-36` and explicitly excludes `add-read-only-dependency-mirror`
+(whose code landed on `sandbox-container/main` after `sandbox-ref-36`):
+
+- host Podman delegation is removed in every mode (`PI_CONTAINER_PODMAN=1`
+  stops startup before engine queries with migration guidance) and replaced by
+  a private, session-owned rootless Podman engine
+  (`localhost/pi-container-engine:latest`) whenever the enabled toolchain
+  library holds image toolchains;
+- toolchains are provisioned from the shipped release catalog
+  (`setup/toolchain-catalog/`) and host-side HTTPS archive downloads without
+  maintenance consent, with read-only `.images` storage, idle-engine checks on
+  image removal, Windows drive-path translation, and automatic re-verification
+  during `--container-setup`;
+- the process rlimit fallback is set inside each container by its first process
+  (never `--ulimit nproc`), verified per container across agent, proxy and
+  engine containers;
+- nested systemd containers and explicit nested limits on eligible engines, and
+  `io.containers.capabilities` (`SETUID,SETGID,SYS_CHROOT,CHOWN`) declared on
+  the engine image;
+- guarded terminal availability probing (`tests/guard_terminal_probe.py`) and
+  runtime-test portability updates.
+
+Copied from `sandbox-container` tag `sandbox-ref-36` (commit `ce2c9d2`):
+
+- updated (29): `launcher/core.sh`, `launcher/windows/bootstrap.sh`,
+  `launcher/windows/core.ps1`, `network/README.md`, `network/agent_budgets.py`,
+  `network/agent_profile.py`, `network/proxy_hardening.py`,
+  `network/qualification_probe.py`, `network/qualification_records.py`,
+  `network/qualify.py`, `network/session.py`, `setup/common.py`,
+  `setup/launch.py`, `setup/setup.py`, `setup/smoke.py`, `setup/toolchains.py`,
+  `tests/fake_podman.py`, `tests/guard_runtime_fixture.py`,
+  `tests/network_fixture.py`, `tests/test_alignment.py`, `tests/test_guard.py`,
+  `tests/test_launcher.py`, `tests/test_network_feasibility.py`,
+  `tests/test_qualification.py`, `tests/test_session.py`, `tests/test_setup.py`,
+  `tests/test_toolchains.py`, `tests/test_windows_bootstrap.py`,
+  `tests/windows/shim_tests.ps1`;
+- added (17): the eight `launcher/engine/` files, `setup/engine.py`, the six
+  `setup/toolchain-catalog/` files, `tests/guard_terminal_probe.py` and
+  `tests/test_engine.py`;
+- removed: none.
+
+The `tests/test_reference_copy.py` manifest moved to `sandbox-ref-36`
+(`ce2c9d28873838a4ac541da34edaf7d8b5264be4`, 92 entries). `pi-container.ps1`,
+`.gitattributes`, `Containerfile` (Pi `1.5.2` from `.version`, OpenSpec
+`2.0.0`), `.containerignore`, `agent/profile.json`, `agent/launcher.sh` and
+`agent/policies/default.json` are unchanged.
+
+Pi-specific updates:
+
+- `tests/run-runtime.sh` and `test.sh`: removed `PI_CONTAINER_PODMAN_SOCKET`,
+  selecting the Unix socket from `CONTAINER_HOST` or the runtime directory and
+  stripping an optional `unix://` prefix from `Host.RemoteSocket.Path`; aligned
+  `--shared` with `tests/test_alignment.py` by adding `test_engine`,
+  `test_toolchains`, `test_windows_bootstrap`, `test_windows_enter` and
+  `test_image_pins`; forwarded optional `PI_CONTAINER_ENGINE_IMAGE`,
+  `SANDBOX_TEST_ENGINE_SAMPLE` and `SANDBOX_TEST_SYSTEMD_SAMPLE`; replaced the
+  stale delegated-children comment in `test.sh`;
+- `tests/test_wrapper.py`: removed the synthetic
+  `PI_CONTAINER_PODMAN_SOCKET` fixture, stale `PI_CONTAINER_PODMAN` entry, and
+  duplicate `qualification-input` stub (now provided by `synthetic_install`),
+  keeping Pi's help, `PI_CONTAINER_YOLO` notice-only rules,
+  `PI_CONTAINER_GITCONFIG`, `PI_NPM_CACHE_SIZE`, `.version` (`PI_VERSION`),
+  four provider profiles, restricted `PI_OFFLINE=1` / `PI_SKIP_VERSION_CHECK=1`
+  / `PI_TELEMETRY=0` controls, and qualification probe checks;
+- `tests/test_setup_wrapper.py` and `tests/test_setup_runtime.py`: removed host
+  Podman delegation prompts and summary assertions, isolated `XDG_RUNTIME_DIR`
+  in synthetic setup tests, asserted schema 3 preferences (`schema_version == 3`,
+  `engine_image`, absent `podman` / `delegation_socket`) and saved-delegation
+  refusal, copied the CA fixture into native storage, routed prepared
+  `localhost/pi-container-engine:latest` lookups without mutating operator
+  images, and tracked disposable `setup-<release>` runtime, engine, toolchain
+  and proxy tags while preserving Pi's `1.5.2` version,
+  `test_wrapper_built_runtime_passes_the_staleness_check`, rollback, and
+  `test_provider_gemini_transcript`;
+- `tests/test_runtime.py`: removed
+  `test_delegated_child_and_remapped_containerized_caller` and legacy
+  `PI_CONTAINER_PODMAN=1` / `PI_CONTAINER_PODMAN_SOCKET` branches, replaced
+  with `test_containerized_caller_and_leftover_delegation_refusal`, updated
+  `test_identity_storage_hardening_and_ephemeral_lifetime` to check both
+  `CONTAINER_HOST` and `DOCKER_HOST` unset, made
+  `test_declared_runtime_limits_and_owned_id` respect delegated controllers and
+  the rlimit fallback, added `test_process_rlimit_counts_per_container`, and
+  ported `SessionEngineTests` (6 cases using
+  `localhost/pi-container-engine:latest`: workspace binds with caller-owned
+  files, read-only store, build/load, per-container rlimit, no-engine mode,
+  concurrent isolation, cgroup delegation, and nested systemd containers) while
+  keeping Pi's `1.5.2` / OpenSpec `2.0.0` / npm / worktree / `/pi-home` /
+  gitconfig / toolchain checks;
+- `tests/test_network_runtime.py`: installed `setup/engine.py`, `engine.INPUTS`,
+  `setup/toolchain-catalog/` and the derived engine seccomp profile; replaced
+  restricted-only delegation checks with exact `PI_CONTAINER_PODMAN=1` refusal
+  across `offline`, `provider` and `unrestricted` modes plus ignored
+  non-enabling values; added `test_offline_session_engine_has_no_external_path`,
+  `test_image_recipe_check_runs_without_network`, controller-aware agent/proxy
+  budget checks, `test_proxy_starts_beside_containers_holding_more_than_its_budget`,
+  bounded cleanup for interrupted fixtures, and `guard_terminal_probe.py`
+  gating for guarded terminal cases (keeping pipe cases independently runnable
+  and preserving Pi's four provider TLS binding checks, credential controls,
+  and `test_actual_pi_bash_tool_with_synthetic_chat_api`);
+- `README.md`, `AGENTS.md`, `SECURITY.md`, `CONTRIBUTING.md`, `CHANGELOG.md`,
+  `docs/setup.md`, `docs/network-contract.md` and
+  `openspec/specs/toolchain-library/spec.md` (`## Purpose`): replaced host
+  Podman delegation docs with the private session container engine, container
+  tests workflow, shipped catalog, host-side HTTPS fetching, image recipes,
+  Windows drive-path translation, schema 3 migration, and in-container process
+  rlimit fallback.
+
+### Working-session checks (2026-11-27)
+
+Environment: guarded sandbox session (`CONTAINER_HOST=tcp://127.0.0.1:2375`,
+rootless Linux `cgroupfs`, controllers `[cpu io memory pids]`, kernel
+`6.6.87.2-microsoft-standard-WSL2`), checkout on DrvFS (`/mnt/d/`, mode `777`).
+Synthetic suites requiring private executable `0700` storage ran in a
+disposable offline `localhost/docgen:1.0.0` container with private executable
+`tmpfs` (`SANDBOX_TEST_TMPDIR=/sandbox-test-tmp`). Real Pi images
+(`localhost/pi-container:latest`, `localhost/pi-container-engine:latest`,
+`localhost/pi-guard-toolchain:development`), `shellcheck`, `pwsh`,
+`markdownlint-cli2` and a same-host Unix Podman service (`AF_UNIX` blocked with
+`EPERM` by the session guard) are unavailable in this session.
+
+| Check | Result |
+| --- | --- |
+| `python3 -B -m unittest tests.test_reference_copy tests.test_alignment -v` (host Python, git and sibling checkouts present) | Passed: 26 tests, 0 skips |
+| `python3 -B -m unittest tests.test_wrapper -v` (disposable container, private executable `tmpfs`) | Passed: 13 tests |
+| `python3 -B -m unittest tests.test_setup_wrapper -v` (disposable container, private executable `tmpfs`) | Passed: 9 tests |
+| `python3 -B -m unittest tests.test_engine tests.test_toolchains tests.test_qualification tests.test_session tests.test_network_policy -v` (disposable container, private executable `tmpfs`) | Passed: 156 tests, 7 opt-in real-engine skips (`test_qualification`) |
+| Full non-alignment unit run across all 22 remaining `tests/test_*.py` modules (disposable `localhost/docgen:1.0.0` container, private executable `tmpfs`) | Passed: 562 tests (475 passed, 87 opt-in skips: `test_runtime` 25, `test_network_runtime` 25, `test_guard` 24, `test_qualification` 7, `test_setup_runtime` 4, `test_network_feasibility` 1, `test_launcher` 1; 0 failures, 0 errors); combined with the 26 host `test_reference_copy` + `test_alignment` cases, all 24 test modules (588 tests) verified cleanly |
+| `bash -n` on all 11 tracked `*.sh` files | Passed |
+| `python3 -B -m py_compile` on updated Python test modules | Passed |
+| `git diff --check` | Passed |
+| `openspec validate adopt-sandbox-ref-36 --strict` | Passed (0 errors, 0 warnings) |
+| Disposable OpenSpec archive/spec-merge preview (`openspec archive --yes` + `openspec validate --specs` in temp copy) | Passed: `container-podman-access` retired, `session-container-engine` created with 20 requirements (valid under `--strict`), launch-engine verification moved to `container-launcher`, Pi contracts preserved (`PI_NPM_CACHE_SIZE`, `PI_CONTAINER_GITCONFIG`, `PI_CONTAINER_YOLO`, four provider profiles), 13/13 specs passed (`+35, ~29, -5`) |
+| `python3 -I ../sandbox-container/tools/propagate.py ../pi-container sandbox-ref-28 sandbox-ref-36 --checklist` | Generated 13-entry checklist (`runtime`/`toolchain` images, engine build, 9 runner modes, Windows manual step) |
+| `bash tests/run-runtime.sh` (preflight in guarded session) | Failed closed at image preflight (exit 1, `localhost/pi-container:latest` absent in session engine); with `PI_CONTAINER_IMAGE=localhost/docgen:1.0.0`, failed closed at Unix-service preflight (exit 125, `socket: operation not permitted` under session guard) without mutating engine or host state |
+| `shellcheck`, `pwsh`, `markdownlint-cli2` | Unavailable in session (not installed; no offline tool images in session engine) |
+| Real-engine runner modes (`--shared`, `--setup`, `--setup-runtime`, `--qualification`, `--wrapper`, default, `--network-feasibility`, `--guard`, `--network`) | Unavailable in session (no `localhost/pi-container:latest`, `localhost/pi-container-engine:latest`, `localhost/pi-guard-toolchain:development`, or host Unix Podman service) |
+| Authenticated provider checks (`anthropic-api`, `openai-api`, `gemini-api`, `openrouter-api`) | Not run in session (operator-only; prior `sandbox-ref-28` results remain in history) |
+| Windows PowerShell 5.1 validation | Not run in session (Linux session; post-closure follow-up) |
+
+### Follow-up after closure
+
+- On WSL or the native Linux host, from `sandbox-container`:
+  `bash tools/adoption-run.sh /mnt/d/Workspace/sandboxes/pi-container sandbox-ref-28 sandbox-ref-36`: pending
+  (prepare `localhost/pi-container-engine:latest` and record runtime/engine
+  image IDs, `io.containers.capabilities`, runner suites, and any host-specific
+  skips).
+- On a Windows host, rerun `--container-setup` from PowerShell and run from
+  `sandbox-container`:
+  `.\tools\windows-validate.ps1 -Checkout <the Windows checkout>` on Windows
+  PowerShell 5.1 (and PowerShell 7): pending (verify saved-delegation refusal,
+  library-image session with private engine, `PI_NPM_CACHE_SIZE`, and
+  interactive Pi).
+- Static ShellCheck, Markdownlint and PSScriptAnalyzer/shim checks
+  (`tools/shellcheck.sh` and `tools/powershell.sh` from `sandbox-container`):
+  pending on host with tool images/binaries.
+- Cross-repository parity table synchronization (`sandbox-container` and
+  sibling wrappers): pending as a separate parity step after closure.
+
+The installed launcher core, setup, guard and engine recipe change, and setup
+builds `localhost/pi-container-engine:latest` and migrates schema 1/2
+preferences to schema 3, so existing installations must rerun
+`--container-setup`.

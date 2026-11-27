@@ -21,8 +21,8 @@ except ValueError as error:
     print('sandbox-egress: setup incomplete: ' + str(error), file=sys.stderr)
     sys.exit(1)
 from common import (BUDGETS, IMAGE_ID, MANIFEST, PROFILE, SetupError, absolute, defaults, endpoint_url, installation_directory,
-                    load, overlap, prepare_state, private, protect_mounts, runtime_environment,
-                    save, source_identity, trusted, validate, writable_mounts)
+                    load, overlap, prepare_state, private, protect_mounts, read_preferences, runtime_environment,
+                    save, saved_delegation, source_identity, trusted, validate, writable_mounts)
 
 
 SOURCE = Path(__file__).resolve().parents[1]
@@ -37,6 +37,9 @@ NAME = PROFILE.display_name
 GUARD = 'sandbox-egress-guard'
 import agent_budgets  # noqa: E402  (protected network code beside common.py's path entry)
 from proxy_hardening import PIDS_LIMIT as PROXY_PIDS_LIMIT  # noqa: E402
+import engine  # noqa: E402
+import toolchains  # noqa: E402
+TOOLCHAIN_VERIFY_TIMEOUT = 900
 BUDGET_QUESTIONS = (
     ('memory_limit', 'Agent memory limit (integer with k, m or g unit)'),
     ('cpu_limit', 'Agent CPU limit (CPUs, up to 3 decimals)'),
@@ -136,17 +139,15 @@ def launch_service(previous):
     return user_manager(env)
 
 
-def confirm_unrestricted(saved, delegation=False):
+def confirm_unrestricted(saved):
     """Explain why only unrestricted networking can be prepared and require explicit consent."""
     restricted = 'Offline and provider networking need' if PROFILE.auth else 'Offline networking needs'
     print('No same-host Podman launch service answers at CONTAINER_HOST, the saved endpoint or the default endpoint, '
           'and no usable systemd user manager can start one, as in a Podman machine distribution on WSL.')
     print(restricted + ' such a service, so only unrestricted networking can be prepared here: '
-          'ordinary network access, without Podman delegation.')
+          'ordinary network access.')
     if saved and saved != 'unrestricted':
         print('The saved network mode ' + saved + ' cannot be kept without a launch service.')
-    if delegation:
-        print('The saved Podman delegation cannot be kept without a launch service; it will be disabled.')
     if not yes('Continue with unrestricted networking?'):
         raise SetupError('Unrestricted networking not confirmed; nothing was changed. ' + restricted
                          + ' a same-host Podman service: start one, or set CONTAINER_HOST to its unix:// endpoint, '
@@ -163,17 +164,20 @@ def questionnaire():
         print('Existing environment controls (values are not recorded): ' + ', '.join(ambient))
         print('Review choices below; setup checks use these choices. Explicit environment overrides apply on later launches.')
     source_preferences = SOURCE / 'setup.json'
-    previous = load(source_preferences) if source_preferences.exists() else defaults()
+    previous = load(source_preferences, migrate=True) if source_preferences.exists() else defaults()
     root = Path(path_question('Protected native installation directory', previous['installation']))
     old = current_release(root)
-    previous = load(old / 'setup.json') if old else defaults(root)
+    previous = load(old / 'setup.json', migrate=True) if old else defaults(root)
+    if old and saved_delegation(read_preferences(old / 'setup.json')):
+        print('The saved host Podman delegation was removed and will not be kept. Sessions get a private '
+              'container engine when the toolchain library holds images (--container-toolchain add).')
     value = previous.copy()
     value['installation'] = str(root)
-    # Restricted modes and delegation need a same-host service; without one that
-    # answers or can be started, only unrestricted networking can be prepared.
+    # Restricted modes need a same-host service; without one that answers or
+    # can be started, only unrestricted networking can be prepared.
     service = launch_service(previous)
     if not service:
-        confirm_unrestricted(previous['network'] if old else '', bool(old and previous['podman']))
+        confirm_unrestricted(previous['network'] if old else '')
         value['network'] = 'unrestricted'
     elif PROFILE.auth:
         print('offline: no external network; provider: approved CONNECT hosts with initial and retried TLS SNI binding; unrestricted: ordinary network access.')
@@ -199,20 +203,6 @@ def questionnaire():
     else:
         selected = path_question('Shared ' + NAME + ' configuration directory', previous['config_dir'] or str(Path.home() / PROFILE.config_home))
         value['config_dir'] = selected
-    if service:
-        print('Podman delegation gives the application host container/mount authority beyond this workspace.')
-        value['podman'] = yes('Delegate the host Podman API to the application?', value['podman'])
-    else:
-        value['podman'] = False
-    while value['podman'] and value['network'] != 'unrestricted':
-        print('Delegation is incompatible with restricted networking. It cannot be enabled without an explicit network choice.')
-        choice = ask('Resolve conflict', 'disable-delegation', ('disable-delegation', 'change-network'))
-        if choice == 'disable-delegation':
-            value['podman'] = False
-        else:
-            value['network'] = choose_network(value['network'])
-            if value['network'] != 'offline' and value['auth'] == 'none' and PROFILE.auth:
-                value['auth'] = ask('Authentication method', default_auth, tuple(PROFILE.auth))
     if value['network'] == 'offline':
         value['auth'] = 'none'
     if PROFILE.approval_bypass_env:
@@ -239,10 +229,10 @@ def questionnaire():
         default_ca = next((str(p) for p in map(Path, ('/etc/ssl/certs/ca-certificates.crt', '/etc/pki/tls/certs/ca-bundle.crt')) if p.is_file()), '')
         value['ca_bundle'] = path_question('CA bundle file', previous['ca_bundle'] or default_ca)
     value['command'] = path_question('Managed launch command path', value['command'])
-    needs_service = value['network'] != 'unrestricted' or value['podman']
+    needs_service = value['network'] != 'unrestricted'
     default_endpoint = value['endpoint'] if old else os.environ.get('CONTAINER_HOST') or ('default' if needs_service else 'local')
-    # A saved local engine cannot serve a restricted mode or delegation, for
-    # example after an unrestricted setup without a launch service.
+    # A saved local engine cannot serve a restricted mode, for example after an
+    # unrestricted setup without a launch service.
     if needs_service and default_endpoint == 'local':
         default_endpoint = 'default'
     if not service:
@@ -258,9 +248,6 @@ def questionnaire():
             break
         except SetupError as error:
             print(error)
-    value['delegation_socket'] = ''
-    if value['podman'] and yes('Use a separate delegation socket?', bool(previous['delegation_socket'])):
-        value['delegation_socket'] = path_question('Absolute delegation socket path', previous['delegation_socket'] or endpoint_url(value['endpoint'])[7:])
     if value['network'] == 'provider':
         value['runtime_dir'] = path_question('Private native egress runtime directory', value['runtime_dir'])
     return value, old
@@ -454,8 +441,6 @@ def prepare_service(value, changes):
                 manual_service(url)
                 raise SetupError('Sandbox incomplete: start or select a working same-host Unix service, then rerun setup.')
     verify_engine(env, value['network'] != 'unrestricted')
-    if value['podman']:
-        verify_socket('unix://' + value['delegation_socket'] if value['delegation_socket'] else url, env)
     return env
 
 
@@ -604,7 +589,7 @@ def activate(root, release, command):
     owned_command(command, root)
     trusted(command.parent, missing=True)
     previous = current_release(root)
-    previous_command = Path(load(previous / 'setup.json')['command']) if previous else None
+    previous_command = Path(load(previous / 'setup.json', migrate=True)['command']) if previous else None
     previous_exists = previous_command is not None and (previous_command.exists() or previous_command.is_symlink())
     if previous_exists:
         trusted(previous_command)
@@ -671,6 +656,44 @@ def activate(root, release, command):
         command_backup.unlink(missing_ok=True)
 
 
+def seccomp_default(env):
+    """The engine host's default seccomp profile path, as the engine reports it."""
+    try:
+        result = subprocess.run(['podman', 'info', '--format', '{{.Host.Security.SECCOMPProfilePath}}'], env=env,
+                                capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise SetupError('Cannot query the engine host\'s default seccomp profile: ' + str(error)) from None
+    if result.returncode:
+        raise SetupError('Cannot query the engine host\'s default seccomp profile: ' + result.stderr.strip()[-200:])
+    return result.stdout.removesuffix('\n')
+
+
+def prepare_engine(value, previous, release, env, images, refresh, changes, owned):
+    """The session container engine image and its seccomp profile, in every mode (design D3, D4)."""
+    maintenance = env | {PROFILE.env('MAINTENANCE'): '1'}
+    tag = PROFILE.image('engine', 'setup-' + release.name)
+    identity = engine.inputs_identity(release)
+    reuse = '' if refresh else images.get('engine', '')
+    owned.append(tag)
+    if reuse and previous and previous['engine_sources_sha256'] == identity:
+        run(['podman', 'tag', reuse, tag], maintenance)
+        built = reuse
+    else:
+        changes.append('Engine build requested: ' + tag)
+        built = build_image(release, 'launcher/engine/Containerfile', tag, maintenance)
+    changes.append('Prepared engine image tag: ' + tag)
+    # The engine host's default profile; the engine allows only the hostname calls more.
+    source = seccomp_default(env)
+    if not source.startswith('/') or '\n' in source:
+        raise SetupError('The engine host reports no default seccomp profile path; the container engine '
+                         'profile is derived from it.')
+    try:
+        value['engine_seccomp_sha256'] = engine.write_seccomp(source, release / engine.SECCOMP)
+    except engine.EngineError as error:
+        raise SetupError(str(error)) from None
+    value['engine_image'], value['engine_sources_sha256'] = built, identity
+
+
 def prepare_artifacts(value, previous, release, env, images, refresh, changes, owned_tags=None):
     # owned_tags collects the tags named after this candidate release, which only
     # this run creates; setup removes them when the candidate is not activated.
@@ -687,6 +710,7 @@ def prepare_artifacts(value, previous, release, env, images, refresh, changes, o
                                 value['ca_bundle'] if value['trust_ca'] else '')
     changes.append('Prepared runtime image tag: ' + candidate_tag)
     value['image'], value['image_id'] = candidate_tag, runtime
+    prepare_engine(value, previous, release, env, images, refresh, changes, owned)
     if value['network'] == 'unrestricted':
         value['proxy_image'] = value['toolchain_image'] = value['guard_sources_sha256'] = ''
         return
@@ -892,6 +916,46 @@ def release_owned_tags(tags, env, changes):
             changes.append('Could not remove the tag of the abandoned candidate ' + tag + ': ' + str(error))
 
 
+def run_toolchain_verify(release, name, env):
+    """One toolchain check with the new release's own toolchain command."""
+    command = [sys.executable, '-I', str(release / 'setup/toolchains.py'), 'verify', name]
+    try:
+        return subprocess.run(command, env=env, capture_output=True, text=True, timeout=TOOLCHAIN_VERIFY_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return subprocess.CompletedProcess(command, 1, '', str(error))
+
+
+def reverify_toolchains(value, release):
+    """Recheck installed toolchains verified on another base, after the release is selected (design D9).
+
+    A passing check records the new base, so default toolchains keep their
+    environment; a failure is reported and never changes the setup result.
+    """
+    env = runtime_environment(value, release, overrides=False)
+    try:
+        library = toolchains.library_path(env)
+        if not library.is_dir():
+            return
+        base = toolchains.base_reference(release)
+        stale = sorted(name for name, item in toolchains.installed(library).items()
+                       if not isinstance(item.get('verified'), dict) or item['verified'].get('base') != base)
+    except (SetupError, OSError, ValueError) as error:
+        print('Toolchains not re-verified: ' + str(error))
+        return
+    if not stale:
+        return
+    print('Re-verifying toolchains checked on another base image: ' + ', '.join(stale))
+    for name in stale:
+        result = run_toolchain_verify(release, name, env)
+        if result.returncode == 0:
+            print('  ' + name + ': verified on the new base')
+            continue
+        lines = (result.stderr or result.stdout or '').strip().splitlines()
+        reason = lines[0][:300] if lines else 'status ' + str(result.returncode)
+        print('  ' + name + ': check failed (' + reason + '); new sessions give it no default environment until '
+              '--container-toolchain verify ' + name + ' succeeds')
+
+
 def windows_entry():
     # The Windows entry (launcher/windows/core.ps1) starts setup with this exact
     # value and prints the next step itself.
@@ -928,11 +992,13 @@ def main():
     try:
         check_prerequisites()
         value, old_release = questionnaire()
-        previous = load(old_release / 'setup.json') if old_release else None
+        previous = load(old_release / 'setup.json', migrate=True) if old_release else None
         root = planned_paths(value)
         owned_command(Path(value['command']), root)
         env = prepare_service(value, changes)
         images = {'runtime': image_identity(previous['image'] if previous else RUNTIME_IMAGE, env)}
+        if previous and previous['engine_image']:
+            images['engine'] = image_identity(previous['engine_image'], env)
         if value['network'] != 'unrestricted':
             images['toolchain'] = image_identity(previous['toolchain_image'] if previous and previous['toolchain_image'] else TOOLCHAIN_IMAGE, env)
             images['guard_release'] = str(old_release) if old_release else ''
@@ -940,7 +1006,7 @@ def main():
             images['proxy'] = image_identity(previous['proxy_image'] if previous and previous['proxy_image'] else PROXY_IMAGE, env)
         print('\nSetup plan:')
         for key in ('network', 'auth', 'installation', 'command', 'state_dir', 'config_dir', 'endpoint',
-                    'podman', 'yolo', 'worktree', 'memory_limit', 'cpu_limit', 'pids_limit',
+                    'yolo', 'worktree', 'memory_limit', 'cpu_limit', 'pids_limit',
                     'run_timeout', 'trust_ca', 'ca_bundle'):
             print(f'  {key}: {value[key]}')
         if previous and Path(previous['command']).resolve() != Path(value['command']).resolve():
@@ -1003,6 +1069,9 @@ def main():
                 activated = True
             finally:
                 signal.pthread_sigmask(signal.SIG_SETMASK, blocked)
+        # Only now: a failed earlier step keeps the old release, whose base the
+        # library must still record.
+        reverify_toolchains(value, candidate)
         print('Sandbox: ready')
         status = authenticate(value, candidate)
         print('Authentication: ' + status)

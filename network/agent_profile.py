@@ -19,9 +19,9 @@ SCHEMA = 1
 # Variables derived from the prefix. Keep this list closed and explicit.
 SUFFIXES = (
     'NETWORK', 'NETWORK_PROFILE', 'NETWORK_POLICY', 'NETWORK_RUNTIME_DIR', 'EGRESS_IMAGE',
-    'IMAGE', 'STATE_DIR', 'PODMAN', 'PODMAN_SOCKET', 'TRUST_HOST_CA', 'CA_BUNDLE',
+    'IMAGE', 'STATE_DIR', 'PODMAN', 'TRUST_HOST_CA', 'CA_BUNDLE',
     'MAINTENANCE', 'QUALIFICATION_INPUT', 'MEMORY_LIMIT', 'CPU_LIMIT', 'PIDS_LIMIT', 'RUN_TIMEOUT',
-    'TOOLCHAINS', 'TOOLCHAINS_DIR', 'ENV_VARS', 'READONLY_STATE',
+    'TOOLCHAINS', 'TOOLCHAINS_DIR', 'ENV_VARS', 'READONLY_STATE', 'ENGINE_IMAGE',
 )
 LABELS = ('session', 'egress', 'qualification')
 # The one diagnostic for provider mode with a profile that declares no method.
@@ -89,6 +89,9 @@ class Profile:
         self.label_namespace = value['label_namespace']
         self.identifiers = tuple(value['identifiers'])
         self.images = dict(value['images'])
+        # The session container engine image is named after the agent image, so the
+        # launcher core derives it the same way (AGENT_IMAGE-engine).
+        self.images['engine'] = self.images['agent'] + '-engine'
         self.state_name = value['install']['state_name']
         # Agent-specific installation inputs read by the wrapper (for example a version file).
         self.install_files = tuple(value['install'].get('files', ()))
@@ -165,6 +168,7 @@ def validate(value):
     identifiers = strings(value['identifiers'], re.compile(r'[a-z][a-z0-9-]{2,31}'), 'identifiers', maximum=8)
     fields(value['images'], ('agent', 'proxy', 'toolchain'), where='images')
     images = [string(item, IMAGE, 'images.' + key) for key, item in value['images'].items()]
+    images.append(string(value['images']['agent'] + '-engine', IMAGE, 'images.engine'))
     if len(set(images)) != len(images):
         fail('images must be distinct')
     fields(value['install'], ('state_name',), ('files',), where='install')

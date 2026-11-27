@@ -152,7 +152,15 @@ with socket.socket() as server:
             client.sendall(b'loopback'); assert peer.recv(16) == b'loopback'
 for family, target in ((socket.AF_INET, ('192.0.2.1', 443)),
                        (socket.AF_INET6, ('2001:db8::1', 443))):
-    with socket.socket(family) as client:
+    # IPV6 is the engine host's state, detected by the harness outside the guard.
+    try:
+        client = socket.socket(family)
+    except OSError as error:
+        # Only a host without a kernel IPv6 stack may refuse the family.
+        assert family == socket.AF_INET6 and not IPV6 and error.errno == errno.EAFNOSUPPORT, error
+        continue
+    with client:
+        assert family != socket.AF_INET6 or IPV6, 'IPv6 sockets exist on a host detected without IPv6'
         client.settimeout(1)
         try:
             client.connect(target)

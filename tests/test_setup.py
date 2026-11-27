@@ -2,6 +2,7 @@
 import importlib.util
 import io
 import contextlib
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -23,6 +24,7 @@ from sandbox_profile import GUARD, PROFILE, ROOT, SHELL_FIXTURE, env as name, fi
 sys.path.insert(0, str(ROOT / 'setup'))
 import common
 import diagnostics
+import engine
 
 WRAPPER = PROFILE.wrapper
 COMMAND = PROFILE.name
@@ -107,6 +109,7 @@ if 'info' in args:
     elif 'CgroupControllers' in template: print(os.environ.get('SETUP_TEST_CONTROLLERS', '[cpu memory pids]'))
     elif 'CgroupManager' in template: print(os.environ.get('SETUP_TEST_CGROUP_MANAGER', 'systemd'))
     elif 'Host.Kernel' in template: print(os.environ.get('SETUP_TEST_KERNEL', '6.6.87.2-microsoft-standard-WSL2'))
+    elif 'SECCOMPProfilePath' in template: print(os.environ.get('SETUP_TEST_SECCOMP', ''))
     elif 'json .Host' in template:
         print(json.dumps({'kernel':'6.6.87.2-microsoft-standard-WSL2','arch':'amd64',
            'security':{'seccompEnabled':True,'selinuxEnabled':False,'apparmorEnabled':False}}))
@@ -151,8 +154,12 @@ class SetupTests(unittest.TestCase):
         self.bin = self.base / 'bin'
         self.bin.mkdir()
         self.log = self.base / 'calls.jsonl'
+        # The engine host's default seccomp profile, from which setup derives the engine's.
+        self.seccomp = self.base / 'default-seccomp.json'
+        self.seccomp.write_text(json.dumps({'defaultAction': 'SCMP_ACT_ERRNO', 'syscalls': [
+            {'names': ['sethostname'], 'action': 'SCMP_ACT_ALLOW', 'includes': {'caps': ['CAP_SYS_ADMIN']}}]}))
         self.env = {'PATH': str(self.bin) + ':' + os.environ['PATH'], 'HOME': str(self.home),
-                    'SETUP_TEST_LOG': str(self.log)}
+                    'SETUP_TEST_LOG': str(self.log), 'SETUP_TEST_SECCOMP': str(self.seccomp)}
         fake = self.bin / 'podman'
         fake.write_text(FAKE_PODMAN)
         fake.chmod(0o700)
@@ -182,7 +189,7 @@ class SetupTests(unittest.TestCase):
         if value['network'] != 'offline':
             result += [('Authentication method', value['auth'])]
         result += [('State mode', 'isolated'), ('Private isolated state directory', str(self.base / 'state')),
-                   ('Delegate the host Podman API', 'no'), ('Enable ' + PROFILE.display_name + ' permission bypass', 'no'),
+                   ('Enable ' + PROFILE.display_name + ' permission bypass', 'no'),
                    ('Use parent-directory worktree scope', 'no'), ('Agent memory limit', ''),
                    ('Agent CPU limit', ''), ('Agent process limit', ''), ('Session lifetime in seconds', ''),
                    ('Trust a host CA bundle', 'no'),
@@ -221,17 +228,17 @@ class SetupTests(unittest.TestCase):
             self.assertEqual(stream.feed(chunk), chunk)
         self.assertEqual(stream.finish(), b'')
 
-    def test_questionnaire_defaults_retries_and_explicit_delegation_conflict(self):
+    def test_questionnaire_defaults_and_retries_without_delegation(self):
         with patch.dict(os.environ, self.env, clear=True), patch.object(setup, 'SOURCE', ROOT):
             # Provider/account defaults remain selected through input retries;
-            # requesting delegation must not silently broaden the network mode.
+            # host Podman delegation is no longer asked or saved.
             answers = iter([str(self.base / 'installed'), 'invalid', '', 'yes', '', 'shared', '',
-                            'yes', '', 'no', 'no', '', '', '', '', 'no', str(self.bin / COMMAND), 'default', ''])
+                            'no', 'no', '', '', '', '', 'no', str(self.bin / COMMAND), 'default', ''])
             with patch('builtins.input', side_effect=lambda prompt: next(answers)), patch('builtins.print'):
                 value, old = setup.questionnaire()
             self.assertIsNone(old)
             self.assertEqual(value['network'], 'provider')
-            self.assertFalse(value['podman'])
+            self.assertFalse(set(common.DELEGATION) & set(value))
             self.assertEqual(value['auth'], PROVIDER_METHOD)
 
     def questionnaire_output(self, inputs):
@@ -247,7 +254,7 @@ class SetupTests(unittest.TestCase):
         # Declining returns to the mode question; nothing is substituted or saved.
         value, output = self.questionnaire_output([
             str(self.base / 'installed'), 'provider', 'no', 'offline', 'shared', '',
-            'no', 'no', 'no', '', '', '', '', 'no', str(self.bin / COMMAND), ''])
+            'no', 'no', '', '', '', '', 'no', str(self.bin / COMMAND), ''])
         self.assertEqual(value['network'], 'offline')
         self.assertEqual(output.count('Residual exfiltration:'), 1)
         self.assertEqual(output.count('Network mode ['), 2)
@@ -257,16 +264,9 @@ class SetupTests(unittest.TestCase):
         self.assertFalse([key for key in value if 'ack' in key])
         self.assertEqual(set(value), set(common.defaults()))
 
-    def test_delegation_conflict_switch_to_provider_requires_acknowledgement(self):
-        value, output = self.questionnaire_output([
-            str(self.base / 'installed'), 'offline', 'shared', '', 'yes', 'change-network', 'provider', 'yes', '',
-            'disable-delegation', 'no', 'no', '', '', '', '', 'no', str(self.bin / COMMAND), '', ''])
-        self.assertEqual((value['network'], value['auth'], value['podman']), ('provider', PROVIDER_METHOD, False))
-        self.assertEqual(output.count('Residual exfiltration:'), 1)
-
     def test_unrestricted_selection_has_no_provider_notice(self):
         value, output = self.questionnaire_output([
-            str(self.base / 'installed'), 'unrestricted', '', 'shared', '', 'no', 'no', 'no', '', '', '', '', 'no',
+            str(self.base / 'installed'), 'unrestricted', '', 'shared', '', 'no', 'no', '', '', '', '', 'no',
             str(self.bin / COMMAND), ''])
         self.assertEqual(value['network'], 'unrestricted')
         self.assertNotIn('Residual exfiltration', output)
@@ -358,8 +358,8 @@ class SetupTests(unittest.TestCase):
         value, output = self.no_service_questionnaire([
             str(self.base / 'installed'), 'yes', '', 'shared', '', 'no', 'no', '', '', '', '', 'no',
             str(self.bin / COMMAND)], XDG_RUNTIME_DIR=runtime)
-        self.assertEqual((value['network'], value['podman'], value['endpoint'], value['delegation_socket']),
-                         ('unrestricted', False, 'local', ''))
+        self.assertEqual((value['network'], value['endpoint']), ('unrestricted', 'local'))
+        self.assertFalse(set(common.DELEGATION) & set(value))
         self.assertIn('No same-host Podman launch service answers', output)
         self.assertIn('only unrestricted networking can be prepared', output)
         self.assertIn('Continue with unrestricted networking? (yes/no) [no]', output)
@@ -389,15 +389,37 @@ class SetupTests(unittest.TestCase):
         self.assertIsInstance(error, common.SetupError)
         self.assertEqual(json.loads((release / 'setup.json').read_text())['network'], 'offline')
 
-    def test_saved_delegation_without_a_service_is_announced(self):
-        self.value.update(network='unrestricted', podman=True, endpoint='default')
+    def saved_delegation_release(self, **changes):
+        """A release whose schema-2 preferences still enable host Podman delegation."""
         root, release = self.release()
+        legacy = {key: item for key, item in self.value.items() if key not in common.ENGINE_FIELDS} | {
+            'schema_version': 2, 'podman': True, 'delegation_socket': '/separate/delegated.sock'}
+        (release / 'setup.json').write_text(json.dumps(legacy | changes))
+        return root, release
+
+    def test_saved_delegation_is_migrated_by_setup_with_a_notice(self):
+        self.value.update(network='unrestricted', endpoint='default')
+        root, release = self.saved_delegation_release()
         (root / 'current').symlink_to(release.relative_to(root))
         value, output = self.no_service_questionnaire([
             str(root), 'yes', '', 'shared', '', 'no', 'no', '', '', '', '', 'no', str(self.bin / COMMAND)])
-        self.assertEqual((value['network'], value['podman'], value['endpoint']), ('unrestricted', False, 'local'))
-        self.assertIn('The saved Podman delegation cannot be kept without a launch service; it will be disabled.',
-                      output)
+        self.assertEqual((value['network'], value['endpoint']), ('unrestricted', 'local'))
+        self.assertFalse(set(common.DELEGATION) & set(value))
+        self.assertIn('The saved host Podman delegation was removed and will not be kept.', output)
+        self.assertIn('--container-toolchain add', output)
+
+    def test_saved_delegation_stops_launches_until_setup_migrates_it(self):
+        _, release = self.saved_delegation_release()
+        path = release / 'setup.json'
+        with self.assertRaisesRegex(common.SetupError, 'enable host Podman delegation, which was removed; rerun '
+                                                       '--container-setup'):
+            common.load(path)
+        migrated = common.load(path, migrate=True)
+        self.assertEqual(migrated, self.value)
+        # Saved preferences without delegation upgrade silently, also for launches.
+        path.write_text(json.dumps({key: item for key, item in self.value.items() if key not in common.ENGINE_FIELDS}
+                                   | {'schema_version': 2, 'podman': False, 'delegation_socket': ''}))
+        self.assertEqual(common.load(path), self.value)
 
     def test_unreadable_socket_candidate_is_not_a_service(self):
         # Python before 3.12 raises from is_socket() for a socket in another user's runtime directory.
@@ -407,7 +429,7 @@ class SetupTests(unittest.TestCase):
 
     def test_budget_questions_defaults_retries_and_saved_values(self):
         value, output = self.questionnaire_output([
-            str(self.base / 'installed'), 'unrestricted', '', 'shared', '', 'no', 'no', 'no',
+            str(self.base / 'installed'), 'unrestricted', '', 'shared', '', 'no', 'no',
             '0', 'max', '4', '8G', '0', '1.5', '-1', '1024', '1.5', '3600', 'no', str(self.bin / COMMAND), ''])
         self.assertEqual((value['memory_limit'], value['cpu_limit'], value['pids_limit'], value['run_timeout']),
                          ('8g', '1.5', '1024', '3600'))
@@ -491,7 +513,7 @@ class SetupTests(unittest.TestCase):
             self.assertEqual(verify.call_count, 2)
             self.assertEqual(verify.call_args_list[0].args[0], verify.call_args_list[1].args[0])
             self.assertTrue(engine.called)
-        self.assertFalse(value['podman'])
+        self.assertFalse(set(common.DELEGATION) & set(value))
         self.assertIn('podman.socket', changes[0])
 
     def test_no_systemd_or_declined_socket_outputs_foreground_recovery(self):
@@ -514,11 +536,9 @@ class SetupTests(unittest.TestCase):
             setup.prepare_service(self.value, [])
             socket_check.assert_not_called()
             run.assert_not_called()
-            value = self.value | {'endpoint': 'unix:///exact/socket', 'podman': True,
-                                  'delegation_socket': '/separate/delegated.sock'}
+            value = self.value | {'endpoint': 'unix:///exact/socket'}
             setup.prepare_service(value, [])
-            self.assertEqual([call.args[0] for call in socket_check.call_args_list],
-                             ['unix:///exact/socket', 'unix:///separate/delegated.sock'])
+            self.assertEqual([call.args[0] for call in socket_check.call_args_list], ['unix:///exact/socket'])
             run.assert_not_called()
 
     def test_socket_validation_rejects_rootful_and_cr_responses(self):
@@ -1018,7 +1038,8 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
                 patch.object(setup, 'build_image', return_value='b' * 64) as build:
             setup.prepare_artifacts(value, None, second, self.env, {'runtime': ''}, True, [])
         recipes = {call.args[1]: call.args[4] if len(call.args) > 4 else '' for call in build.call_args_list}
-        self.assertEqual(recipes, {'network/guard-build.Containerfile': str(bundle), 'network/Containerfile': ''})
+        self.assertEqual(recipes, {'network/guard-build.Containerfile': str(bundle), 'network/Containerfile': '',
+                                   'launcher/engine/Containerfile': ''})
         third = release.parent / 'provider-no-ca'
         third.mkdir(mode=0o700)
         setup.copy_inputs(third)
@@ -1034,9 +1055,64 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
             with self.subTest(reused=bool(runtime)), patch.object(setup, 'run'), \
                     patch.object(setup, 'build_runtime', return_value='b' * 64):
                 owned = []
-                setup.prepare_artifacts(self.value.copy(), None, release, self.env, {'runtime': runtime}, False, [],
-                                        owned)
-                self.assertEqual(owned, [PROFILE.image('agent', 'setup-' + release.name)])
+                with patch.object(setup, 'build_image', return_value='e' * 64):
+                    setup.prepare_artifacts(self.value.copy(), None, release, self.env, {'runtime': runtime}, False,
+                                            [], owned)
+                self.assertEqual(owned, [PROFILE.image('agent', 'setup-' + release.name),
+                                         PROFILE.image('engine', 'setup-' + release.name)])
+
+    def test_engine_image_and_seccomp_profile_are_prepared_in_every_mode(self):
+        # container-setup: Mode-specific image and guard preparation / Engine image and profile recorded.
+        _, release = self.release()
+        profile = release / engine.SECCOMP
+        identity = engine.inputs_identity(release)
+        tag = PROFILE.image('engine', 'setup-' + release.name)
+        with patch.object(setup, 'run') as run, patch.object(setup, 'build_runtime', return_value='b' * 64), \
+                patch.object(setup, 'build_image', return_value='e' * 64) as build:
+            value = self.value.copy()
+            setup.prepare_artifacts(value, None, release, self.env, {'runtime': ''}, False, [])
+        build.assert_called_once()
+        self.assertEqual(build.call_args.args[1:3], ('launcher/engine/Containerfile', tag))
+        self.assertEqual((value['engine_image'], value['engine_sources_sha256']), ('e' * 64, identity))
+        derived = json.loads(profile.read_text())
+        self.assertIn({'names': ['sethostname', 'setdomainname'], 'action': 'SCMP_ACT_ALLOW'}, derived['syscalls'])
+        self.assertEqual(value['engine_seccomp_sha256'], hashlib.sha256(profile.read_bytes()).hexdigest())
+        common.validate(value)
+        # A rerun with the same inputs reuses the engine image and only tags it.
+        previous = value.copy()
+        with patch.object(setup, 'run') as run, patch.object(setup, 'build_runtime', return_value='b' * 64), \
+                patch.object(setup, 'build_image') as build:
+            again = self.value.copy()
+            setup.prepare_artifacts(again, previous, release, self.env, {'runtime': '', 'engine': 'e' * 64},
+                                    False, [])
+        build.assert_not_called()
+        self.assertIn(['podman', 'tag', 'e' * 64, tag], [call.args[0] for call in run.call_args_list])
+        self.assertEqual(again['engine_seccomp_sha256'], value['engine_seccomp_sha256'])
+        # Changed engine inputs, or a refresh, build again; a changed host default regenerates the profile.
+        for images, refresh, previous_value in (({'runtime': '', 'engine': 'e' * 64}, True, previous),
+                                                ({'runtime': '', 'engine': 'e' * 64}, False,
+                                                 previous | {'engine_sources_sha256': 'f' * 64})):
+            with self.subTest(refresh=refresh), patch.object(setup, 'run'), \
+                    patch.object(setup, 'build_runtime', return_value='b' * 64), \
+                    patch.object(setup, 'build_image', return_value='e' * 64) as build:
+                setup.prepare_artifacts(self.value.copy(), previous_value, release, self.env, images, refresh, [])
+                build.assert_called_once()
+        self.seccomp.write_text(json.dumps({'syscalls': [{'names': ['read'], 'action': 'SCMP_ACT_ALLOW'}]}))
+        with patch.object(setup, 'run'), patch.object(setup, 'build_runtime', return_value='b' * 64), \
+                patch.object(setup, 'build_image', return_value='e' * 64):
+            changed = self.value.copy()
+            setup.prepare_artifacts(changed, None, release, self.env, {'runtime': ''}, False, [])
+        self.assertNotEqual(changed['engine_seccomp_sha256'], value['engine_seccomp_sha256'])
+        # A failed engine build or an unusable default profile stops preparation.
+        for env, failure in (({}, 'build failed'), ({'SETUP_TEST_SECCOMP': ''}, 'no default seccomp profile'),
+                             ({'SETUP_TEST_SECCOMP': str(self.base / 'missing.json')}, 'cannot read the default')):
+            with self.subTest(failure=failure), patch.object(setup, 'run'), \
+                    patch.object(setup, 'build_runtime', return_value='b' * 64), \
+                    patch.object(setup, 'build_image', side_effect=common.SetupError('build failed') if not env
+                                 else None, return_value='e' * 64):
+                with self.assertRaisesRegex(common.SetupError, failure):
+                    setup.prepare_artifacts(self.value.copy(), None, release, self.env | env, {'runtime': ''},
+                                            False, [])
 
     def test_abandoned_candidate_tags_are_removed_and_others_kept(self):
         # container-setup: Repeatable setup with owned recovery / Abandoned candidate tags.
@@ -1066,7 +1142,7 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
 
         patches = dict(check_prerequisites=None, questionnaire=(value, None), planned_paths=root, owned_command=None,
                        prepare_service=self.env, image_identity='', engine_delegation=([], 'systemd', '6.6'),
-                       yes=True, prepare_state=[], validate=None, activate=None, authenticate='none')
+                       yes=True, prepare_state=[], validate=None, authenticate='none')
         for smoke_fails in (True, False):
             with self.subTest(smoke_fails=smoke_fails), contextlib.ExitStack() as stack:
                 stack.enter_context(patch.object(setup.sys.stdin, 'isatty', return_value=True))
@@ -1076,6 +1152,10 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
                 stack.enter_context(patch.object(setup, 'prepare_artifacts', side_effect=artifacts))
                 stack.enter_context(patch.object(setup, 'smoke',
                                                  side_effect=common.SetupError('smoke failed') if smoke_fails else None))
+                order = []
+                stack.enter_context(patch.object(setup, 'activate', side_effect=lambda *args: order.append('activate')))
+                reverify = stack.enter_context(patch.object(setup, 'reverify_toolchains',
+                                                            side_effect=lambda *args: order.append('reverify')))
                 release = stack.enter_context(patch.object(setup, 'release_owned_tags'))
                 stack.enter_context(patch('builtins.print'))
                 root.mkdir(parents=True, exist_ok=True)
@@ -1085,15 +1165,87 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
                     tags = release.call_args.args[0]
                     self.assertEqual(len(tags), 1)
                     self.assertRegex(tags[0], ':setup-[0-9a-f]{32}$')
+                    # The old release stays selected: the library keeps the base it recorded.
+                    reverify.assert_not_called()
                 else:
                     setup.main()
                     release.assert_not_called()
+                    # Toolchains are rechecked only with the selected new release.
+                    self.assertEqual(order, ['activate', 'reverify'])
+                    self.assertEqual(reverify.call_args.args[1].parent, root / 'releases')
+
+    def toolchain_manifests(self, **bases):
+        """Installed toolchains in the default library, each verified on the given base."""
+        library = self.home / '.local/share/sandbox-toolchains'
+        library.mkdir(mode=0o700, parents=True, exist_ok=True)
+        for toolchain, base in bases.items():
+            (library / toolchain).mkdir()
+            (library / toolchain / 'toolchain.json').write_text(json.dumps(
+                {'name': toolchain, 'verified': {'base': base, 'date': '2026-11-01'}}))
+        return library
+
+    def test_setup_reverifies_toolchains_checked_on_another_base(self):
+        _, release = self.release()
+        current = setup.toolchains.base_reference(release)
+        other = 'docker.io/library/other@sha256:' + 'e' * 64
+        self.toolchain_manifests(stale=other, fresh=current, failing=other)
+        calls = []
+
+        def verify(release_dir, toolchain, env):
+            calls.append((release_dir, toolchain, env.get(name('IMAGE'))))
+            if toolchain == 'failing':
+                return subprocess.CompletedProcess([], 1, '', 'prefix: toolchain check failed for failing (status 1): x\n')
+            return subprocess.CompletedProcess([], 0, 'Verified ' + toolchain + '\n', '')
+        output = io.StringIO()
+        with patch.dict(os.environ, self.env, clear=True), contextlib.redirect_stdout(output), \
+                patch.object(setup, 'run_toolchain_verify', side_effect=verify):
+            setup.reverify_toolchains(self.value, release)
+        self.assertEqual([call[1] for call in calls], ['failing', 'stale'])
+        self.assertTrue(all(call[0] == release and call[2] == self.value['image'] for call in calls), calls)
+        text = output.getvalue()
+        self.assertIn('stale: verified on the new base', text)
+        self.assertIn('failing: check failed (prefix: toolchain check failed for failing (status 1): x)', text)
+        self.assertIn('--container-toolchain verify failing succeeds', text)
+        self.assertNotIn('fresh', text)
+
+    def test_setup_runs_no_toolchain_check_when_nothing_is_stale(self):
+        _, release = self.release()
+        library = self.home / '.local/share/sandbox-toolchains'
+        output = io.StringIO()
+        with patch.dict(os.environ, self.env, clear=True), contextlib.redirect_stdout(output), \
+                patch.object(setup, 'run_toolchain_verify') as verify:
+            setup.reverify_toolchains(self.value, release)
+            self.assertFalse(library.exists())
+            self.toolchain_manifests(fresh=setup.toolchains.base_reference(release))
+            setup.reverify_toolchains(self.value, release)
+            verify.assert_not_called()
+            self.assertEqual(output.getvalue(), '')
+            # An unreadable library is reported, and setup goes on.
+            (library / 'broken').mkdir()
+            (library / 'broken/toolchain.json').write_text('{not json')
+            setup.reverify_toolchains(self.value, release)
+        verify.assert_not_called()
+        self.assertIn('Toolchains not re-verified: Invalid toolchain manifest: broken', output.getvalue())
+
+    def test_toolchain_verify_runs_the_release_command(self):
+        _, release = self.release()
+        completed = subprocess.CompletedProcess([], 0, '', '')
+        with patch.object(setup.subprocess, 'run', return_value=completed) as run:
+            setup.run_toolchain_verify(release, 'go', {'HOME': str(self.home)})
+        self.assertEqual(run.call_args.args[0], [sys.executable, '-I', str(release / 'setup/toolchains.py'), 'verify', 'go'])
+        self.assertEqual(run.call_args.kwargs['env'], {'HOME': str(self.home)})
+        self.assertEqual(run.call_args.kwargs['timeout'], setup.TOOLCHAIN_VERIFY_TIMEOUT)
+        with patch.object(setup.subprocess, 'run', side_effect=subprocess.TimeoutExpired('verify', 1)):
+            self.assertEqual(setup.run_toolchain_verify(release, 'go', {}).returncode, 1)
 
     def test_mode_specific_artifacts_and_scoped_maintenance(self):
         _, release = self.release()
         value = self.value.copy()
+        # An unchanged engine image is reused, like the runtime image.
+        previous = self.value | {'engine_sources_sha256': engine.inputs_identity(release)}
         with patch.object(setup, 'run') as run, patch.object(setup, 'build_image') as build:
-            setup.prepare_artifacts(value, None, release, self.env, {'runtime': 'a' * 64}, False, [])
+            setup.prepare_artifacts(value, previous, release, self.env, {'runtime': 'a' * 64, 'engine': 'e' * 64},
+                                    False, [])
             self.assertIn(':setup-', value['image'])
             self.assertEqual(value['image_id'], 'a' * 64)
             build.assert_not_called()
@@ -1105,9 +1257,11 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
         setup.copy_inputs(second)
         value = self.value | {'network': 'provider', 'endpoint': 'default',
                               'runtime_dir': str(self.base / 'egress')}
+        previous = self.value | {'engine_sources_sha256': engine.inputs_identity(second)}
         with patch.object(setup, 'run') as run, patch.object(setup, 'build_image') as build:
-            setup.prepare_artifacts(value, None, second, self.env,
-                                    {'runtime': 'a' * 64, 'toolchain': 'b' * 64, 'proxy': 'c' * 64}, False, [])
+            setup.prepare_artifacts(value, previous, second, self.env,
+                                    {'runtime': 'a' * 64, 'toolchain': 'b' * 64, 'proxy': 'c' * 64,
+                                     'engine': 'e' * 64}, False, [])
             build.assert_not_called()
             compile_call = next(call for call in run.call_args_list if call.args[0][0] == 'bash')
             self.assertEqual(compile_call.args[1]['SANDBOX_GUARD_TOOLCHAIN'], 'b' * 64)
@@ -1154,7 +1308,7 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
         _, release = self.release()
         path = release / 'setup.json'
         original = path.read_text()
-        for data in (self.value | {'api_key': 'SYNTHETIC_SECRET'}, self.value | {'schema_version': 3},
+        for data in (self.value | {'api_key': 'SYNTHETIC_SECRET'}, self.value | {'schema_version': 4},
                      self.value | {'schema_version': 1}, self.value | {'memory_limit': '0'},
                      self.value | {'cpu_limit': 'max'}, self.value | {'pids_limit': '-1'},
                      self.value | {'run_timeout': ''}, self.value | {'memory_limit': '4G'},
@@ -1177,10 +1331,12 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
     def test_schema_one_preferences_upgrade_with_default_budgets(self):
         _, release = self.release()
         path = release / 'setup.json'
-        legacy = {k: v for k, v in self.value.items() if k not in common.BUDGETS} | {'schema_version': 1}
+        legacy = {k: v for k, v in self.value.items() if k not in common.BUDGETS and k not in common.ENGINE_FIELDS} | {
+            'schema_version': 1, 'podman': False, 'delegation_socket': ''}
         path.write_text(json.dumps(legacy))
         upgraded = common.load(path)
-        self.assertEqual(upgraded['schema_version'], 2)
+        self.assertEqual(upgraded['schema_version'], common.SCHEMA_VERSION)
+        self.assertFalse(set(common.DELEGATION) & set(upgraded))
         self.assertEqual({k: upgraded[k] for k in common.BUDGETS},
                          dict(memory_limit='4g', cpu_limit='2', pids_limit='512', run_timeout='0'))
         for data in (legacy | {'memory_limit': '8g'}, legacy | {'unknown': 'x'},
@@ -1190,7 +1346,7 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
                 common.load(path)
         saved = release / 'resaved.json'
         common.save(saved, upgraded)
-        self.assertEqual(json.loads(saved.read_text())['schema_version'], 2)
+        self.assertEqual(json.loads(saved.read_text())['schema_version'], common.SCHEMA_VERSION)
 
     def test_saved_budgets_supplied_unless_explicitly_present(self):
         value = self.value | {'memory_limit': '8g', 'cpu_limit': '1.5', 'pids_limit': '1024', 'run_timeout': '60'}
@@ -1419,6 +1575,23 @@ printf 'APP_TTY=%s ARGS=%s\\n' "$terminal" "$*"
         code, output = pty_run([str(command), '--version'], self.env, project, [])
         self.assertEqual(code, 0, output)
         self.assertIn('APP_TTY=yes ARGS=--container-git-worktree --version', output)
+
+    def test_saved_worktree_scope_leaves_host_commands_first(self):
+        # The toolchain command must stay the first argument; sessions keep the scope.
+        self.value['worktree'] = True
+        root, release = self.release()
+        command = Path(self.value['command'])
+        setup.activate(root, release, command)
+        project = self.base / 'projects/project'
+        project.mkdir(parents=True)
+        (release / WRAPPER).write_text('#!/bin/bash\nprintf "ARGS=%s\\n" "$*"\n')
+        for args, expected in ((['--container-toolchain', 'list'], 'ARGS=--container-toolchain list'),
+                               (['--version'], 'ARGS=--container-git-worktree --version')):
+            with self.subTest(args=args):
+                result = subprocess.run([str(command), *args], cwd=project, env=self.env,
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), expected)
 
     def test_smoke_budgets_follow_the_enforced_controllers(self):
         import smoke
@@ -1898,10 +2071,10 @@ class ProfileWithoutMethodsSetupTests(unittest.TestCase):
         return json.loads(result.stdout)
 
     def test_offline_default_without_authentication_or_bypass_questions(self):
-        # installation, network (refused provider, then default), state, config dir, delegation, worktree,
+        # installation, network (refused provider, then default), state, config dir, worktree,
         # four budgets, CA trust, command, endpoint
         # A provider answer is refused and asked again.
-        answers = [str(self.root / 'installed'), 'provider', '', 'shared', '', 'no', 'no', '', '', '', '', 'no',
+        answers = [str(self.root / 'installed'), 'provider', '', 'shared', '', 'no', '', '', '', '', 'no',
                    str(self.root / 'bin/command'), 'default']
         result = self.run_harness(answers)
         self.assertEqual(result['modes'], ['offline', 'unrestricted'])

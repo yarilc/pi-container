@@ -33,8 +33,9 @@ The wrapper SHALL accept `PI_CONTAINER_NETWORK=offline|provider|unrestricted` fr
 - **AND** failed restricted preparation never falls back to unrestricted networking
 
 #### Scenario: Unrestricted keeps current behavior
+
 - **WHEN** an operator selects `unrestricted`
-- **THEN** the session has direct networking and optional delegation with the common launcher hardening, and needs no host Python, guard or qualification report
+- **THEN** the session has direct networking with the common launcher hardening, refuses exact `PI_CONTAINER_PODMAN=1`, starts a private session engine only when the library holds images, and needs no host Python, guard or qualification report
 
 #### Scenario: Qualification is not an ordinary session
 - **WHEN** `--container-qualify` runs with no effective mode
@@ -527,24 +528,29 @@ Provider help and the network contract SHALL distinguish CONNECT authorization, 
 - **THEN** the ClientHello guarantee, the remaining application-level limits, the renegotiation limitation and the unimplemented interception option are visible
 
 ### Requirement: Evidence and common contract documentation
+
 Documentation SHALL map N01–N14 and C01–C14 to implementation and acceptance, publish the mode and profile contract and the five-wrapper parity table, and date and version the endpoint inventories. `docs/validation.md` SHALL separate synthetic enforcement, real-rootless bypass checks and operator-run authenticated checks. Untested checks SHALL be recorded as unavailable, and automated tests SHALL NOT use real credentials.
 
 #### Scenario: Provider profile readiness
-- **WHEN** a profile is declared verified for an Pi version
+
+- **WHEN** a profile is declared verified for a Pi version
 - **THEN** operator-run evidence covers authenticated model requests, streaming, long-lived requests, supported WebSockets, the interactive TUI, CA behavior and shell mode
-- **AND** credential-free tests separately cover DNS/UDP/IPv6, direct IPs and ports, deceptive hosts, redirects, host/LAN/metadata, administration, concurrency, delegation rejection, failure closure and cleanup
+- **AND** credential-free tests separately cover DNS/UDP/IPv6, direct IPs and ports, deceptive hosts, redirects, host/LAN/metadata, administration, concurrency, leftover delegation refusal, session engine containment, failure closure and cleanup
 
 #### Scenario: Authenticated check unavailable
+
 - **WHEN** a real API key or account check has not been run by the operator
 - **THEN** it is recorded as unavailable and no provider verification is claimed, while mandatory enforcement tests are not waived
 
 #### Scenario: User reviews limits
+
 - **WHEN** a user reads the network documentation
 - **THEN** it explains that allowed services can receive session data, provider-hosted tools are outside local filtering, and runtime filtering does not constrain host-side image pulls or builds
 
 #### Scenario: Parity table
+
 - **WHEN** a reader compares the five wrappers
-- **THEN** `docs/network-contract.md` here, in `sandbox-container`, `codex-container` and `opencode-container` show the same Pi row, with authenticated compatibility recorded as pending until the operator checks run
+- **THEN** `docs/network-contract.md` here and in `sandbox-container` show the same Pi row after parity synchronization, with authenticated compatibility recorded as pending until the operator checks run
 
 ### Requirement: Private runtime hierarchies admit only verified read-only masks
 Before agent code runs, the restricted bootstrap SHALL reject every nested mount below `/tmp`, `/run` and `/var/tmp`, except the engine metadata file `/run/.containerenv`, the provider runtime `/run/sandbox-egress` and `/run/secrets` when it is a `tmpfs` whose per-mount options are read-only. Provider proxies and qualification gate containers SHALL also receive the read-only `/run/secrets` mask.
@@ -608,12 +614,12 @@ The shared launcher core and the agent launcher part SHALL be part of the protec
 
 ### Requirement: Proxy process budget falls back to the process rlimit
 
-When the verified engine does not delegate the `pids` controller and the engine host counts the process rlimit per container, each session proxy SHALL be created with a soft and hard process rlimit of 128. The configured and effective limit SHALL be verified before agent execution. Otherwise the proxy process budget SHALL stay unenforced with a notice. The proxy memory budget SHALL have no fallback.
+When the verified engine does not delegate the `pids` controller and the engine host counts the process rlimit per container, each session proxy's first process SHALL set its soft and hard process rlimit to 128 before the proxy program runs, and the engine SHALL apply no process rlimit for the budget. The created proxy and its effective limit SHALL be verified before agent execution. Otherwise the proxy process budget SHALL stay unenforced with a notice. The proxy memory budget SHALL have no fallback.
 
 #### Scenario: Proxy on the process rlimit fallback
 
 - **WHEN** a restricted session prepares its proxy on an engine that delegates `memory` but not `pids`, on a host that counts the process rlimit per container
-- **THEN** the proxy is created with a soft and hard process rlimit of 128 and without a cgroup process limit
+- **THEN** the proxy's first process sets a soft and hard process rlimit of 128, and the proxy is created without a cgroup process limit and without a process rlimit requested from the engine
 - **AND** the effective process rlimit inside the proxy is verified before the agent starts
 - **AND** the session prints a notice that the proxy process budget is enforced through the process rlimit
 
@@ -628,6 +634,11 @@ When the verified engine does not delegate the `pids` controller and the engine 
 - **WHEN** the engine does not delegate `pids` and per-container counting is not established
 - **THEN** the session requests neither a cgroup process limit nor a process rlimit for the proxy
 - **AND** the session prints a notice naming the unenforced proxy process budget and why the fallback was not applied
+
+#### Scenario: Other containers do not consume the proxy's budget
+
+- **WHEN** other containers of the same user, such as other sessions, their proxies and engines, together hold more than 128 processes
+- **THEN** the proxy starts, passes its effective-limit check, and serves the session
 
 ### Requirement: Restricted sessions run the application under a confined init
 

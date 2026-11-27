@@ -72,8 +72,7 @@ caller's responsibility. Prefer native Linux storage enforcing Unix modes.
 
 Temporary stores are explicit, bounded, nosuid/nodev/noexec: /tmp and /var/tmp
 512 MiB each, the shared-state home 512 MiB, /run 32 MiB (not writable by the
-session user), npm cache 256 MiB by default. Delegated-client stores are
-256 MiB and 64 MiB. None persists after the session.
+session user), npm cache 256 MiB by default. None persists after the session.
 
 ### Persistent Compromise via Extensions and Skills ⚠️
 
@@ -182,32 +181,40 @@ Every session has validated memory, CPU and process budgets
 only when the rootless engine delegates its cgroup v2 controller, which needs
 the `systemd` cgroup manager; with `cgroupfs`, as on a Podman machine on
 Windows, no controller counts as delegated. Without the `pids` controller, the
-process budget falls back to a per-container process rlimit on Linux 5.14 or
-later. A budget without a mechanism stays unenforced, and every launch prints a
-notice for it. The wrapper inspects the created container and starts it only
-when every enforced budget equals its value and no unenforced one is present.
+process budget falls back to a per-container process rlimit set by the
+container's first process (never `--ulimit nproc`) on Linux 5.14 or later. A
+budget without a mechanism stays unenforced, and every launch prints a notice
+for it. The wrapper inspects the created container and starts it only when
+every enforced budget equals its value and no unenforced one is present.
 Budgets do not bound workspace or state storage growth.
 
-### Podman Socket (Opt-In, Dangerous)
+### Host Podman Delegation Removed and Session Container Engine
 
-Only exact `PI_CONTAINER_PODMAN=1` enables host authority; the client is part
-of every image. All other values disable delegation, including true/yes/0/false.
-The selected absolute accessible socket (`PI_CONTAINER_PODMAN_SOCKET`, Unix
-`CONTAINER_HOST`, then XDG runtime/UID fallback) is canonicalized and queried
-explicitly. It must report rootless operation and an absolute host socket
-path that is not made only of slashes and, when visible to the wrapper, is a
-socket. Enabled failures abort before image operations; services are never
-started automatically. The reported host source is bound at
-`/run/podman/podman.sock`; containerized callers must retain absolute host
-workspace/state paths and select a same-host service. Unix transport alone
-cannot establish host identity.
+Host Podman socket delegation (`PI_CONTAINER_PODMAN=1`,
+`PI_CONTAINER_PODMAN_SOCKET`) is removed in every mode. Exact
+`PI_CONTAINER_PODMAN=1` stops every launch and build-only operation before
+engine queries with migration guidance pointing to image toolchains; other
+values and `PI_CONTAINER_PODMAN_SOCKET` are ignored, and no host Podman socket
+is ever mounted. Without image toolchains in the library, both `CONTAINER_HOST`
+and `DOCKER_HOST` are unset in every session.
 
-Delegation gives control over the service user's containers and permits host
-mounts beyond the workspace. It removes the project-only access boundary.
-Without it no socket is mounted and session CONTAINER_HOST is explicitly
-unset, including PI_CONTAINER_ENV_VARS requests. Connection forwarding cannot override
-the selected endpoint. Native Pi permission flags do not enable socket
-access.
+When the enabled toolchain library holds at least one image toolchain, the
+session gets a private, session-owned rootless Podman engine
+(`localhost/pi-container-engine:latest`) reachable only on loopback TCP
+(`CONTAINER_HOST=tcp://127.0.0.1:2375` and `DOCKER_HOST`) inside the session's
+own network namespace. The engine shares the session's network boundary (no
+external egress in `offline`; only allowed provider destinations in `provider`),
+mounts only the session workspace and the library's read-only image store
+(`.images`), carries no secrets or state mounts, and is removed with its
+writable storage when the session ends. Its fixed hardening exceptions are
+limited to `SETUID`, `SETGID`, `SYS_CHROOT`, and startup-only `CHOWN` (declared
+in `io.containers.capabilities`), `/dev/fuse`, `/dev/net/tun`, unmasked procfs,
+disabled SELinux labelling, and a derived seccomp profile adding `sethostname`
+and `setdomainname`; after delegating its cgroup subtree on eligible hosts, all
+running engine processes execute as the unprivileged `podman` user. Because a
+session joining the engine's network namespace receives a read-only bind-mount
+of host `/sys` from Podman, host interface names appear in `/sys/class/net`
+while the network namespace retains only loopback (`/proc/net/dev`).
 
 ### Owned Cleanup and Residual Resources
 

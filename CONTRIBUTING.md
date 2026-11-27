@@ -42,7 +42,7 @@ bash tests/run-runtime.sh --guard      # guard fixtures (toolchain image require
 ```
 
 `launcher/`, `network/`, `setup/` and the shared tests are copied unchanged
-from `sandbox-container` (tag `sandbox-ref-28`); never edit them here. Fix a
+from `sandbox-container` (tag `sandbox-ref-36`); never edit them here. Fix a
 defect in `sandbox-container` first, then copy the files again and update the
 manifest in `tests/test_reference_copy.py`.
 
@@ -53,8 +53,10 @@ Record actual commands/results and missing prerequisites in docs/validation.md;
 skips do not count as passes. Do not claim authenticated Pi verification.
 
 Launcher behavior (signals, the 20-second shutdown deadline, naming, owned
-cleanup, engine verification, state and mounts) is tested once, for every
-wrapper, by the shared `tests/test_launcher.py`. A Pi launcher case it does not
+cleanup, launch-engine verification, leftover delegation refusal, session
+container engine wiring, state and mounts) is tested once, for every
+wrapper, by the shared `tests/test_launcher.py` (with `tests/test_engine.py`
+and `tests/test_toolchains.py`). A Pi launcher case it does not
 cover goes into `sandbox-container` first. `tests/test_wrapper.py` covers only
 Pi's agent part: its hooks, its restricted settings and the provider key per
 policy profile. Help must work without Podman, state, or `.version`; native

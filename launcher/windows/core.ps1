@@ -288,7 +288,7 @@ function Write-WindowsHelp {
         ('                                (default: ~/.local/lib/' + $name + ')'),
         ('  ' + $P + '_NETWORK           ' + $modeList + ' (default: the mode setup saved)'),
         '  Restricted modes need a setup that prepared them in the machine.',
-        ('  Podman delegation (' + $P + '_PODMAN=1) is refused.'),
+        ('  Host Podman delegation was removed: ' + $P + '_PODMAN=1 is refused.'),
         '  PowerShell pipeline input is refused; redirect standard input from cmd.exe.',
         '  Variables with an empty value count as unset. Quote a -- meant for Bash: ''--''.'
     )
@@ -396,10 +396,12 @@ if ($null -ne $installState -and $installState -cne 'complete') {
 }
 
 # Network modes and qualification follow setup and the launcher's own checks.
-# Podman delegation stays unsupported: the delegated socket would control the
-# machine's whole engine.
+# Host Podman delegation was removed: the exact old opt-in stops the entry with
+# the launcher's migration message, before WSL runs.
 if ((Get-Setting ($P + '_PODMAN')) -ceq '1') {
-    Exit-Entry ('Podman delegation (' + $P + '_PODMAN=1) is unsupported on Podman machine; unset ' + $P + '_PODMAN')
+    Exit-Entry ($P + '_PODMAN=1: host Podman delegation was removed; add the images your tests need with ' +
+        '--container-toolchain add, so that sessions get their own container engine (README: Container tests), ' +
+        'then unset ' + $P + '_PODMAN')
 }
 
 # A running machine that Podman started (design D6 of the Windows entry).

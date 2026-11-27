@@ -1,0 +1,29 @@
+{
+  "schema": 2,
+  "name": "node24",
+  "version": "24.22.3",
+  "sources": [
+    {
+      "url": "https://nodejs.org/dist/v24.22.3/node-v24.22.3-linux-x64.tar.xz",
+      "sha256": "4f2b175a6d53a5c617a80dba2676238a0688cef28c6da4eba35c7d844e66fcfb",
+      "strip_components": 1
+    }
+  ],
+  "path": [
+    "bin"
+  ],
+  "env": {
+    "npm_config_cache": {
+      "value": "/tmp/npm-cache"
+    }
+  },
+  "notes": [
+    "The runtime image's own Node.js 22 stays first on PATH; use this version through env.sh.",
+    "Dependency downloads are blocked unless the network policy allows the repository; keep dependencies in the workspace or use an unrestricted session."
+  ],
+  "check": [
+    "node",
+    "--version"
+  ],
+  "default": false
+}
