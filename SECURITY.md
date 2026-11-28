@@ -240,10 +240,6 @@ Every image input is pinned: the base image `node:22-bookworm-slim` by
 digest, `@earendil-works/pi-coding-agent` at the version in `.version`,
 `@fission-ai/openspec` at the version recorded in the Containerfile. npm verifies each package's registry integrity; no remote
 install script is piped to a shell, and `tests/test_image_pins.py` rejects
-floating inputs. A stale image is never rebuilt silently. Weekly CI scans
-(Trivy) monitor the built image for known vulnerabilities.
-
-Third-party GitHub Actions are pinned by commit SHA. Dependabot is
-configured to propose updates automatically.
-
-See "Updating pinned image inputs" in README.md for upgrade procedures.
+floating inputs. A stale image is never rebuilt silently. A pinned input
+changes only through an explicit update; see "Updating pinned image inputs" in
+README.md for the procedure.

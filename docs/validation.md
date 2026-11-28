@@ -1433,3 +1433,28 @@ The installed launcher core, setup, guard and engine recipe change, and setup
 builds `localhost/pi-container-engine:latest` and migrates schema 1/2
 preferences to schema 3, so existing installations must rerun
 `--container-setup`.
+
+## Removal of the GitHub pipelines (`remove-github-pipelines`): 2026-11-28
+
+Environment: claude-container session started from Windows (Podman machine,
+WSL2 backend), checkout on DrvFS (`/mnt/d/`). The session engine
+(`CONTAINER_HOST=tcp://127.0.0.1:2375`) holds only toolchain library images,
+and the session has no network.
+
+| Check | Result |
+| --- | --- |
+| `git ls-files .github .trivyignore`; `test -e .github` | Nothing tracked; `.github` absent |
+| `git grep -n -i -e '\.github' -e dependabot -e trivy -e '\bCI\b' -- ':!openspec/changes'` | Matches only the new and historical `CHANGELOG.md` entries, earlier sections of this file (lines 76, 78 and 188, and the Pi endpoint tables from line 1021), and the README heading "Non-interactive use (piped input, CI/CD)" |
+| `python3 -B -m unittest tests.test_reference_copy tests.test_alignment -v` (host Python, sibling checkouts present) | Passed: 26 tests, 0 skips |
+| `git diff --check` | Passed |
+| `openspec validate remove-github-pipelines --strict` | Passed (`skip_specs: true`, no spec deltas) |
+| `markdownlint-cli2` on the edited Markdown and the change Markdown | Unavailable in session (not installed; no tool image in the session engine and no network to pull `docker.io/davidanson/markdownlint-cli2:latest`) |
+
+### Follow-up after closure
+
+- Markdownlint with the `AGENTS.md` container command on `README.md`,
+  `SECURITY.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, `AGENTS.md`, this file and
+  the archived change: pending.
+- After the push, GitHub starts no workflow run for the new commit: pending.
+- Open Dependabot pull requests closed, and Dependabot alerts and security
+  updates kept or turned off in the repository settings: pending (operator).

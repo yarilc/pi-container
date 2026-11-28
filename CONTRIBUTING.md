@@ -19,7 +19,8 @@ container. Its primary concerns are:
 
 - Linux rootless Podman ≥ 4.x, GNU coreutils timeout, Python 3 for synthetic tests
 - Native Linux state storage for permission-sensitive checks
-- ShellCheck, hadolint, markdownlint-cli2 (optional, run in CI)
+- ShellCheck, hadolint, markdownlint-cli2 (optional: `AGENTS.md` runs them
+  through containers when they are not installed)
 
 ### Testing
 
@@ -100,4 +101,5 @@ image.
    - `README.md` environment variables table
    - `SECURITY.md` if security-relevant
 4. Open a PR against `main`.
-5. CI must pass (lint, test, scan).
+5. Run the tests and linters in `AGENTS.md` (Build, Test, and Development
+   Commands) in your working environment, and list the results in the PR.

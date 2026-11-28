@@ -184,8 +184,9 @@ changes.
   releases; an enabled value only prints a notice and must never change engine
   arguments. `--approve` only trusts project-local files.
 - Keep `--cap-drop=ALL`, `no-new-privileges`, the read-only root filesystem,
-  noexec temporary storage, the pinned Pi version, and CI with hadolint and
-  Trivy. Never add capabilities, `--privileged` or SELinux relabeling.
+  noexec temporary storage, the pinned Pi version, and Containerfiles that pass
+  hadolint (see Build, Test, and Development Commands). Never add capabilities,
+  `--privileged` or SELinux relabeling.
 - Validate `PI_CONTAINER_MEMORY_LIMIT` (4g), `PI_CONTAINER_CPU_LIMIT` (2),
   `PI_CONTAINER_PIDS_LIMIT` (512) and `PI_CONTAINER_RUN_TIMEOUT` before engine
   queries with the claude-container `sandbox-ref-5` rules; request each budget

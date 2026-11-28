@@ -1311,8 +1311,9 @@ timeout.
 - The recipe declares no `WORKDIR`; a future one must be created by an earlier
   build step, so the engine never creates or chowns it at container start.
 
-The base image is pinned by digest. Weekly CI scans monitor the built image for
-CVEs.
+The base image is pinned by digest; see
+[Updating pinned image inputs](#updating-pinned-image-inputs) to move it to a
+newer one.
 
 ### File layout
 
@@ -1335,7 +1336,6 @@ pi-container/
 ├── test-wrapper.sh            # Synthetic wrapper entrypoint (Python 3)
 ├── tests/                     # Fake engine, pin checks, real rootless acceptance
 ├── docs/validation.md         # Commands, results, and verification limits
-├── .github/workflows/ci.yml   # CI pipeline
 ├── AGENTS.md                  # Repository guidelines
 ├── SECURITY.md                # Vulnerability disclosure policy
 ├── LICENSE                    # MIT license

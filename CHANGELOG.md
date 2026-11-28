@@ -217,6 +217,10 @@ for the wrapper script (distinct from the Pi Coding Agent version in `.version`)
   warning. Setup never built a Bun image, and qualification could not accept
   one. The staleness hash no longer includes a Bun selection, so existing
   images are stale once: rerun `--container-setup`.
+- GitHub pipelines (`remove-github-pipelines`): `.github/workflows/ci.yml`,
+  `.github/dependabot.yml` and `.trivyignore`, as in the other sandbox
+  wrappers. Lints and tests run locally with the commands in `AGENTS.md`, and
+  pinned image inputs change only through an explicit update.
 
 ## [0.1.0] - 2026-06-30
 
